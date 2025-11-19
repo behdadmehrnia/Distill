@@ -266,7 +266,6 @@ class AudioAgentClient {
 
     sendAudioData(audioData) {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            console.log("sendAudioData");
             const int16Data = this.floatTo16BitPCM(audioData);
             const message = {
                 type: 'audio',
@@ -340,9 +339,24 @@ class AudioAgentClient {
         }
     }
 
+    stopAudio() {
+        try {
+            if (this.audioPlayer) {
+                this.audioPlayer.pause();
+                this.audioPlayer.currentTime = 0;
+                
+                // Clean up the object URL to prevent memory leaks
+                if (this.audioPlayer.src) {
+                    URL.revokeObjectURL(this.audioPlayer.src);
+                }
+            }
+        } catch (error) {
+            console.error('Error stopping audio:', error);
+        }
+    }
+
     async testAudioOutput() {
 
-        console.log("testAudioOutput");
         // Test with a simple message
         const testMessage = {
             type: 'test_audio',
@@ -456,6 +470,10 @@ class AudioAgentClient {
         bars.forEach(bar => {
             bar.className = bar.className.replace(/bg-(green|gray)-400/, color);
         });
+
+        if (isSpeech) {
+            this.stopAudio();
+        }
     }
 
     stopConversation() {
@@ -527,13 +545,29 @@ document.addEventListener('DOMContentLoaded', () => {
                             # vad_result can be: "speech", "silence", "end_of_speech"
                             if vad_result:   # speech detected
                                 stt_buffer.append(float_audio)
+                                
 
-                            elif await self.vad.speech_ended() and len(stt_buffer) > 2: # end of speech detected
+                            vad_with_noise_cancellation = await self.vad.is_speech_with_noise_cancellation(float_audio)
+                            logger.info(f"VAD with noise cancellation: {vad_with_noise_cancellation}")
+                            if vad_with_noise_cancellation:
+                                await ws.send_json({
+                                    "type": "vad_status",
+                                    "is_speech": True,
+                                })
+                            else:
+                                await ws.send_json({
+                                    "type": "vad_status",
+                                    "is_speech": False,
+                                })
+                                
+
+                            if await self.vad.speech_ended() and len(stt_buffer) > 2: # end of speech detected
                                 logger.info("Speech segment ended — running STT...")
 
                                 # Combine all chunks
+
+                                self.vad.reset()
                                 full_audio = np.concatenate(stt_buffer)
-                                stt_buffer = []
 
                                 # Run whisper
                                 text = await self.pipeline.stt.transcribe(full_audio)
@@ -544,25 +578,28 @@ document.addEventListener('DOMContentLoaded', () => {
                                     "text": "دارم فکر میکنم ..."
                                 })
 
-                                # Run LLM
-                                response = await self.pipeline.llm.generate(text)
-                                logger.info(f"LLM: {response}")
+                                if self.pipeline.stt.is_persian_valid(text):
+                                    # Run LLM
+                                    response = await self.pipeline.llm.generate(text)
+                                    logger.info(f"LLM: {response}")
 
-                                # Send transcript to frontend
-                                await ws.send_json({
-                                    "type": "transcript",
-                                    "text": response
-                                })
+                                    # Send transcript to frontend
+                                    await ws.send_json({
+                                        "type": "transcript",
+                                        "text": response
+                                    })
 
-                                # Run TTS
-                                audio_output = await self.pipeline.tts.synthesize(response)
+                                    # Run TTS
+                                    audio_output = await self.pipeline.tts.synthesize(response)
 
-                                audio_base64 = base64.b64encode(audio_output).decode("ascii")
+                                    audio_base64 = base64.b64encode(audio_output).decode("ascii")
 
-                                await ws.send_json({
-                                    "type": "audio",
-                                    "data": audio_base64
-                                })
+                                    await ws.send_json({
+                                        "type": "audio",
+                                        "data": audio_base64
+                                    })
+
+                                    stt_buffer = []
 
                             # else VAD returned "silence" — do nothing
 

@@ -1,6 +1,8 @@
 # src/providers/tts/base.py
 from abc import ABC, abstractmethod
 import numpy as np
+import requests
+
 
 class TTSProvider(ABC):
     @abstractmethod

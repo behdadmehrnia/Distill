@@ -5,6 +5,10 @@ import io
 import asyncio
 from openai import AsyncOpenAI
 
+
+# GEMINI_API = "http://164.90.187.248:8083"
+GEMINI_API = ""
+
 class STTProvider(ABC):
     @abstractmethod
     async def transcribe(self, audio_data: np.ndarray) -> str:
@@ -12,7 +16,10 @@ class STTProvider(ABC):
 
 class WhisperSTT(STTProvider):
     def __init__(self, api_key: str, model_name: str = "whisper-1"):
-        self.client = AsyncOpenAI(api_key=api_key)
+        if GEMINI_API:
+            self.client = AsyncOpenAI(api_key=api_key, base_url=GEMINI_API)
+        else:
+            self.client = AsyncOpenAI(api_key=api_key)
         self.model = model_name
         
     async def transcribe(self, audio_data: np.ndarray) -> str:
@@ -44,3 +51,9 @@ class WhisperSTT(STTProvider):
         )
         
         return response.text
+
+    def is_persian_valid(self, text: str) -> bool:
+        for char in text.lower():
+            if char in "abcdefghijklmnopqrstuvwxyz":
+                return False
+        return True
