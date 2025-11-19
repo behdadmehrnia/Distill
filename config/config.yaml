@@ -1,0 +1,23 @@
+# config/config.yaml
+audio:
+  sample_rate: 16000
+  channels: 1
+  frame_duration: 20  # ms
+
+vad:
+  aggressiveness: 3
+  silence_threshold: 10
+
+providers:
+  stt:
+    type: "whisper"
+    model: "base"
+    
+  tts:
+    type: "coqui"
+    model: "tts_models/en/ljspeech/tacotron2-DDC"
+    
+  llm:
+    type: "dify"
+    api_key: "your-dify-api-key"
+    base_url: "https://api.dify.ai/v1"

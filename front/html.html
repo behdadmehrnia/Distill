@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Agent - Real-time Voice AI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+
+<body class="bg-gray-900 text-white">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-blue-400 mb-2">Audio Agent</h1>
+            <p class="text-gray-400">Real-time voice conversation with AI</p>
+        </div>
+
+        <!-- Main Content -->
+        <div class="max-w-4xl mx-auto">
+            <!-- Status Panel -->
+            <div class="bg-gray-800 rounded-lg p-6 mb-6">
+                <div class="flex flex-wrap items-center justify-between gap-4">
+                    <div class="flex items-center space-x-4">
+                        <div class="flex items-center">
+                            <div id="connectionStatus" class="w-3 h-3 rounded-full bg-red-500 mr-2"></div>
+                            <span id="statusText" class="text-sm">Disconnected</span>
+                        </div>
+                        <div id="audioLevel" class="flex items-center space-x-2 hidden">
+                            <div class="w-2 h-4 bg-green-400 rounded"></div>
+                            <div class="w-2 h-6 bg-green-400 rounded"></div>
+                            <div class="w-2 h-3 bg-green-400 rounded"></div>
+                            <span class="text-xs text-gray-400">Listening...</span>
+                        </div>
+                    </div>
+
+                    <div class="flex space-x-4">
+                        <button id="startBtn"
+                            class="bg-green-500 hover:bg-green-600 px-6 py-2 rounded-lg font-semibold transition-colors">
+                            <i class="fas fa-microphone mr-2"></i>Start Conversation
+                        </button>
+                        <button id="stopBtn"
+                            class="bg-red-500 hover:bg-red-600 px-6 py-2 rounded-lg font-semibold transition-colors hidden">
+                            <i class="fas fa-stop mr-2"></i>Stop
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Conversation Area -->
+            <div class="bg-gray-800 rounded-lg p-6 mb-6">
+                <h2 class="text-xl font-semibold mb-4 text-blue-400">Conversation</h2>
+                <div id="conversation" class="space-y-4 max-h-96 overflow-y-auto p-4 bg-gray-900 rounded-lg">
+                    <div class="text-center text-gray-500 py-8">
+                        <i class="fas fa-comments text-4xl mb-2"></i>
+                        <p>Start speaking to begin conversation</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Panel -->
+            <div class="bg-gray-800 rounded-lg p-6">
+                <h2 class="text-xl font-semibold mb-4 text-blue-400">Settings</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Audio Input</label>
+                        <select id="audioInput"
+                            class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                            <option value="">Default Microphone</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Voice Settings</label>
+                        <div class="flex space-x-4">
+                            <button id="testAudio" class="bg-blue-500 hover:bg-blue-600 px-4 py-2 rounded-lg text-sm">
+                                Test Audio
+                            </button>
+                            <button id="clearChat" class="bg-gray-600 hover:bg-gray-700 px-4 py-2 rounded-lg text-sm">
+                                Clear Chat
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Audio Elements -->
+    <audio id="audioPlayer" class="hidden"></audio>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

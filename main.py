@@ -1,0 +1,92 @@
+# main.py
+import asyncio
+from src.core.pipeline import AudioAgentPipeline
+from src.core.vad_manager import VADManager
+from src.providers.stt.base import WhisperSTT
+from src.providers.tts.base import TTS
+from src.providers.llms.dify_provider import DifyLLMProvider
+
+import logging
+import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+logger = logging.getLogger(__name__)
+
+async def main():
+    try:
+        from src.websocket.server import AudioAgentServer
+        from src.core.vad_manager import VADManager
+        from src.core.pipeline import AudioAgentPipeline
+        
+        # Import providers with fallbacks
+        try:
+            stt = WhisperSTT(api_key="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")
+            logger.info("Loaded Whisper STT")
+        except ImportError as e:
+            logger.warning(f"Whisper not available: {e}")
+            # Create a mock STT provider for testing
+            class MockSTT:
+                async def transcribe(self, audio_data):
+                    return "This is a test transcription."
+            stt = MockSTT()
+            
+        try:
+            tts = TTS()
+            logger.info("Loaded Coqui TTS")
+        except ImportError as e:
+            logger.warning(f"Coqui TTS not available: {e}")
+            # Create a mock TTS provider for testing
+            class MockTTS:
+                async def synthesize(self, text):
+                    import numpy as np
+                    # Generate a simple sine wave as test audio
+                    duration = 2.0  # seconds
+                    sample_rate = 22050
+                    t = np.linspace(0, duration, int(sample_rate * duration))
+                    audio = 0.3 * np.sin(2 * np.pi * 440 * t)  # 440 Hz sine wave
+                    return audio
+            tts = MockTTS()
+            
+        try:
+            from src.providers.llms.dify_provider import DifyLLMProvider
+            llm = DifyLLMProvider(
+                api_key="app-5JbtCFtDAk1eYe1TFvKppeZq",  # Replace with your actual key
+                base_url="https://llm.internal.example/v1"
+            )
+            logger.info("Loaded Dify LLM provider")
+        except ImportError as e:
+            logger.warning(f"Dify provider not available: {e}")
+            # Create a mock LLM provider for testing
+            class MockLLM:
+                async def generate(self, text):
+                    return f"This is a mock response to: {text}"
+            llm = MockLLM()
+        
+        # Initialize VAD and pipeline
+        vad = VADManager()
+        pipeline = AudioAgentPipeline(stt, llm, tts, vad)
+        
+        # Start the combined server
+        server = AudioAgentServer(pipeline, http_port=8080, vad=vad)
+        await server.start()
+        
+    except ImportError as e:
+        logger.error(f"Import error: {e}")
+        logger.info("Please install required dependencies: pip install aiohttp websockets numpy")
+    except Exception as e:
+        logger.error(f"Failed to start application: {e}")
+        raise
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Application stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        sys.exit(1)
