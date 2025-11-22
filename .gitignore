@@ -1,3 +1,32 @@
 
 
 env
+
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzw
+*.pyzwz
+*.pyzwzw
+*.pyzwzwz
+
+tts_cache/
+stt_cache/
+cache_metadata.json
+
+*.mp3
+*.wav
+*.pcm
+*.ogg
+*.flac
+*.m4a
+*.m4b
+*.m4p
+*.m4v
+*.m4b
+*.m4p
