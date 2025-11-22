@@ -5,7 +5,7 @@ import numpy as np
 import hashlib
 from aiohttp import TCPConnector
 from abc import ABC, abstractmethod
-from file_cache import TTSPersistentCache
+from .file_cache import TTSPersistentCache
 import asyncio
 
 

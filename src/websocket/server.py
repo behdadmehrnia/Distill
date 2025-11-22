@@ -540,7 +540,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             # Feed into VAD stream
                             vad_result = await self.vad.is_speech(float_audio)
                             
-                            logger.info(f"VAD result: {vad_result}")
+                            # logger.info(f"VAD result: {vad_result}")
 
                             # vad_result can be: "speech", "silence", "end_of_speech"
                             if vad_result:   # speech detected
@@ -548,7 +548,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 
 
                             vad_with_noise_cancellation = await self.vad.is_speech_with_noise_cancellation(float_audio)
-                            logger.info(f"VAD with noise cancellation: {vad_with_noise_cancellation}")
+                            # logger.info(f"VAD with noise cancellation: {vad_with_noise_cancellation}")
                             if vad_with_noise_cancellation:
                                 await ws.send_json({
                                     "type": "vad_status",

@@ -2,7 +2,8 @@
 import asyncio
 from src.core.pipeline import AudioAgentPipeline
 from src.core.vad_manager import VADManager
-from src.providers.stt.base import WhisperSTT
+# from src.providers.stt.base import WhisperSTT
+from src.providers.stt.part_stt import WhisperSTT
 from src.providers.tts.base import TTS
 from src.providers.llms.dify_provider import DifyLLMProvider
 
@@ -25,7 +26,8 @@ async def main():
         
         # Import providers with fallbacks
         try:
-            stt = WhisperSTT(api_key="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")
+            # stt = WhisperSTT(api_key="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")
+            stt = WhisperSTT()
             logger.info("Loaded Whisper STT")
         except ImportError as e:
             logger.warning(f"Whisper not available: {e}")
@@ -72,7 +74,7 @@ async def main():
         pipeline = AudioAgentPipeline(stt, llm, tts, vad)
         
         # Start the combined server
-        server = AudioAgentServer(pipeline, http_port=8080, vad=vad)
+        server = AudioAgentServer(pipeline, http_port=8020, vad=vad)
         await server.start()
         
     except ImportError as e:

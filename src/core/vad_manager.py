@@ -2,8 +2,6 @@
 import webrtcvad
 import numpy as np
 
-import logging
-logger = logging.getLogger(__name__)
 
 
 class VADManager:
@@ -64,7 +62,6 @@ class VADManager:
         
         for i in range(0, len(audio_chunk), frame_size):
             frame = audio_chunk[i:i+frame_size]
-            logger.info(f"Frame amplitude: {np.abs(frame).mean()}")
             if len(frame) < frame_size:
                 break
             try:
