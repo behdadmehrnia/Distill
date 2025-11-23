@@ -6,14 +6,29 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+
 class DifyLLMProvider:
+    _instance = None
+
     def __init__(self, api_key: str, base_url: str, conversation_id: str = None):
         self.api_key = api_key
         self.base_url = base_url.rstrip('/')
         self.conversation_id = conversation_id
         self.session = None
         self.timeout = aiohttp.ClientTimeout(total=30)  # 30 second timeout
-        
+
+    @staticmethod
+    def get_instance():
+        if DifyLLMProvider._instance is None:
+            DifyLLMProvider._instance = DifyLLMProvider(api_key="app-5JbtCFtDAk1eYe1TFvKppeZq", base_url="https://llm.internal.example/v1")
+        return DifyLLMProvider._instance
+
+    @staticmethod
+    def renew_instance():
+        DifyLLMProvider._instance = None
+        DifyLLMProvider._instance = DifyLLMProvider(api_key="app-5JbtCFtDAk1eYe1TFvKppeZq", base_url="https://llm.internal.example/v1")
+
     async def ensure_session(self):
         if self.session is None:
             self.session = aiohttp.ClientSession(timeout=self.timeout)

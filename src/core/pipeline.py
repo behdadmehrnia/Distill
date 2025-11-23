@@ -7,14 +7,12 @@ class AudioAgentPipeline:
     def __init__(
         self,
         stt_provider,
-        llm_provider,
         tts_provider,
         vad_provider,
         sample_rate: int = 16000,
         channels: int = 1
     ):
         self.stt = stt_provider
-        self.llm = llm_provider
         self.tts = tts_provider
         self.vad = vad_provider
         self.sample_rate = sample_rate
@@ -39,7 +37,7 @@ class AudioAgentPipeline:
                 if await self.vad.speech_ended():
                     transcript = await self.stt.transcribe(np.array(self.audio_buffer))
                     if transcript:
-                        response = await self.llm.generate(transcript)
+                        response = await DifyLLMProvider.get_instance().generate(transcript)
                         audio_output = await self.tts.synthesize(response)
                         yield audio_output
                     

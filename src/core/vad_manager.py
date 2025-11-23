@@ -11,7 +11,7 @@ class VADManager:
         self.speech_buffer = []
         self.silence_frames = 0
         self.speech_frames = 0
-        self.silence_threshold = 20  # frames of silence to end speech
+        self.silence_threshold = 50  # frames of silence to end speech
         self.min_speech_frames = 20
 
     def reset(self):
@@ -51,7 +51,10 @@ class VADManager:
         """Check if speech has ended based on silence"""
         return self.silence_frames >= self.silence_threshold and self.speech_frames > self.min_speech_frames
 
-    async def is_speech_with_noise_cancellation(self, audio_chunk: np.ndarray, amplitude_threshold: float = 1000) -> bool:
+    async def is_speech_with_noise_cancellation(self, audio_chunk: np.ndarray) -> bool:
+
+        amplitude_threshold = 13000
+
         """Check if audio chunk contains speech with noise cancellation"""
         if audio_chunk.dtype != np.int16:
             audio_chunk = (audio_chunk * 32767).astype(np.int16)
@@ -66,6 +69,7 @@ class VADManager:
                 break
             try:
                 if np.abs(frame).mean() > amplitude_threshold:
+                    print("speech detected")
                     return True
             except:
                 pass

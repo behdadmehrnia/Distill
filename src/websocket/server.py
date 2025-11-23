@@ -7,6 +7,7 @@ import numpy as np
 from aiohttp import web
 import logging
 from typing import Dict, Any, Set
+from src.providers.llms.dify_provider import DifyLLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,9 @@ class AudioAgentServer:
         self.app.router.add_get('/ws', self.websocket_handler)
 
     async def serve_index(self, request):
+
+        DifyLLMProvider.renew_instance()
+
         """Serve main HTML page"""
         html_content = """
         <!DOCTYPE html>
@@ -580,7 +584,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                                 if self.pipeline.stt.is_persian_valid(text):
                                     # Run LLM
-                                    response = await self.pipeline.llm.generate(text)
+                                    response = await DifyLLMProvider.get_instance().generate(text)
                                     logger.info(f"LLM: {response}")
 
                                     # Send transcript to frontend
