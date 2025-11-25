@@ -3,6 +3,7 @@ import aiohttp
 import json
 from typing import AsyncGenerator
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class DifyLLMProvider:
     async def generate(self, message: str, **kwargs) -> str:
         """Send message to Dify API and get response"""
         logger.info(f"Dify request: {message}")
+        start_time = time.time()
 
         try:
             await self.ensure_session()
@@ -84,6 +86,9 @@ class DifyLLMProvider:
                 if 'conversation_id' in result:
                     self.conversation_id = result['conversation_id']
                     
+                end_time = time.time()
+                print(f"Dify Time taken: {end_time - start_time} seconds")
+                
                 return result.get('answer', 'No answer found in response')
                 
         except asyncio.TimeoutError:

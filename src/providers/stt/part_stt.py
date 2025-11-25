@@ -7,6 +7,7 @@ import wave
 import aiohttp
 import json
 from .file_cache import STTPersistentCache
+import time
 
 # API Configuration
 API_ENDPOINT = "https://partai.gw.isahab.ir/speechRecognition/v1/file"
@@ -32,6 +33,8 @@ class WhisperSTT(STTProvider):
         return self.session
         
     async def transcribe(self, audio_data: np.ndarray, use_cache: bool = True) -> str:
+        start_time = time.time()
+
         # Generate cache key from audio data
         cache_key = self.cache._get_cache_key(audio_data, "sahab-stt")
         
@@ -55,6 +58,9 @@ class WhisperSTT(STTProvider):
         if use_cache:
             self.cache.set(cache_key, transcription, audio_data, "sahab-stt")
             
+        end_time = time.time()
+        print(f"STT Time taken: {end_time - start_time} seconds")
+        
         return transcription
 
     def _create_wav_buffer(self, audio_data: np.ndarray) -> io.BytesIO:

@@ -8,6 +8,7 @@ from aiohttp import web
 import logging
 from typing import Dict, Any, Set
 from src.providers.llms.dify_provider import DifyLLMProvider
+import collections
 
 logger = logging.getLogger(__name__)
 
@@ -514,6 +515,8 @@ document.addEventListener('DOMContentLoaded', () => {
         """
         return web.Response(text=js_content, content_type='application/javascript')
 
+
+
     async def websocket_handler(self, request):
         ws = web.WebSocketResponse()
         await ws.prepare(request)
@@ -544,8 +547,6 @@ document.addEventListener('DOMContentLoaded', () => {
                             # Feed into VAD stream
                             vad_result = await self.vad.is_speech(float_audio)
                             
-                            # logger.info(f"VAD result: {vad_result}")
-
                             # vad_result can be: "speech", "silence", "end_of_speech"
                             if vad_result:   # speech detected
                                 stt_buffer.append(float_audio)

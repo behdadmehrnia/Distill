@@ -6,6 +6,7 @@ import asyncio
 import wave
 from openai import AsyncOpenAI
 from .file_cache import STTPersistentCache
+import time
 
 
 # GEMINI_API = "http://164.90.187.248:8083"
@@ -26,6 +27,8 @@ class WhisperSTT(STTProvider):
         self.cache = STTPersistentCache(cache_dir)
         
     async def transcribe(self, audio_data: np.ndarray, use_cache: bool = True) -> str:
+
+        start_time = time.time()
         # Generate cache key from audio data
         cache_key = self.cache._get_cache_key(audio_data, self.model)
         
@@ -71,6 +74,9 @@ class WhisperSTT(STTProvider):
         if use_cache:
             self.cache.set(cache_key, transcription, audio_data, self.model)
             
+        end_time = time.time()
+        print(f"STT Time taken: {end_time - start_time} seconds")
+        
         return transcription
 
     def is_persian_valid(self, text: str) -> bool:

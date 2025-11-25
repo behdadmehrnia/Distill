@@ -7,6 +7,7 @@ from aiohttp import TCPConnector
 from abc import ABC, abstractmethod
 from .file_cache import TTSPersistentCache
 import asyncio
+import time
 
 
 class TTS:
@@ -25,6 +26,8 @@ class TTS:
         return self.session
         
     async def synthesize(self, text: str, voice: str = "alloy", use_cache: bool = True) -> np.ndarray:
+        start_time = time.time()
+        
         # Generate cache key
         cache_key = self.cache._get_cache_key(text, voice, self.model)
         
@@ -60,6 +63,9 @@ class TTS:
                 if use_cache:
                     self.cache.set(cache_key, audio_data, text, voice, self.model)
                     
+                end_time = time.time()
+                print(f"TTS Time taken: {end_time - start_time} seconds")
+                
                 return audio_data
             else:
                 error_text = await response.text()
