@@ -551,10 +551,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             if vad_result:   # speech detected
                                 stt_buffer.append(float_audio)
                                 
-
-                            vad_with_noise_cancellation = await self.vad.is_speech_with_noise_cancellation(float_audio)
-                            # logger.info(f"VAD with noise cancellation: {vad_with_noise_cancellation}")
-                            if vad_with_noise_cancellation:
+                            if vad_result:
                                 await ws.send_json({
                                     "type": "vad_status",
                                     "is_speech": True,

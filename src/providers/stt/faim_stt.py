@@ -58,7 +58,7 @@ class WhisperSTT(STTProvider):
             "audio": (wav_file_name, buffer, "audio/webm"),
             "language": (None, "fa"),
             "model_name": (None, "small"),
-            "device": (None, "mobile"),
+            "device": (None, "cuda"),
         }
 
 
