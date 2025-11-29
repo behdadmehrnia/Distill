@@ -17,7 +17,7 @@ class VADManager:
         
         # Configurable thresholds
         self.silence_threshold = 60  # Increased from 50 to 60
-        self.min_speech_frames = 15  # Increased from 20 to 25
+        self.min_speech_frames = 5  # Increased from 20 to 25
         self.activation_threshold = 0  # Need consecutive speech frames to activate
         self.amplitude_threshold = 8000  # Lowered from 13000
         
@@ -70,8 +70,12 @@ class VADManager:
                 # Set threshold just above noise level - more permissive
                 # For 16-bit audio, typical speech is in the 1000-30000 range
                 noise_based_threshold = self.noise_level * 1.8  # Reduced from 2.5 to 1.8
+
+                print(f"Noise based threshold: {noise_based_threshold:.1f}")
+
+
                 # Set a reasonable minimum threshold that won't filter out quiet speech
-                self.amplitude_threshold = max(800, noise_based_threshold)  # Reduced min from 3000 to 800
+                self.amplitude_threshold = max(300, noise_based_threshold)  # Reduced min from 3000 to 800
                 print(f"Noise profiling complete: noise_level={self.noise_level:.1f}, amplitude_threshold={self.amplitude_threshold:.1f}")
         
         # Allow dynamic adjustment even after profiling
@@ -138,10 +142,6 @@ class VADManager:
                 vad_result = self.vad.is_speech(frame.tobytes(), self.sample_rate)
                 amplitude_ok = np.abs(frame).mean() > amplitude_threshold
                 spectral_ok = self._analyze_spectral_characteristics(frame)
-
-                # print(f"VAD result: {vad_result}")
-                # print(f"Amplitude ok: {amplitude_ok}")
-                # print(f"Spectral ok: {spectral_ok}")
                 
                 # Require multiple conditions for speech detection
                 if vad_result and amplitude_ok and spectral_ok:
@@ -160,13 +160,12 @@ class VADManager:
             speech_ratio = frame_speech_count / total_frames
             self.speech_history.append(speech_ratio > 0.5)
             
-            print(f"self.consecutive_speech_frames: {self.consecutive_speech_frames}")
-
             # Only count as speech if we have consistent detection
             if (self.consecutive_speech_frames >= self.activation_threshold and 
                 frame_speech_count > 0):
                 self.speech_frames += 1
                 self.silence_frames = 0
+
                 return True
             else:
                 self.silence_frames += 1
@@ -179,12 +178,6 @@ class VADManager:
         # More conservative end-of-speech detection
         speech_ended = (self.silence_frames >= self.silence_threshold and 
                        self.speech_frames > self.min_speech_frames)
-        
-        # print(f"Speech ended: {speech_ended}")
-        # print(f"Silence frames: {self.silence_frames}")
-        print(f"Speech frames: {self.speech_frames}")
-        # print(f"Min speech frames: {self.min_speech_frames}")
-        # print(f"Silence threshold: {self.silence_threshold}")
 
 
         # Additional check: if we had very little speech, don't trigger
