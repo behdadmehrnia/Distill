@@ -8,18 +8,18 @@ from aiohttp import web
 import logging
 from typing import Dict, Any, Set
 from src.providers.llms.dify_provider import DifyLLMProvider
+from src.core.vad_manager import VADManager
 import collections
 
 logger = logging.getLogger(__name__)
 
 class AudioAgentServer:
-    def __init__(self, pipeline, host: str = "0.0.0.0", http_port: int = 8080, ws_port: int = 8765, vad=None):
+    def __init__(self, pipeline, host: str = "0.0.0.0", http_port: int = 8080, ws_port: int = 8765):
         self.pipeline = pipeline
         self.host = host
         self.http_port = http_port
         self.ws_port = ws_port
         self.ws_connections: Set[websockets.WebSocketServerProtocol] = set()
-        self.vad = vad
         # HTTP app
         self.app = web.Application()
         self.setup_routes()
@@ -517,15 +517,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
 
+
+
     async def websocket_handler(self, request):
         ws = web.WebSocketResponse()
         await ws.prepare(request)
+
+        self.vad = VADManager()
+        self.llm = DifyLLMProvider()
         
         self.ws_connections.add(ws)
         logger.info(f"WebSocket connected. Total: {len(self.ws_connections)}")
 
         # Buffer to accumulate speech audio
         stt_buffer = []
+        
+        # Lock to prevent parallel processing
+        processing_lock = asyncio.Lock()
+        is_processing = False
 
         try:
             await ws.send_json({
@@ -534,12 +543,15 @@ document.addEventListener('DOMContentLoaded', () => {
             })
 
             async for msg in ws:
-
                 if msg.type == web.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
 
                         if data["type"] == "audio":
+                            # Skip audio processing if we're currently processing STT/LLM
+                            if is_processing:
+                                continue
+                                
                             # Convert audio to float32 for Silero VAD
                             audio_chunk = np.array(data["data"], dtype=np.int16)
                             float_audio = audio_chunk.astype(np.float32) / 32768.0
@@ -565,56 +577,91 @@ document.addEventListener('DOMContentLoaded', () => {
 
                             if await self.vad.speech_ended() and len(stt_buffer) > 2: # end of speech detected
                                 logger.info("Speech segment ended — running STT...")
+                                
+                                # Acquire lock to prevent parallel processing
+                                async with processing_lock:
+                                    is_processing = True
+                                    
+                                    try:
+                                        # Send processing status to frontend
+                                        await ws.send_json({
+                                            "type": "status", 
+                                            "message": "processing_speech"
+                                        })
 
-                                # Combine all chunks
+                                        # Combine all chunks
+                                        self.vad.reset()
+                                        full_audio = np.concatenate(stt_buffer)
 
-                                self.vad.reset()
-                                full_audio = np.concatenate(stt_buffer)
+                                        # Run whisper
+                                        text = await self.pipeline.stt.transcribe(full_audio)
+                                        logger.info(f"STT: {text}")
 
-                                # Run whisper
-                                text = await self.pipeline.stt.transcribe(full_audio)
-                                logger.info(f"STT: {text}")
+                                        await ws.send_json({
+                                            "type": "transcript",
+                                            "text": "دارم فکر میکنم ..."
+                                        })
 
-                                await ws.send_json({
-                                    "type": "transcript",
-                                    "text": "دارم فکر میکنم ..."
-                                })
+                                        if self.pipeline.stt.is_persian_valid(text):
+                                            # Run LLM
+                                            response = await self.llm.generate(text)
+                                            logger.info(f"LLM: {response}")
 
-                                if self.pipeline.stt.is_persian_valid(text):
-                                    # Run LLM
-                                    response = await DifyLLMProvider.get_instance().generate(text)
-                                    logger.info(f"LLM: {response}")
+                                            # Send transcript to frontend
+                                            await ws.send_json({
+                                                "type": "transcript",
+                                                "text": response
+                                            })
 
-                                    # Send transcript to frontend
-                                    await ws.send_json({
-                                        "type": "transcript",
-                                        "text": response
-                                    })
+                                            # Run TTS
+                                            audio_output = await self.pipeline.tts.synthesize(response)
 
-                                    # Run TTS
-                                    audio_output = await self.pipeline.tts.synthesize(response)
+                                            audio_base64 = base64.b64encode(audio_output).decode("ascii")
 
-                                    audio_base64 = base64.b64encode(audio_output).decode("ascii")
+                                            await ws.send_json({
+                                                "type": "audio",
+                                                "data": audio_base64
+                                            })
 
-                                    await ws.send_json({
-                                        "type": "audio",
-                                        "data": audio_base64
-                                    })
-
-                                    stt_buffer = []
+                                        # Clear buffer after successful processing
+                                        stt_buffer = []
+                                        
+                                    except Exception as e:
+                                        logger.error(f"Processing error: {e}")
+                                        await ws.send_json({
+                                            'type': 'error', 
+                                            'message': f'Processing failed: {str(e)}'
+                                        })
+                                        
+                                    finally:
+                                        # Release lock
+                                        is_processing = False
+                                        await ws.send_json({
+                                            "type": "status",
+                                            "message": "ready"
+                                        })
 
                             # else VAD returned "silence" — do nothing
 
                         elif data["type"] == "test_audio":
-                            test_response = "Audio system test OK!"
-                            audio_output = await self.pipeline.tts.synthesize(test_response)
-                            audio_array = np.frombuffer(audio_output, dtype=np.int16)
-                            audio_base64 = base64.b64encode(audio_array.tobytes()).decode("ascii")
+                            # Skip test audio if processing
+                            if is_processing:
+                                continue
+                                
+                            async with processing_lock:
+                                is_processing = True
+                                try:
+                                    test_response = "Audio system test OK!"
+                                    audio_output = await self.pipeline.tts.synthesize(test_response)
+                                    audio_array = np.frombuffer(audio_output, dtype=np.int16)
+                                    audio_base64 = base64.b64encode(audio_array.tobytes()).decode("ascii")
 
-                            await ws.send_json({
-                                'type': 'audio',
-                                'data': audio_base64
-                            })
+                                    await ws.send_json({
+                                        'type': 'audio',
+                                        'data': audio_base64
+                                    })
+                                finally:
+                                    is_processing = False
 
                     except Exception as e:
                         logger.error(f"Error: {e}")
@@ -631,6 +678,130 @@ document.addEventListener('DOMContentLoaded', () => {
             logger.info(f"WebSocket disconnected. Total: {len(self.ws_connections)}")
 
         return ws
+
+
+
+
+
+
+
+
+
+
+    # async def websocket_handler(self, request):
+    #     ws = web.WebSocketResponse()
+    #     await ws.prepare(request)
+        
+    #     self.ws_connections.add(ws)
+    #     logger.info(f"WebSocket connected. Total: {len(self.ws_connections)}")
+
+    #     # Buffer to accumulate speech audio
+    #     stt_buffer = []
+
+    #     try:
+    #         await ws.send_json({
+    #             'type': 'status',
+    #             'message': 'Connected to audio agent'
+    #         })
+
+    #         async for msg in ws:
+
+    #             if msg.type == web.WSMsgType.TEXT:
+    #                 try:
+    #                     data = json.loads(msg.data)
+
+    #                     if data["type"] == "audio":
+    #                         # Convert audio to float32 for Silero VAD
+    #                         audio_chunk = np.array(data["data"], dtype=np.int16)
+    #                         float_audio = audio_chunk.astype(np.float32) / 32768.0
+
+    #                         # Feed into VAD stream
+    #                         vad_result = await self.vad.is_speech(float_audio)
+                            
+    #                         # vad_result can be: "speech", "silence", "end_of_speech"
+    #                         if vad_result:   # speech detected
+    #                             stt_buffer.append(float_audio)
+                                
+    #                         if vad_result:
+    #                             await ws.send_json({
+    #                                 "type": "vad_status",
+    #                                 "is_speech": True,
+    #                             })
+    #                         else:
+    #                             await ws.send_json({
+    #                                 "type": "vad_status",
+    #                                 "is_speech": False,
+    #                             })
+                                
+
+    #                         if await self.vad.speech_ended() and len(stt_buffer) > 2: # end of speech detected
+    #                             logger.info("Speech segment ended — running STT...")
+
+    #                             # Combine all chunks
+
+    #                             self.vad.reset()
+    #                             full_audio = np.concatenate(stt_buffer)
+
+    #                             # Run whisper
+    #                             text = await self.pipeline.stt.transcribe(full_audio)
+    #                             logger.info(f"STT: {text}")
+
+    #                             await ws.send_json({
+    #                                 "type": "transcript",
+    #                                 "text": "دارم فکر میکنم ..."
+    #                             })
+
+    #                             if self.pipeline.stt.is_persian_valid(text):
+    #                                 # Run LLM
+    #                                 response = await DifyLLMProvider.get_instance().generate(text)
+    #                                 logger.info(f"LLM: {response}")
+
+    #                                 # Send transcript to frontend
+    #                                 await ws.send_json({
+    #                                     "type": "transcript",
+    #                                     "text": response
+    #                                 })
+
+    #                                 # Run TTS
+    #                                 audio_output = await self.pipeline.tts.synthesize(response)
+
+    #                                 audio_base64 = base64.b64encode(audio_output).decode("ascii")
+
+    #                                 await ws.send_json({
+    #                                     "type": "audio",
+    #                                     "data": audio_base64
+    #                                 })
+
+    #                                 stt_buffer = []
+
+    #                         # else VAD returned "silence" — do nothing
+
+    #                     elif data["type"] == "test_audio":
+    #                         test_response = "Audio system test OK!"
+    #                         audio_output = await self.pipeline.tts.synthesize(test_response)
+    #                         audio_array = np.frombuffer(audio_output, dtype=np.int16)
+    #                         audio_base64 = base64.b64encode(audio_array.tobytes()).decode("ascii")
+
+    #                         await ws.send_json({
+    #                             'type': 'audio',
+    #                             'data': audio_base64
+    #                         })
+
+    #                 except Exception as e:
+    #                     logger.error(f"Error: {e}")
+    #                     await ws.send_json({'type': 'error', 'message': str(e)})
+
+    #             elif msg.type == web.WSMsgType.ERROR:
+    #                 logger.error(f"WebSocket error: {ws.exception()}")
+
+    #     except Exception as e:
+    #         logger.error(f"WebSocket connection error: {e}")
+
+    #     finally:
+    #         self.ws_connections.remove(ws)
+    #         logger.info(f"WebSocket disconnected. Total: {len(self.ws_connections)}")
+
+    #     return ws
 
 
     async def health_check(self, request):

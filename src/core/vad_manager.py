@@ -3,7 +3,7 @@ import numpy as np
 from collections import deque
 
 class VADManager:
-    def __init__(self, sample_rate: int = 16000, threshold: float = 0.15):  # Much lower threshold
+    def __init__(self, sample_rate: int = 16000, threshold: float = 0.45):  # Much lower threshold
         self.model, utils = torch.hub.load(
             repo_or_dir='snakers4/silero-vad',
             model='silero_vad',
@@ -64,7 +64,7 @@ class VADManager:
         else:
             self.consecutive_silence += 1
             self.consecutive_speech = 0
-            print(f"❌ Silence - Consecutive: {self.consecutive_silence}")
+            # print(f"❌ Silence - Consecutive: {self.consecutive_silence}")
             return False
 
     async def speech_ended(self) -> bool:

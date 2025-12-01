@@ -175,7 +175,7 @@ async def main():
     )
     vad = VADManager()
     
-    pipeline = AudioAgentPipeline(stt, llm, tts, vad)
+    pipeline = AudioAgentPipeline(stt, tts)
     
     # Start both HTTP and WebSocket servers
     http_server = HTTPServer()

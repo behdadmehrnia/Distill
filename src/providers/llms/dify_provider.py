@@ -205,11 +205,11 @@ class SemanticCache:
 class DifyLLMProvider:
     _instance = None
 
-    def __init__(self, api_key: str, base_url: str, conversation_id: str = None):
+    def __init__(self, api_key: str = None, base_url: str = None, conversation_id: str = None):
         # self.api_key = api_key
-        self.api_key = "app-5JbtCFtDAk1eYe1TFvKppeZq"
+        self.api_key = api_key or "app-5JbtCFtDAk1eYe1TFvKppeZq"
         # self.api_key = "app-OLCWM5RmkpmcM51KO34fvVBM"
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip('/') if base_url else "https://llm.internal.example/v1"
         self.conversation_id = conversation_id
         self.session = None
         self.timeout = aiohttp.ClientTimeout(total=30)
@@ -246,7 +246,7 @@ class DifyLLMProvider:
         if self.session is None:
             self.session = aiohttp.ClientSession(timeout=self.timeout)
     
-    async def generate(self, message: str, use_cache: bool = True, **kwargs) -> str:
+    async def generate(self, message: str, use_cache: bool = False, **kwargs) -> str:
         """Send message to Dify API and get response with semantic caching"""
         logger.info(f"Dify request: {message}")
         start_time = time.time()

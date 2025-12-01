@@ -54,13 +54,11 @@ async def main():
                     audio = 0.3 * np.sin(2 * np.pi * 440 * t)  # 440 Hz sine wave
                     return audio
             tts = MockTTS()
-        
-        # Initialize VAD and pipeline
-        vad = VADManager()
-        pipeline = AudioAgentPipeline(stt, tts, vad)
+
+        pipeline = AudioAgentPipeline(stt, tts)
         
         # Start the combined server
-        server = AudioAgentServer(pipeline, http_port=8020, vad=vad)
+        server = AudioAgentServer(pipeline, http_port=8020)
         await server.start()
         
     except ImportError as e:
