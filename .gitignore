@@ -15,6 +15,9 @@ __pycache__/
 *.pyzwzw
 *.pyzwzwz
 
+semantic_cache.pkl
+
+
 tts_cache/
 stt_cache/
 cache_metadata.json
