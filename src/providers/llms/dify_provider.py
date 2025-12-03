@@ -207,8 +207,8 @@ class DifyLLMProvider:
 
     def __init__(self, api_key: str = None, base_url: str = None, conversation_id: str = None):
         # self.api_key = api_key
-        self.api_key = api_key or "app-5JbtCFtDAk1eYe1TFvKppeZq"
-        # self.api_key = "app-OLCWM5RmkpmcM51KO34fvVBM"
+        #self.api_key = api_key or "app-5JbtCFtDAk1eYe1TFvKppeZq"
+        self.api_key = "app-xPSzCgu7xneW6Hl94d2UXPXq"
         self.base_url = base_url.rstrip('/') if base_url else "https://llm.internal.example/v1"
         self.conversation_id = conversation_id
         self.session = None
@@ -229,7 +229,7 @@ class DifyLLMProvider:
     def get_instance():
         if DifyLLMProvider._instance is None:
             DifyLLMProvider._instance = DifyLLMProvider(
-                api_key="app-5JbtCFtDAk1eYe1TFvKppeZq", 
+                api_key="app-xPSzCgu7xneW6Hl94d2UXPXq", 
                 base_url="https://llm.internal.example/v1"
             )
         return DifyLLMProvider._instance
@@ -238,7 +238,7 @@ class DifyLLMProvider:
     def renew_instance():
         DifyLLMProvider._instance = None
         DifyLLMProvider._instance = DifyLLMProvider(
-            api_key="app-5JbtCFtDAk1eYe1TFvKppeZq", 
+            api_key="app-xPSzCgu7xneW6Hl94d2UXPXq", 
             base_url="https://llm.internal.example/v1"
         )
 
