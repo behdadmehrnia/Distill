@@ -10,6 +10,7 @@ from typing import Dict, Any, Set
 from src.providers.llms.dify_provider import DifyLLMProvider
 from src.core.vad_manager import VADManager
 import collections
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -535,6 +536,9 @@ document.addEventListener('DOMContentLoaded', () => {
         # Lock to prevent parallel processing
         processing_lock = asyncio.Lock()
         is_processing = False
+        is_tts_playing = False
+        tts_start_time = None
+        tts_duration = 0
 
         try:
             await ws.send_json({
@@ -543,13 +547,21 @@ document.addEventListener('DOMContentLoaded', () => {
             })
 
             async for msg in ws:
+                # If TTS is playing, check if it has finished
+                if is_tts_playing and tts_start_time:
+                    elapsed = time.time() - tts_start_time
+                    if elapsed >= tts_duration:
+                        logger.info(f"TTS audio finished playing after {elapsed:.2f}s")
+                        is_tts_playing = False
+                        tts_start_time = None
+                
                 if msg.type == web.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
 
                         if data["type"] == "audio":
-                            # Skip audio processing if we're currently processing STT/LLM
-                            if is_processing:
+                            # Skip if processing OR TTS is playing
+                            if is_processing or is_tts_playing:
                                 continue
                                 
                             # Convert audio to float32 for Silero VAD
@@ -562,7 +574,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             # vad_result can be: "speech", "silence", "end_of_speech"
                             if vad_result:   # speech detected
                                 stt_buffer.append(float_audio)
-                                
+                            
                             if vad_result:
                                 await ws.send_json({
                                     "type": "vad_status",
@@ -573,7 +585,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     "type": "vad_status",
                                     "is_speech": False,
                                 })
-                                
+                            
 
                             if await self.vad.speech_ended() and len(stt_buffer) > 2: # end of speech detected
                                 logger.info("Speech segment ended — running STT...")
@@ -615,12 +627,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
                                             # Run TTS
                                             audio_output = await self.pipeline.tts.synthesize(response)
-
+                                            
+                                            # Estimate audio duration
+                                            # Assuming 16kHz sample rate, 16-bit mono audio
+                                            audio_duration = len(audio_output) / (2 * 16000)  # bytes / (2 bytes per sample * 16000 samples/sec)
+                                            tts_duration = audio_duration
+                                            is_tts_playing = True
+                                            tts_start_time = time.time()
+                                            
+                                            logger.info(f"TTS audio duration estimated: {tts_duration:.2f} seconds")
+                                            
                                             audio_base64 = base64.b64encode(audio_output).decode("ascii")
 
                                             await ws.send_json({
                                                 "type": "audio",
-                                                "data": audio_base64
+                                                "data": audio_base64,
+                                                "duration": tts_duration  # Optional: send duration to frontend
                                             })
 
                                         # Clear buffer after successful processing
@@ -632,20 +654,19 @@ document.addEventListener('DOMContentLoaded', () => {
                                             'type': 'error', 
                                             'message': f'Processing failed: {str(e)}'
                                         })
+                                        # Reset TTS state on error
+                                        is_tts_playing = False
+                                        tts_start_time = None
                                         
                                     finally:
                                         # Release lock
                                         is_processing = False
-                                        await ws.send_json({
-                                            "type": "status",
-                                            "message": "ready"
-                                        })
 
                             # else VAD returned "silence" — do nothing
 
                         elif data["type"] == "test_audio":
-                            # Skip test audio if processing
-                            if is_processing:
+                            # Skip test audio if processing OR TTS is playing
+                            if is_processing or is_tts_playing:
                                 continue
                                 
                             async with processing_lock:
@@ -653,12 +674,20 @@ document.addEventListener('DOMContentLoaded', () => {
                                 try:
                                     test_response = "Audio system test OK!"
                                     audio_output = await self.pipeline.tts.synthesize(test_response)
+                                    
+                                    # Estimate duration for test audio too
+                                    audio_duration = len(audio_output) / (2 * 16000)
+                                    tts_duration = audio_duration
+                                    is_tts_playing = True
+                                    tts_start_time = time.time()
+                                    
                                     audio_array = np.frombuffer(audio_output, dtype=np.int16)
                                     audio_base64 = base64.b64encode(audio_array.tobytes()).decode("ascii")
 
                                     await ws.send_json({
                                         'type': 'audio',
-                                        'data': audio_base64
+                                        'data': audio_base64,
+                                        'duration': tts_duration
                                     })
                                 finally:
                                     is_processing = False
@@ -680,128 +709,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return ws
 
 
-
-
-
-
-
-
-
-
-    # async def websocket_handler(self, request):
-    #     ws = web.WebSocketResponse()
-    #     await ws.prepare(request)
-        
-    #     self.ws_connections.add(ws)
-    #     logger.info(f"WebSocket connected. Total: {len(self.ws_connections)}")
-
-    #     # Buffer to accumulate speech audio
-    #     stt_buffer = []
-
-    #     try:
-    #         await ws.send_json({
-    #             'type': 'status',
-    #             'message': 'Connected to audio agent'
-    #         })
-
-    #         async for msg in ws:
-
-    #             if msg.type == web.WSMsgType.TEXT:
-    #                 try:
-    #                     data = json.loads(msg.data)
-
-    #                     if data["type"] == "audio":
-    #                         # Convert audio to float32 for Silero VAD
-    #                         audio_chunk = np.array(data["data"], dtype=np.int16)
-    #                         float_audio = audio_chunk.astype(np.float32) / 32768.0
-
-    #                         # Feed into VAD stream
-    #                         vad_result = await self.vad.is_speech(float_audio)
-                            
-    #                         # vad_result can be: "speech", "silence", "end_of_speech"
-    #                         if vad_result:   # speech detected
-    #                             stt_buffer.append(float_audio)
-                                
-    #                         if vad_result:
-    #                             await ws.send_json({
-    #                                 "type": "vad_status",
-    #                                 "is_speech": True,
-    #                             })
-    #                         else:
-    #                             await ws.send_json({
-    #                                 "type": "vad_status",
-    #                                 "is_speech": False,
-    #                             })
-                                
-
-    #                         if await self.vad.speech_ended() and len(stt_buffer) > 2: # end of speech detected
-    #                             logger.info("Speech segment ended — running STT...")
-
-    #                             # Combine all chunks
-
-    #                             self.vad.reset()
-    #                             full_audio = np.concatenate(stt_buffer)
-
-    #                             # Run whisper
-    #                             text = await self.pipeline.stt.transcribe(full_audio)
-    #                             logger.info(f"STT: {text}")
-
-    #                             await ws.send_json({
-    #                                 "type": "transcript",
-    #                                 "text": "دارم فکر میکنم ..."
-    #                             })
-
-    #                             if self.pipeline.stt.is_persian_valid(text):
-    #                                 # Run LLM
-    #                                 response = await DifyLLMProvider.get_instance().generate(text)
-    #                                 logger.info(f"LLM: {response}")
-
-    #                                 # Send transcript to frontend
-    #                                 await ws.send_json({
-    #                                     "type": "transcript",
-    #                                     "text": response
-    #                                 })
-
-    #                                 # Run TTS
-    #                                 audio_output = await self.pipeline.tts.synthesize(response)
-
-    #                                 audio_base64 = base64.b64encode(audio_output).decode("ascii")
-
-    #                                 await ws.send_json({
-    #                                     "type": "audio",
-    #                                     "data": audio_base64
-    #                                 })
-
-    #                                 stt_buffer = []
-
-    #                         # else VAD returned "silence" — do nothing
-
-    #                     elif data["type"] == "test_audio":
-    #                         test_response = "Audio system test OK!"
-    #                         audio_output = await self.pipeline.tts.synthesize(test_response)
-    #                         audio_array = np.frombuffer(audio_output, dtype=np.int16)
-    #                         audio_base64 = base64.b64encode(audio_array.tobytes()).decode("ascii")
-
-    #                         await ws.send_json({
-    #                             'type': 'audio',
-    #                             'data': audio_base64
-    #                         })
-
-    #                 except Exception as e:
-    #                     logger.error(f"Error: {e}")
-    #                     await ws.send_json({'type': 'error', 'message': str(e)})
-
-    #             elif msg.type == web.WSMsgType.ERROR:
-    #                 logger.error(f"WebSocket error: {ws.exception()}")
-
-    #     except Exception as e:
-    #         logger.error(f"WebSocket connection error: {e}")
-
-    #     finally:
-    #         self.ws_connections.remove(ws)
-    #         logger.info(f"WebSocket disconnected. Total: {len(self.ws_connections)}")
-
-    #     return ws
 
 
     async def health_check(self, request):
