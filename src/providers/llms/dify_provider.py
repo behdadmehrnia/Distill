@@ -203,12 +203,11 @@ class SemanticCache:
         }
 
 class DifyLLMProvider:
-    _instance = None
 
     def __init__(self, api_key: str = None, base_url: str = None, conversation_id: str = None):
         # self.api_key = api_key
         #self.api_key = api_key or "app-5JbtCFtDAk1eYe1TFvKppeZq"
-        self.api_key = "app-xPSzCgu7xneW6Hl94d2UXPXq"
+        self.api_key = "app-MOdwbliMghRXL7aXUBy47ZI0"
         self.base_url = base_url.rstrip('/') if base_url else "https://llm.internal.example/v1"
         self.conversation_id = conversation_id
         self.session = None
@@ -225,22 +224,6 @@ class DifyLLMProvider:
         self.cache_hits = 0
         self.cache_misses = 0
 
-    @staticmethod
-    def get_instance():
-        if DifyLLMProvider._instance is None:
-            DifyLLMProvider._instance = DifyLLMProvider(
-                api_key="app-xPSzCgu7xneW6Hl94d2UXPXq", 
-                base_url="https://llm.internal.example/v1"
-            )
-        return DifyLLMProvider._instance
-
-    @staticmethod
-    def renew_instance():
-        DifyLLMProvider._instance = None
-        DifyLLMProvider._instance = DifyLLMProvider(
-            api_key="app-xPSzCgu7xneW6Hl94d2UXPXq", 
-            base_url="https://llm.internal.example/v1"
-        )
 
     async def ensure_session(self):
         if self.session is None:

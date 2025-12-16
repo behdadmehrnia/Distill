@@ -1,9 +1,10 @@
 # main.py
 import asyncio
 from src.core.pipeline import AudioAgentPipeline
-from src.core.vad_manager import VADManager
+
 # from src.providers.stt.part_stt import WhisperSTT
 # from src.providers.stt.base import WhisperSTT
+
 from src.providers.stt.faim_stt import WhisperSTT
 from src.providers.tts.base import TTS
 from src.providers.llms.dify_provider import DifyLLMProvider
@@ -22,7 +23,6 @@ logger = logging.getLogger(__name__)
 async def main():
     try:
         from src.websocket.server import AudioAgentServer
-        from src.core.vad_manager import VADManager
         from src.core.pipeline import AudioAgentPipeline
         
         # Import providers with fallbacks

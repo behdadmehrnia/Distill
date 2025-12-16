@@ -8,7 +8,10 @@ from aiohttp import web
 import logging
 from typing import Dict, Any, Set
 from src.providers.llms.dify_provider import DifyLLMProvider
+
 from src.core.vad_manager import VADManager
+#from src.core.vad_manager_2 import VADManager
+
 import collections
 import time
 
@@ -36,8 +39,6 @@ class AudioAgentServer:
         self.app.router.add_get('/ws', self.websocket_handler)
 
     async def serve_index(self, request):
-
-        DifyLLMProvider.renew_instance()
 
         """Serve main HTML page"""
         html_content = """
@@ -572,8 +573,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             vad_result = await self.vad.is_speech(float_audio)
                             
                             # vad_result can be: "speech", "silence", "end_of_speech"
-                            if vad_result:   # speech detected
-                                stt_buffer.append(float_audio)
+                            #if vad_result:   # speech detected
+                            stt_buffer.append(float_audio)
                             
                             if vad_result:
                                 await ws.send_json({
@@ -645,8 +646,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                                 "duration": tts_duration  # Optional: send duration to frontend
                                             })
 
-                                        # Clear buffer after successful processing
-                                        stt_buffer = []
+                                            # Clear buffer after successful processing
+                                            stt_buffer = []
                                         
                                     except Exception as e:
                                         logger.error(f"Processing error: {e}")
