@@ -2,10 +2,10 @@
 import asyncio
 from src.core.pipeline import AudioAgentPipeline
 
-# from src.providers.stt.part_stt import WhisperSTT
+from src.providers.stt.part_stt import WhisperSTT
 # from src.providers.stt.base import WhisperSTT
 
-from src.providers.stt.faim_stt import WhisperSTT
+# from src.providers.stt.faim_stt import WhisperSTT
 from src.providers.tts.base import TTS
 from src.providers.llms.dify_provider import DifyLLMProvider
 
