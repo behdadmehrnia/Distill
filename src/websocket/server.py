@@ -615,7 +615,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                             "text": "دارم فکر میکنم ..."
                                         })
 
-                                        if self.pipeline.stt.is_persian_valid(text):
+                                        if self.pipeline.stt.is_persian_valid(text) and text != "" and text != "null" and text != None:
                                             # Run LLM
                                             response = await self.llm.generate(text)
                                             logger.info(f"LLM: {response}")

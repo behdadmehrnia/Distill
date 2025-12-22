@@ -211,7 +211,7 @@ class DifyLLMProvider:
         self.base_url = base_url.rstrip('/') if base_url else "https://llm.internal.example/v1"
         self.conversation_id = conversation_id
         self.session = None
-        self.timeout = aiohttp.ClientTimeout(total=30)
+        self.timeout = aiohttp.ClientTimeout(total=60)
         
         # Initialize semantic cache
         self.cache = SemanticCache(
