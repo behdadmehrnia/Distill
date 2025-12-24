@@ -18,28 +18,15 @@ class AudioAgentPipeline:
         
         self.is_running = False
         self.audio_buffer = []
+
+        self.waiting_audio = None
+        self.waiting_audio_duration = 0
+    
+    def set_waiting_audio(self, audio_base64, audio_duration):
+        self.waiting_audio = audio_base64
+        self.waiting_audio_duration = audio_duration
         
-    # async def process_audio_stream(self, audio_generator):
-    #     """Process real-time audio stream"""
-    #     self.is_running = True
-        
-    #     async for audio_data in audio_generator:
-    #         if not self.is_running:
-    #             break
-                
-    #         # VAD detection
-    #         if await VADManager.is_speech(audio_data):
-    #             self.audio_buffer.extend(audio_data)
-                
-    #             # Check if speech ended
-    #             if await self.vad.speech_ended():
-    #                 transcript = await self.stt.transcribe(np.array(self.audio_buffer))
-    #                 if transcript:
-    #                     response = await DifyLLMProvider.get_instance().generate(transcript)
-    #                     audio_output = await self.tts.synthesize(response)
-    #                     yield audio_output
-                    
-    #                 self.audio_buffer.clear()
+    
     
     def stop(self):
         self.is_running = False

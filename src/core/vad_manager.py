@@ -24,7 +24,7 @@ class VADManager:
         self.speech_buffer = []
         self.consecutive_silence = 0
         self.consecutive_speech = 0
-        self.silence_threshold = 250
+        self.silence_threshold = 200
         self.min_speech_frames = 200
         
         # Window-based detection
@@ -79,6 +79,10 @@ class VADManager:
         """Check if audio chunk contains speech with window-based detection"""
         if len(audio_chunk) == 0:
             return False
+
+        print(f"silence {self.consecutive_silence}")
+        print(f"activity {self.consecutive_speech}")
+
             
         try:
             # Properly prepare the audio tensor

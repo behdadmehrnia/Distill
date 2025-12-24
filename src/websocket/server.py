@@ -520,6 +520,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
 
+    async def wait_audio(self):
+        if self.pipeline.waiting_audio is not None:
+            return self.pipeline.waiting_audio, self.pipeline.waiting_audio_duration
+        
+        audio_output = await self.pipeline.tts.synthesize("اجازه بدید بررسی کنم")
+                                            
+        # Estimate audio duration
+        # Assuming 16kHz sample rate, 16-bit mono audio
+        audio_duration = len(audio_output) / (2 * 16000)  # bytes / (2 bytes per sample * 16000 samples/sec)
+        tts_duration = audio_duration
+        
+        audio_base64 = base64.b64encode(audio_output).decode("ascii")
+
+        self.pipeline.set_waiting_audio(audio_base64, tts_duration)
+        return audio_base64, tts_duration
+
+
 
     async def websocket_handler(self, request):
         ws = web.WebSocketResponse()
@@ -589,6 +606,14 @@ document.addEventListener('DOMContentLoaded', () => {
                             
 
                             if await self.vad.speech_ended() and len(stt_buffer) > 2: # end of speech detected
+
+                                audio_base64, tts_duration = await self.wait_audio()
+                                await ws.send_json({
+                                                "type": "audio",
+                                                "data": audio_base64,
+                                                "duration": tts_duration
+                                            })
+
                                 logger.info("Speech segment ended — running STT...")
                                 
                                 # Acquire lock to prevent parallel processing
