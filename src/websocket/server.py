@@ -657,7 +657,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                             # Estimate audio duration
                                             # Assuming 16kHz sample rate, 16-bit mono audio
                                             audio_duration = len(audio_output) / (2 * 16000)  # bytes / (2 bytes per sample * 16000 samples/sec)
-                                            tts_duration = audio_duration
+                                            tts_duration = audio_duration * 1.5
                                             is_tts_playing = True
                                             tts_start_time = time.time()
                                             

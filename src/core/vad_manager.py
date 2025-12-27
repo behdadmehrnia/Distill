@@ -6,7 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class VADManager:
-    def __init__(self, sample_rate: int = 16000, threshold: float = 0.65):
+    def __init__(self, sample_rate: int = 16000, threshold: float = 0.7):
         # Load Silero VAD using torch.hub
         self.model, utils = torch.hub.load(
             repo_or_dir='snakers4/silero-vad',
@@ -27,7 +27,7 @@ class VADManager:
         self.speech_buffer = []
         self.consecutive_silence = 0
         self.consecutive_speech = 0
-        self.silence_threshold = 70
+        self.silence_threshold = 100
         self.min_speech_frames = 200
         
         # Window-based detection
@@ -133,7 +133,7 @@ class VADManager:
         self.detection_window.append(current_detection)
         
         # Consider speech if any detection in recent window
-        window_speech = any(self.detection_window)
+        window_speech = any(self.detection_window) > 0
         
         if window_speech:
             self.consecutive_speech += 1
