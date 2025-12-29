@@ -116,9 +116,9 @@ class VADManager:
             # Check if any speech was detected
             current_detection = len(speech_timestamps) > 0
             
-            if current_detection:
-                # Debug info when speech is detected
-                print(f"✅ Speech detected! Timestamps: {speech_timestamps}")
+            # if current_detection:
+            #     # Debug info when speech is detected
+            #     print(f"✅ Speech detected! Timestamps: {speech_timestamps}")
             
         except Exception as e:
             print(f"VAD Error: {type(e).__name__}: {e}")
@@ -138,12 +138,12 @@ class VADManager:
         if window_speech:
             self.consecutive_speech += 1
             self.consecutive_silence = 0
-            print(f"activity {self.consecutive_speech}")
+            # print(f"activity {self.consecutive_speech}")
             return True
         else:
             self.consecutive_silence += 1
             self.consecutive_speech = 0
-            print(f"silence {self.consecutive_silence}")
+            # print(f"silence {self.consecutive_silence}")
             return False
 
     async def speech_ended(self) -> bool:
