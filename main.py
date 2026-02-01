@@ -2,11 +2,13 @@
 import asyncio
 from src.core.pipeline import AudioAgentPipeline
 
-# from src.providers.stt.part_stt import WhisperSTT
-from src.providers.stt.base import WhisperSTT
-
+from src.providers.stt.part_stt import WhisperSTT
+# from src.providers.stt.base import WhisperSTT
 # from src.providers.stt.faim_stt import WhisperSTT
-from src.providers.tts.base import TTS
+
+# from src.providers.tts.base import TTS
+from src.providers.tts.part_tts import TTS
+
 from src.providers.llms.dify_provider import DifyLLMProvider
 
 import logging
@@ -27,8 +29,8 @@ async def main():
         
         # Import providers with fallbacks
         try:
-            stt = WhisperSTT(api_key="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")
-            # stt = WhisperSTT()
+            # stt = WhisperSTT(api_key="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")
+            stt = WhisperSTT()
             logger.info("Loaded Whisper STT")
         except ImportError as e:
             logger.warning(f"Whisper not available: {e}")
@@ -40,20 +42,8 @@ async def main():
             
         try:
             tts = TTS()
-            logger.info("Loaded Coqui TTS")
         except ImportError as e:
-            logger.warning(f"Coqui TTS not available: {e}")
-            # Create a mock TTS provider for testing
-            class MockTTS:
-                async def synthesize(self, text):
-                    import numpy as np
-                    # Generate a simple sine wave as test audio
-                    duration = 2.0  # seconds
-                    sample_rate = 22050
-                    t = np.linspace(0, duration, int(sample_rate * duration))
-                    audio = 0.3 * np.sin(2 * np.pi * 440 * t)  # 440 Hz sine wave
-                    return audio
-            tts = MockTTS()
+            logger.warning(f"Part TTS not available: {e}")
 
         pipeline = AudioAgentPipeline(stt, tts)
         
