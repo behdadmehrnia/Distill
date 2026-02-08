@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import os
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +253,7 @@ class DifyLLMProvider:
         logger.info(f"Cache MISS for query: {message[:50]}...")
 
         try:
-            await self.ensure_session()
+            # await self.ensure_session()
             logger.info(f"Dify session created: {self.session}")
 
             payload = {
@@ -279,7 +280,7 @@ class DifyLLMProvider:
             
             logger.info(f"Sending request to: {self.base_url}/chat-messages")
             
-            async with self.session.post(
+            async with requests.post(
                 f"{self.base_url}/chat-messages",
                 json=payload,
                 headers=headers
@@ -335,7 +336,7 @@ class DifyLLMProvider:
         self.cache_misses += 1
         
         try:
-            await self.ensure_session()
+            # await self.ensure_session()
             
             payload = {
                 "inputs": {},
@@ -352,7 +353,7 @@ class DifyLLMProvider:
             
             full_response = ""
             
-            async with self.session.post(
+            async with requests.post(
                 f"{self.base_url}/chat-messages",
                 json=payload,
                 headers=headers
