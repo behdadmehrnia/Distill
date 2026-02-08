@@ -27,7 +27,7 @@ class VADManager:
         self.speech_buffer = []
         self.consecutive_silence = 0
         self.consecutive_speech = 0
-        self.silence_threshold = 100
+        self.silence_threshold = 50
         self.min_speech_frames = 200
         
         # Window-based detection
