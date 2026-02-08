@@ -16,7 +16,7 @@ class TTS(TTSProvider):
         
     async def synthesize(self, text: str) -> np.ndarray:
 
-        url = "http://164.90.187.248:8082/audio/speech"
+        url = "http://185.149.192.38:8082/audio/speech"
 
         headers = {
             "Content-Type": "application/json"
