@@ -208,7 +208,7 @@ class DifyLLMProvider:
     def __init__(self, api_key: str = None, base_url: str = None, conversation_id: str = None):
         # self.api_key = api_key
         #self.api_key = api_key or "app-5JbtCFtDAk1eYe1TFvKppeZq"
-        self.api_key = "app-MOdwbliMghRXL7aXUBy47ZI0"
+        self.api_key = "app-MXYxgNSvZuRKKnBDZGZM35a1"
         self.base_url = base_url.rstrip('/') if base_url else "https://llm.internal.example/v1"
         self.conversation_id = conversation_id
         self.session = None
@@ -235,25 +235,8 @@ class DifyLLMProvider:
         logger.info(f"Dify request: {message}")
         start_time = time.time()
 
-        # Check cache first
-        if use_cache:
-            cache_result = await self.cache.get_similar_query(message)
-            if cache_result:
-                cache_key, cache_entry = cache_result
-                self.cache_hits += 1
-                logger.info(f"Cache HIT for query: {message[:50]}...")
-                
-                end_time = time.time()
-                print(f"Cache Time taken: {end_time - start_time} seconds")
-                print(f"Cache stats - Hits: {self.cache_hits}, Misses: {self.cache_misses}")
-                
-                return cache_entry.response
-        
-        self.cache_misses += 1
-        logger.info(f"Cache MISS for query: {message[:50]}...")
 
         try:
-            # await self.ensure_session()
             logger.info(f"Dify session created: {self.session}")
 
             payload = {
@@ -280,19 +263,19 @@ class DifyLLMProvider:
             
             logger.info(f"Sending request to: {self.base_url}/chat-messages")
             
-            async with requests.post(
+            with requests.post(
                 f"{self.base_url}/chat-messages",
                 json=payload,
                 headers=headers
             ) as response:
-                logger.info(f"Response status: {response.status}")
+                logger.info(f"Response status: {response.status_code}")
                 
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Dify API error {response.status}: {error_text}")
-                    return f"Error: API returned status {response.status}"
+                if response.status_code != 200:
+                    error_text = response.text()
+                    logger.error(f"Dify API error {response.status_code}: {error_text}")
+                    return f"Error: API returned status {response.status_code}"
                 
-                result = await response.json()
+                result = response.json()
                 logger.info(f"Dify response received: {result.keys() if isinstance(result, dict) else 'Not a dict'}")
                 
                 # Update conversation ID for continuous conversation
@@ -301,13 +284,8 @@ class DifyLLMProvider:
                 
                 answer = result.get('answer', 'No answer found in response')
                 
-                # Store in cache
-                if use_cache and answer and not answer.startswith("Error:"):
-                    await self.cache.store(message, answer)
-                
                 end_time = time.time()
                 print(f"Dify Time taken: {end_time - start_time} seconds")
-                print(f"Cache stats - Hits: {self.cache_hits}, Misses: {self.cache_misses}")
                 
                 return answer
                 
@@ -320,64 +298,6 @@ class DifyLLMProvider:
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
             return f"Error: {str(e)}"
-
-    async def generate_stream(self, message: str, use_cache: bool = True, **kwargs) -> AsyncGenerator[str, None]:
-        """Stream response from Dify API with cache support"""
-        # For streaming, we can only use cache for complete responses
-        if use_cache:
-            cache_result = await self.cache.get_similar_query(message)
-            if cache_result:
-                cache_key, cache_entry = cache_result
-                self.cache_hits += 1
-                logger.info(f"Cache HIT for streaming query: {message[:50]}...")
-                yield cache_entry.response
-                return
-        
-        self.cache_misses += 1
-        
-        try:
-            # await self.ensure_session()
-            
-            payload = {
-                "inputs": {},
-                "query": message,
-                "response_mode": "streaming",
-                "user": "audio_agent",
-                **kwargs
-            }
-            
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            full_response = ""
-            
-            async with requests.post(
-                f"{self.base_url}/chat-messages",
-                json=payload,
-                headers=headers
-            ) as response:
-                async for line in response.content:
-                    if line.startswith(b'data: '):
-                        data = line[6:].strip()
-                        if data and data != b'[DONE]':
-                            try:
-                                json_data = json.loads(data)
-                                if 'answer' in json_data:
-                                    chunk = json_data['answer']
-                                    full_response += chunk
-                                    yield chunk
-                            except:
-                                continue
-            
-            # Store complete response in cache
-            if use_cache and full_response and not full_response.startswith("Error:"):
-                await self.cache.store(message, full_response)
-                
-        except Exception as e:
-            logger.error(f"Stream error: {e}")
-            yield f"Error: {str(e)}"
 
     def get_cache_stats(self) -> dict:
         """Get cache statistics"""
@@ -404,7 +324,7 @@ class DifyLLMProvider:
 
 async def test():
     llm = DifyLLMProvider(
-        api_key="app-5JbtCFtDAk1eYe1TFvKppeZq",
+        api_key="app-MXYxgNSvZuRKKnBDZGZM35a1",
         base_url="https://llm.internal.example/v1"
     )
     
