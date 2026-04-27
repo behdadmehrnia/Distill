@@ -32,7 +32,7 @@ class AudioAgentServer:
         """Setup HTTP routes"""
         self.app.router.add_get('/', self.serve_index)
         self.app.router.add_get('/app.js', self.serve_js)
-        # self.app.router.add_static('/static/', path='./static/')
+        self.app.router.add_static('/static/', path='./static/')
         self.app.router.add_get('/health', self.health_check)
         
         # WebSocket route
@@ -48,7 +48,7 @@ class AudioAgentServer:
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>Audio Agent - Real-time Voice AI</title>
-            <script src="https://cdn.tailwindcss.com"></script>
+            <script src="/static/tailwind.js"></script>
             <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
         </head>
         <body class="bg-gray-900 text-white">

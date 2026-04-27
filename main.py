@@ -2,14 +2,15 @@
 import asyncio
 from src.core.pipeline import AudioAgentPipeline
 
-from src.providers.stt.part_stt import WhisperSTT
+# from src.providers.stt.part_stt import WhisperSTT
 # from src.providers.stt.base import WhisperSTT
 # from src.providers.stt.faim_stt import WhisperSTT
+from src.providers.stt.gap_stt import OpenAICompatibleSTT as WhisperSTT
 
 # from src.providers.tts.base import TTS
-from src.providers.tts.part_tts import TTS
+# from src.providers.tts.part_tts import TTS
+from src.providers.tts.chatterbox_tts import TTS
 
-from src.providers.llms.dify_provider import DifyLLMProvider
 
 import logging
 import sys
