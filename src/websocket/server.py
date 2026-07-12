@@ -8,9 +8,11 @@ from aiohttp import web
 import logging
 from typing import Dict, Any, Set
 from src.providers.llms.dify_provider import DifyLLMProvider
+from src.core.vad_manager import is_valid_persian, is_valid_persian_fast
 
-from src.core.vad_manager import VADManager
-#from src.core.vad_manager_2 import VADManager
+
+#from src.core.vad_manager import VADManager, is_valid_persian, is_valid_persian_fast
+from src.core.vad_manager_3 import VADManager
 
 import collections
 import time
@@ -251,7 +253,7 @@ class AudioAgentClient {
             this.audioContext = new AudioContext({ sampleRate: 16000 });
             
             const source = this.audioContext.createMediaStreamSource(this.audioStream);
-            const processor = this.audioContext.createScriptProcessor(1024, 1, 1);
+            const processor = this.audioContext.createScriptProcessor(512, 1, 1);
             
             processor.onaudioprocess = (event) => {
                 if (this.isRecording && this.isConnected) {
@@ -528,10 +530,11 @@ document.addEventListener('DOMContentLoaded', () => {
                                             
         # Estimate audio duration
         # Assuming 16kHz sample rate, 16-bit mono audio
-        audio_duration = len(audio_output) / (2 * 16000)  # bytes / (2 bytes per sample * 16000 samples/sec)
-        tts_duration = audio_duration
+        audio_duration = len(audio_output) / (1 * 16000)  # bytes / (2 bytes per sample * 16000 samples/sec)
+        tts_duration = 0.1 * audio_duration
         
         audio_base64 = base64.b64encode(audio_output).decode("ascii")
+        print("duration: ", tts_duration)
 
         self.pipeline.set_waiting_audio(audio_base64, tts_duration)
         return audio_base64, tts_duration
@@ -605,7 +608,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 })
                             
 
-                            if await self.vad.speech_ended() and len(stt_buffer) > 2: # end of speech detected
+                            if await self.vad.speech_ended() and len(stt_buffer) > 10: # end of speech detected
 
                                 audio_base64, tts_duration = await self.wait_audio()
                                 await ws.send_json({
@@ -633,6 +636,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                                         # Run whisper
                                         text = await self.pipeline.stt.transcribe(full_audio)
+                                        if not is_valid_persian(text):
+                                            pass
+                                        
                                         logger.info(f"STT: {text}")
 
                                         await ws.send_json({
@@ -652,13 +658,15 @@ document.addEventListener('DOMContentLoaded', () => {
                                             })
 
                                             # Run TTS
-                                            audio_output = await self.pipeline.tts.synthesize(response)
-                                            
-                                            # Estimate audio duration
-                                            # Assuming 16kHz sample rate, 16-bit mono audio
-                                            audio_duration = len(audio_output) / (2 * 16000)  # bytes / (2 bytes per sample * 16000 samples/sec)
-                                            tts_duration = audio_duration * 2.5
+                                            response_temp = response.replace("?", "_").replace(".", "_")
+                                            chunks = response_temp.split("_")
                                             is_tts_playing = True
+                                            for chunk in chunks:
+                                                audio_output = await self.pipeline.tts.synthesize(response)
+                                                audio_duration = 0.06 * len(response)
+                                                audio_duration = max(audio_duration, 2)
+                                                tts_duration = audio_duration
+
                                             tts_start_time = time.time()
                                             
                                             logger.info(f"TTS audio duration estimated: {tts_duration:.2f} seconds")
@@ -689,35 +697,6 @@ document.addEventListener('DOMContentLoaded', () => {
                                         # Release lock
                                         is_processing = False
 
-                            # else VAD returned "silence" — do nothing
-
-                        elif data["type"] == "test_audio":
-                            # Skip test audio if processing OR TTS is playing
-                            if is_processing or is_tts_playing:
-                                continue
-                                
-                            async with processing_lock:
-                                is_processing = True
-                                try:
-                                    test_response = "Audio system test OK!"
-                                    audio_output = await self.pipeline.tts.synthesize(test_response)
-                                    
-                                    # Estimate duration for test audio too
-                                    audio_duration = len(audio_output) / (2 * 16000)
-                                    tts_duration = audio_duration
-                                    is_tts_playing = True
-                                    tts_start_time = time.time()
-                                    
-                                    audio_array = np.frombuffer(audio_output, dtype=np.int16)
-                                    audio_base64 = base64.b64encode(audio_array.tobytes()).decode("ascii")
-
-                                    await ws.send_json({
-                                        'type': 'audio',
-                                        'data': audio_base64,
-                                        'duration': tts_duration
-                                    })
-                                finally:
-                                    is_processing = False
 
                     except Exception as e:
                         logger.error(f"Error: {e}")

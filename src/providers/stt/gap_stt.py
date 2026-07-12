@@ -8,6 +8,9 @@ import tempfile
 import wave
 import numpy as np
 
+MODEL_NAME = "gapgpt/whisper-1"
+#ODEL_NAME = "/cache/hub/models--openai--whisper-small/snapshots/973afd24965f72e36ca33b3055d56a652f456b4d"
+
 class OpenAICompatibleSTT:
     """OpenAI-compatible STT wrapper for Sahab API"""
     
@@ -62,7 +65,7 @@ class OpenAICompatibleSTT:
     async def transcribe(
         self, 
         file_content: np.ndarray,
-        model: str = "gapgpt/whisper-1",
+        model: str = MODEL_NAME,
         language: Optional[str] = "fa",
         response_format: str = "json",
         temperature: float = 0.0

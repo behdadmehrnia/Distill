@@ -126,7 +126,7 @@ class VADManager:
             
             # Fallback to simple energy-based VAD
             energy = np.sum(audio_chunk.astype(np.float32) ** 2) / max(len(audio_chunk), 1)
-            current_detection = energy > 0.0005  # Adjust this threshold
+            current_detection = energy > 0.0015  # Adjust this threshold
             print(f"Fallback VAD - Energy: {energy:.6f}, Detection: {current_detection}")
 
         # Update detection window
@@ -149,3 +149,84 @@ class VADManager:
     async def speech_ended(self) -> bool:
         """Check if speech has ended"""
         return self.consecutive_silence >= self.silence_threshold
+        
+        
+import re
+from collections import Counter
+
+def is_valid_persian(text: str) -> bool:
+    """
+    Lightweight validation for Persian text.
+    Returns False if text is junk/repetitive, True if valid.
+    """
+    if not text or len(text) < 3:
+        return False
+    
+    # Remove extra spaces
+    text = ' '.join(text.split())
+    words = text.split()
+    
+    # Too few words
+    if len(words) < 2:
+        return False
+    
+    # Quick repetition check
+    if len(words) >= 3:
+        # Check if same word repeated too much
+        word_counts = Counter(words)
+        max_repeat = max(word_counts.values())
+        if max_repeat / len(words) > 0.4:  # >40% same word
+            return False
+        
+        # Check unique word ratio
+        if len(set(words)) / len(words) < 0.3:
+            return False
+    
+    # Common junk patterns (compiled for speed)
+    junk_patterns = re.compile(
+        r'(از اینجای\s*از اینجای)|'  # Repeated phrase
+        r'(\S+\s+\S+)(\s+\1){2,}|'    # Repeated 2-word pattern
+        r'^(\S)\s+\1\s+\1|'            # Same char repeated at start
+        r'[\u0600-\u06FF]{1,2}\s+[\u0600-\u06FF]{1,2}\s+$'  # Short syllables at end
+    )
+    
+    if junk_patterns.search(text):
+        return False
+    
+    # Check for Persian characters (optimized)
+    persian_chars = set('ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهیآ')
+    persian_count = sum(1 for c in text if c in persian_chars)
+    
+    # Needs at least some Persian characters
+    if persian_count < 3:
+        return False
+    
+    return True
+
+# Even more optimized version for batch processing
+def is_valid_persian_fast(text: str) -> bool:
+    """Ultra-fast version with minimal checks."""
+    if not text or len(text) < 5:
+        return False
+    
+    # Quick check for obvious junk
+    junk = ['از اینجای', 'چیجوی', 'هاست']  # Known junk patterns
+    
+    # Fast check without regex if possible
+    text_lower = text.lower()
+    for j in junk:
+        if text_lower.count(j) > 2:  # Repeated too many times
+            return False
+    
+    # Split once
+    words = text.split()
+    if len(words) < 2:
+        return False
+    
+    # Fast repetition check using set
+    if len(words) >= 5:
+        if len(set(words)) / len(words) < 0.3:
+            return False
+    
+    return True
+

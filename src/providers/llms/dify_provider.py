@@ -26,8 +26,8 @@ class SemanticCache:
 
 class DifyLLMProvider:
     def __init__(self, api_key: str = None, base_url: str = None, conversation_id: str = None):
-        self.api_key = api_key or "app-M1i9mNZeDYUpYbZRgm4rG8Vw"
-        self.base_url = base_url.rstrip('/') if base_url else "https://difyv2.internal.example/v1"
+        self.api_key = api_key or "app-opT28oNpIOpDiC7EmUUa0Qyy"
+        self.base_url = "http://localhost:8070/v1"
         self.conversation_id = conversation_id
         self.session = None
         self.timeout = aiohttp.ClientTimeout(total=60)

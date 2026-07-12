@@ -9,7 +9,6 @@ class TTSProvider(ABC):
     async def synthesize(self, text: str) -> np.ndarray:
         pass
 
-# Example with Coqui TTS
 class TTS(TTSProvider):
     def __init__(self):
         pass
@@ -34,6 +33,7 @@ class TTS(TTSProvider):
             f.write(response.content)
 
         return response.content
+
 
 
 # if __name__ == "__main__":
