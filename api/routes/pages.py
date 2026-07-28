@@ -2,54 +2,66 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aiohttp import web
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, Response
+
+router = APIRouter(tags=["pages"])
 
 _CONTENT_TYPES = {
-    ".html": "text/html",
-    ".css": "text/css",
-    ".js": "application/javascript",
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
 }
 
 
-def _web_file(request: web.Request, name: str) -> web.Response:
-    path: Path = request.app["settings"].web_dir / name
+def _web_path(request: Request, name: str) -> Path:
+    path: Path = request.app.state.settings.web_dir / name
     if not path.exists():
-        raise web.HTTPNotFound(text=f"missing: {name}")
-    content_type = _CONTENT_TYPES.get(path.suffix, "application/octet-stream")
+        raise HTTPException(status_code=404, detail=f"missing: {name}")
+    return path
+
+
+def _web_file(request: Request, name: str) -> Response:
+    path = _web_path(request, name)
+    media_type = _CONTENT_TYPES.get(path.suffix, "application/octet-stream")
     if path.suffix in {".html", ".css", ".js"}:
-        return web.Response(
-            text=path.read_text(encoding="utf-8"),
-            content_type=content_type,
-            charset="utf-8",
+        return Response(
+            content=path.read_text(encoding="utf-8"),
+            media_type=media_type,
         )
-    return web.Response(body=path.read_bytes(), content_type=content_type)
+    return FileResponse(path, media_type=media_type)
 
 
-async def serve_landing(request: web.Request) -> web.Response:
+@router.get("/", response_class=HTMLResponse)
+async def serve_landing(request: Request) -> Response:
     return _web_file(request, "landing.html")
 
 
-async def serve_assistant(request: web.Request) -> web.Response:
+@router.get("/assistant", response_class=HTMLResponse)
+async def serve_assistant(request: Request) -> Response:
     return _web_file(request, "assistant.html")
 
 
-async def serve_assistant_session(request: web.Request) -> web.Response:
+@router.get("/assistant/{meeting_id}", response_class=HTMLResponse)
+async def serve_assistant_session(request: Request, meeting_id: str) -> Response:
     """Open assistant UI scoped to an existing meeting id."""
-    meeting_id = request.match_info["meeting_id"]
-    meeting = request.app["manager"].store.get_meeting(meeting_id)
+    meeting = request.app.state.manager.store.get_meeting(meeting_id)
     if not meeting:
-        raise web.HTTPNotFound(text="meeting not found")
+        raise HTTPException(status_code=404, detail="meeting not found")
     return _web_file(request, "assistant.html")
 
 
-async def serve_css(request: web.Request) -> web.Response:
+@router.get("/styles.css")
+async def serve_css(request: Request) -> Response:
     return _web_file(request, "styles.css")
 
 
-async def serve_js(request: web.Request) -> web.Response:
+@router.get("/meeting.js")
+async def serve_js(request: Request) -> Response:
     return _web_file(request, "meeting.js")
 
 
-async def serve_logo(request: web.Request) -> web.Response:
+@router.get("/logo.svg")
+async def serve_logo(request: Request) -> Response:
     return _web_file(request, "logo.svg")

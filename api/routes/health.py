@@ -1,10 +1,10 @@
-from aiohttp import web
+from __future__ import annotations
+
+from fastapi import APIRouter
+
+router = APIRouter(tags=["system"])
 
 
-async def health_check(_request: web.Request) -> web.Response:
-    return web.json_response(
-        {
-            "status": "ok",
-            "service": "distill"
-        }
-    )
+@router.get("/health")
+async def health_check() -> dict:
+    return {"status": "ok", "service": "distill"}

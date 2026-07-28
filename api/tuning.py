@@ -8,18 +8,21 @@ from typing import Any, Dict, List
 
 # Defaults match current production-ish behavior
 DEFAULT_TUNING: Dict[str, Any] = {
-    "window_ms": 8000,
-    "hop_ms": 2000,
+    "window_ms": 6000,
+    "hop_ms": 1500,
     "diarize_every_ms": 20000,
     "min_speech_rms": 0.008,
     "energy_threshold": 0.01,
     "min_speakers": 1,
     "max_speakers": 2,
     "merge_short_ms": 400,
-    "min_overlap_ms": 700,
+    "min_overlap_ms": 1200,
     "dedupe_similarity": 0.45,
     "dedupe_time_overlap": 0.35,
     "stt_language": "fa",
+    # Whisper quality: heuristic always (unless off); LLM polish on finalize by default
+    "stt_review_mode": "finalize",
+    "stt_min_quality": 0.35,
 }
 
 # Metadata for the settings panel (Persian labels)
@@ -68,6 +71,27 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "type": "text",
         "apply": "live",
         "help": "مثلاً fa یا en",
+    },
+    {
+        "key": "stt_review_mode",
+        "group": "کیفیت Whisper",
+        "label": "حالت Review Agent",
+        "unit": "",
+        "type": "text",
+        "apply": "live",
+        "help": "off | heuristic | finalize | live — پیش‌فرض finalize (فیلتر سریع + Gemma در پایان)",
+    },
+    {
+        "key": "stt_min_quality",
+        "group": "کیفیت Whisper",
+        "label": "حداقل نمره کیفیت STT",
+        "unit": "0–1",
+        "type": "number",
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.05,
+        "apply": "live",
+        "help": "زیر این نمره، متن hallucination حذف می‌شود (تکرار خیلی خیلی…)",
     },
     {
         "key": "diarize_every_ms",
@@ -137,7 +161,7 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "max": 5000,
         "step": 100,
         "apply": "live",
-        "help": "زیر این مقدار، هم‌صحبتی اعلام نمی‌شود",
+        "help": "زیر این مقدار، هم‌صحبتی اعلام نمی‌شود (برای میک تکی بهتر است بالا باشد)",
     },
     {
         "key": "dedupe_similarity",
@@ -201,7 +225,12 @@ def _sanitize(raw: Dict[str, Any]) -> Dict[str, Any]:
                 num = min(hi, num)
             out[key] = num
         else:
-            out[key] = str(val).strip() or DEFAULT_TUNING[key]
+            text = str(val).strip() or str(DEFAULT_TUNING[key])
+            if key == "stt_review_mode":
+                text = text.lower()
+                if text not in {"off", "heuristic", "finalize", "live"}:
+                    text = str(DEFAULT_TUNING[key])
+            out[key] = text
     if "min_speakers" in out and "max_speakers" in out:
         if out["min_speakers"] > out["max_speakers"]:
             out["min_speakers"], out["max_speakers"] = (

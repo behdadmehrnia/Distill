@@ -16,6 +16,7 @@ from .chunker import OverlappingChunker
 from .diarization import SpeakerDiarizer
 from .ingest import AudioIngest
 from .models import MeetingRecord, MeetingStatus, TranscriptSegment
+from .review import TranscriptReviewAgent, gate_stt_text
 from .store import TranscriptStore
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class MeetingSession:
         store: TranscriptStore,
         stt_provider,
         diarizer: Optional[SpeakerDiarizer] = None,
+        review_agent: Optional[TranscriptReviewAgent] = None,
         sample_rate: int = 16000,
         window_ms: int = 8000,
         hop_ms: int = 2000,
@@ -44,6 +46,7 @@ class MeetingSession:
         self.store = store
         self.stt = stt_provider
         self.diarizer = diarizer or SpeakerDiarizer(sample_rate=sample_rate)
+        self.review_agent = review_agent
         self.sample_rate = sample_rate
         self.diarize_every_ms = diarize_every_ms
         self.on_event = on_event
@@ -83,10 +86,69 @@ class MeetingSession:
 
     def _align_kwargs(self) -> Dict[str, Any]:
         return {
-            "min_overlap_ms": int(self.tuning.get("min_overlap_ms", 700)),
+            "min_overlap_ms": int(self.tuning.get("min_overlap_ms", 1200)),
             "dedupe_similarity": float(self.tuning.get("dedupe_similarity", 0.45)),
             "dedupe_time_overlap": float(self.tuning.get("dedupe_time_overlap", 0.35)),
         }
+
+    def _review_min_score(self) -> float:
+        return float(self.tuning.get("stt_min_quality", 0.35))
+
+    def _review_mode(self) -> str:
+        """off | heuristic | finalize | live — default finalize (heuristic always on unless off)."""
+        mode = str(self.tuning.get("stt_review_mode") or "finalize").strip().lower()
+        if mode not in {"off", "heuristic", "finalize", "live"}:
+            return "finalize"
+        return mode
+
+    async def _gate_stt_text(self, text: str) -> Optional[str]:
+        mode = self._review_mode()
+        if mode == "off":
+            cleaned = (text or "").strip()
+            if len(cleaned) < 2 or not any(ch.isalpha() for ch in cleaned):
+                return None
+            return cleaned
+
+        if mode == "live" and self.review_agent is not None:
+            result = await self.review_agent.review_text(
+                text,
+                language=str(self.tuning.get("stt_language") or "fa"),
+            )
+        else:
+            result = gate_stt_text(text, min_score=self._review_min_score())
+
+        if not result.accepted:
+            logger.info(
+                "STT gate dropped text score=%.2f reasons=%s text=%r",
+                result.score,
+                ",".join(result.reasons),
+                (text or "")[:100],
+            )
+            return None
+        return result.text
+
+    async def _finalize_review(
+        self, segments: List[TranscriptSegment]
+    ) -> List[TranscriptSegment]:
+        mode = self._review_mode()
+        if mode in {"off", "heuristic"}:
+            # Still apply heuristic-only finalize to catch anything that slipped through
+            if mode == "off":
+                return segments
+            agent = TranscriptReviewAgent(llm=None, enabled=False)
+            return await agent.review_segments(
+                segments,
+                language=str(self.tuning.get("stt_language") or "fa"),
+            )
+
+        agent = self.review_agent or TranscriptReviewAgent(llm=None, enabled=False)
+        # finalize / live: use LLM on stop/upload if available
+        if mode in {"finalize", "live"} and agent.llm is not None:
+            agent.enabled = True
+        return await agent.review_segments(
+            segments,
+            language=str(self.tuning.get("stt_language") or "fa"),
+        )
 
     @property
     def meeting_id(self) -> str:
@@ -132,9 +194,8 @@ class MeetingSession:
             try:
                 lang = str(self.tuning.get("stt_language") or "fa")
                 text = await self.stt.transcribe(chunk.audio, language=lang)
-                text = (text or "").strip()
-                # Drop Whisper junk (".", "،", …) before it pollutes the timeline
-                if len(text) < 2 or not any(ch.isalpha() for ch in text):
+                text = await self._gate_stt_text(text)
+                if not text:
                     continue
                 self._pending_stt.append((chunk.start_ms, chunk.end_ms, text))
                 await self._publish_live_transcript()
@@ -202,6 +263,8 @@ class MeetingSession:
                     similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
                     min_time_overlap_ratio=float(self.tuning.get("dedupe_time_overlap", 0.35)),
                 )
+                if not provisional:
+                    segments = await self._finalize_review(segments)
                 if provisional:
                     self.store.delete_provisional_segments(self.meeting_id)
                     for seg in segments:
@@ -290,8 +353,8 @@ class MeetingSession:
             try:
                 lang = str(self.tuning.get("stt_language") or "fa")
                 text = await self.stt.transcribe(chunk.audio, language=lang)
-                text = (text or "").strip()
-                if len(text) < 2 or not any(ch.isalpha() for ch in text):
+                text = await self._gate_stt_text(text)
+                if not text:
                     continue
                 stt_results.append((chunk.start_ms, chunk.end_ms, text))
                 await self._emit(
@@ -320,6 +383,7 @@ class MeetingSession:
             similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
             min_time_overlap_ratio=float(self.tuning.get("dedupe_time_overlap", 0.35)),
         )
+        segments = await self._finalize_review(segments)
         self.store.replace_meeting_segments(self.meeting_id, segments)
         await self._emit(
             {
@@ -344,12 +408,14 @@ class MeetingManager:
         store: TranscriptStore,
         stt_provider,
         diarizer: Optional[SpeakerDiarizer] = None,
+        review_agent: Optional[TranscriptReviewAgent] = None,
         tuning: Optional[Dict[str, Any]] = None,
         **session_kwargs,
     ):
         self.store = store
         self.stt = stt_provider
         self.diarizer = diarizer or SpeakerDiarizer()
+        self.review_agent = review_agent
         self.tuning = tuning if tuning is not None else {}
         self.session_kwargs = session_kwargs
         self._sessions: Dict[str, MeetingSession] = {}
@@ -385,6 +451,7 @@ class MeetingManager:
             store=self.store,
             stt_provider=self.stt,
             diarizer=self.diarizer,
+            review_agent=self.review_agent,
             **self._session_args(on_event),
         )
         self._sessions[record.id] = session
@@ -407,6 +474,7 @@ class MeetingManager:
             store=self.store,
             stt_provider=self.stt,
             diarizer=self.diarizer,
+            review_agent=self.review_agent,
             **self._session_args(on_event),
         )
         self._sessions[meeting_id] = session

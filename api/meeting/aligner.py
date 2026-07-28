@@ -57,11 +57,15 @@ def _significant_overlap_speakers(
     start_ms: int,
     end_ms: int,
     intervals: Sequence[SpeakerInterval],
-    min_overlap_ms: int = 700,
+    min_overlap_ms: int = 1200,
+    min_region_ms: int = 250,
 ) -> List[str]:
     """
     Speakers that truly share time for at least min_overlap_ms inside the window.
+
     Turn-taking (A then B) does not count.
+    Tiny frame-edge flickers (< min_region_ms) are ignored so mono-mic diarization
+    cannot invent هم‌صحبتی from abutting/nearly-abutting labels.
     """
     regions = _atomic_regions(start_ms, end_ms, intervals)
     multi_ms = 0
@@ -69,7 +73,10 @@ def _significant_overlap_speakers(
     for a, b, spks in regions:
         if len(spks) < 2:
             continue
-        multi_ms += b - a
+        dur = b - a
+        if dur < min_region_ms:
+            continue
+        multi_ms += dur
         for s in spks:
             if s not in speakers:
                 speakers.append(s)
@@ -82,7 +89,7 @@ def dominant_speaker(
     start_ms: int,
     end_ms: int,
     intervals: Sequence[SpeakerInterval],
-    min_overlap_ms: int = 700,
+    min_overlap_ms: int = 1200,
 ) -> Tuple[str, bool]:
     if not intervals:
         return "SPEAKER_00", False
@@ -140,7 +147,7 @@ def align_stt_with_diarization(
     stt_windows: Sequence[Tuple[int, int, str]],
     intervals: Sequence[SpeakerInterval],
     provisional: bool = False,
-    min_overlap_ms: int = 700,
+    min_overlap_ms: int = 1200,
     dedupe_similarity: float = 0.45,
     dedupe_time_overlap: float = 0.35,
 ) -> List[TranscriptSegment]:

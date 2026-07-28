@@ -1,8 +1,7 @@
-"""Distill entrypoint — `python -m api` or `python main.py`."""
+"""Distill entrypoint — `python -m api`, `python main.py`, or uvicorn."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import sys
 
@@ -18,32 +17,26 @@ logging.basicConfig(
 logger = logging.getLogger("distill")
 
 
-async def run() -> None:
-    from aiohttp import web
+def main() -> None:
+    import uvicorn
 
-    from api.app import create_app
     from api.config import Settings
 
     settings = Settings.from_env()
-    app = create_app(settings)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, settings.host, settings.port)
-    await site.start()
     logger.info("Distill listening on http://%s:%s", settings.host, settings.port)
-    while True:
-        await asyncio.sleep(3600)
+    uvicorn.run(
+        "api.app:app",
+        host=settings.host,
+        port=settings.port,
+        log_level="info",
+    )
 
 
-def main() -> None:
+if __name__ == "__main__":
     try:
-        asyncio.run(run())
+        main()
     except KeyboardInterrupt:
         logger.info("Distill stopped")
     except Exception as exc:
         logger.error("Fatal error: %s", exc)
         sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

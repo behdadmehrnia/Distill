@@ -44,8 +44,8 @@ class Settings:
 
     sample_rate: int = 16000
     channels: int = 1
-    window_ms: int = 8000
-    hop_ms: int = 2000
+    window_ms: int = 6000
+    hop_ms: int = 1500
     diarize_every_ms: int = 20000
 
     stt_endpoint: str | None = None
@@ -72,8 +72,8 @@ class Settings:
             stt_cache_dir=STT_CACHE_DIR,
             sample_rate=_env_int("AUDIO_SAMPLE_RATE", 16000),
             channels=_env_int("AUDIO_CHANNELS", 1),
-            window_ms=_env_int("MEETING_WINDOW_MS", 8000),
-            hop_ms=_env_int("MEETING_HOP_MS", 2000),
+            window_ms=_env_int("MEETING_WINDOW_MS", 6000),
+            hop_ms=_env_int("MEETING_HOP_MS", 1500),
             diarize_every_ms=_env_int("MEETING_DIARIZE_EVERY_MS", 20000),
             stt_endpoint=_env_str("STT_ENDPOINT"),
             stt_api_key=_env_str("STT_API_KEY")

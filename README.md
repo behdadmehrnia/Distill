@@ -24,11 +24,24 @@ cp .env.example .env
 pip install -r requirements.txt
 python -m api
 # یا: python main.py
+# یا مستقیم: uvicorn api.app:app --host 0.0.0.0 --port 8000
 ```
 
 UI لندینگ: `http://localhost:8000/`  
 UI دستیار: `http://localhost:8000/assistant`  
 باز کردن جلسه قبلی: `http://localhost:8000/assistant/{meeting_id}`
+
+## کیفیت Whisper (Review Agent)
+
+بعد از هر تکه STT، یک **دروازه کیفیت سریع** hallucinationهای معروف Whisper را حذف می‌کند (مثلاً حلقهٔ «خیلی خیلی خیلی…»).  
+در پایان جلسه / آپلود، در حالت پیش‌فرض `finalize`، همان LLM (مثلاً Gemma) متن‌های پذیرفته‌شده را مثل pipeline مرجع Whisper→Gemma polish می‌کند.
+
+از پنل تنظیمات (کلیک روی وضعیت) یا `/tuning`:
+
+| کلید | پیش‌فرض | معنی |
+|------|---------|------|
+| `stt_review_mode` | `finalize` | `off` / `heuristic` / `finalize` / `live` |
+| `stt_min_quality` | `0.35` | حداقل نمره برای قبول متن خام |
 
 ## Docker
 
@@ -97,7 +110,7 @@ pip install -r requirements.optional.txt  # torch CPU + pyannote
 ## تست
 
 ```bash
-pip install pytest pytest-aiohttp pytest-asyncio
+pip install -r requirements.txt
 pytest
 ```
 

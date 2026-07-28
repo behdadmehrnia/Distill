@@ -159,11 +159,11 @@ class SpeakerDiarizer:
 
     def _diarize_fallback(self, audio: np.ndarray, sr: int) -> List[SpeakerInterval]:
         """
-        Lightweight speaker-change heuristic:
+        Lightweight speaker-change heuristic for mono mic:
         - Frame energy + spectral centroid
-        - KMeans clustering on active frames
-        - Consecutive same-cluster frames become intervals
-        - Overlap approximated when energy stays high across a speaker change
+        - Prefer a single speaker unless clusters are clearly separated
+        - Emit abutting (non-overlapping) hard labels — frame hop must not
+          invent simultaneous-talk overlaps on one microphone
         """
         frame_ms = 30
         hop_ms = 15
@@ -200,36 +200,42 @@ class SpeakerDiarizer:
 
         n_speakers = self._estimate_speakers(X)
         labels = self._kmeans(X, n_speakers)
+        # Smooth label flicker (mono mic often oscillates between 2 clusters)
+        labels = self._smooth_labels(labels, window=5)
 
-        # Hard labels only — soft multi-label invented fake overlaps on mono mic.
-        # True simultaneous-talk detection needs pyannote (optional).
+        # Abutting hard labels: end previous turn at the new turn's start.
+        # Overlapping analysis frames (30ms/15ms hop) must NOT create fake overlaps.
         intervals: List[SpeakerInterval] = []
         cur_label = int(labels[0])
         cur_start = times[0]
-        prev_end = times[0] + frame
         for idx in range(1, len(labels)):
             lab = int(labels[idx])
             t = times[idx]
             if lab != cur_label:
-                intervals.append(
-                    SpeakerInterval(
-                        speaker_id=f"SPEAKER_{cur_label:02d}",
-                        start_ms=int(cur_start * 1000 / sr),
-                        end_ms=int(prev_end * 1000 / sr),
-                        is_overlap=False,
+                end_ms = int(t * 1000 / sr)
+                start_ms = int(cur_start * 1000 / sr)
+                if end_ms > start_ms:
+                    intervals.append(
+                        SpeakerInterval(
+                            speaker_id=f"SPEAKER_{cur_label:02d}",
+                            start_ms=start_ms,
+                            end_ms=end_ms,
+                            is_overlap=False,
+                        )
                     )
-                )
                 cur_label = lab
                 cur_start = t
-            prev_end = t + frame
-        intervals.append(
-            SpeakerInterval(
-                speaker_id=f"SPEAKER_{cur_label:02d}",
-                start_ms=int(cur_start * 1000 / sr),
-                end_ms=int(prev_end * 1000 / sr),
-                is_overlap=False,
+        end_ms = int((times[-1] + frame) * 1000 / sr)
+        start_ms = int(cur_start * 1000 / sr)
+        if end_ms > start_ms:
+            intervals.append(
+                SpeakerInterval(
+                    speaker_id=f"SPEAKER_{cur_label:02d}",
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    is_overlap=False,
+                )
             )
-        )
         return self._merge_short_intervals(intervals, min_ms=self.merge_short_ms)
 
     @staticmethod
@@ -285,29 +291,85 @@ class SpeakerDiarizer:
     ) -> List[SpeakerInterval]:
         if not intervals:
             return []
-        by_spk: Dict[str, List[SpeakerInterval]] = {}
-        for iv in sorted(intervals, key=lambda x: (x.speaker_id, x.start_ms)):
-            by_spk.setdefault(iv.speaker_id, []).append(iv)
-
+        # Never bridge across another speaker — that invents fake overlaps on mono mic.
+        ordered = sorted(intervals, key=lambda x: (x.start_ms, x.end_ms, x.speaker_id))
         merged: List[SpeakerInterval] = []
-        for items in by_spk.values():
-            cur = items[0]
-            for iv in items[1:]:
-                gap = iv.start_ms - cur.end_ms
-                if gap <= 120 or (iv.end_ms - iv.start_ms) < min_ms:
-                    cur.end_ms = max(cur.end_ms, iv.end_ms)
-                    cur.is_overlap = cur.is_overlap or iv.is_overlap
-                else:
-                    merged.append(cur)
-                    cur = iv
-            merged.append(cur)
+        for iv in ordered:
+            if (iv.end_ms - iv.start_ms) < min_ms and merged:
+                # Absorb very short turn into previous turn (same timeline continuity)
+                prev = merged[-1]
+                if iv.speaker_id == prev.speaker_id and iv.start_ms - prev.end_ms <= 120:
+                    prev.end_ms = max(prev.end_ms, iv.end_ms)
+                    prev.is_overlap = prev.is_overlap or iv.is_overlap
+                    continue
+                if iv.speaker_id != prev.speaker_id and iv.start_ms <= prev.end_ms + 80:
+                    # Tiny flicker after a switch: keep previous speaker
+                    prev.end_ms = max(prev.end_ms, iv.end_ms)
+                    continue
+            if (
+                merged
+                and merged[-1].speaker_id == iv.speaker_id
+                and iv.start_ms - merged[-1].end_ms <= 120
+            ):
+                merged[-1].end_ms = max(merged[-1].end_ms, iv.end_ms)
+                merged[-1].is_overlap = merged[-1].is_overlap or iv.is_overlap
+            else:
+                merged.append(
+                    SpeakerInterval(
+                        speaker_id=iv.speaker_id,
+                        start_ms=iv.start_ms,
+                        end_ms=iv.end_ms,
+                        is_overlap=iv.is_overlap,
+                    )
+                )
         return sorted(merged, key=lambda x: x.start_ms)
 
     def _estimate_speakers(self, X: np.ndarray) -> int:
-        # Prefer 1–2 for short/mono meeting audio; avoid inventing 4 speakers
-        if len(X) < 80:
+        """
+        Conservative for single-mic meetings: default to 1 speaker.
+        Only split to 2+ when clusters are large and well separated.
+        """
+        if self.max_speakers <= 1 or len(X) < 160:
             return 1
-        return min(self.max_speakers, max(self.min_speakers, min(2, max(1, len(X) // 80))))
+
+        k = min(2, self.max_speakers)
+        labels, centers = self._kmeans_with_centers(X, k)
+        counts = np.bincount(labels, minlength=k)
+        if counts.min() < max(40, int(0.22 * len(X))):
+            return 1
+
+        # Require clear centroid separation in normalized feature space
+        sep = float(np.linalg.norm(centers[0] - centers[1]))
+        if sep < 1.35:
+            return 1
+
+        # Intra-cluster compactness vs separation
+        inertia = 0.0
+        for i in range(k):
+            members = X[labels == i]
+            if len(members):
+                inertia += float(((members - centers[i]) ** 2).sum())
+        inertia /= max(1, len(X))
+        if sep < 2.2 * max(inertia, 0.15):
+            return 1
+
+        return k
+
+    @staticmethod
+    def _smooth_labels(labels: np.ndarray, window: int = 5) -> np.ndarray:
+        """Majority-filter label flicker from mono-mic KMeans oscillation."""
+        if len(labels) < 3 or window < 3:
+            return labels
+        out = labels.copy()
+        radius = window // 2
+        for i in range(len(labels)):
+            a = max(0, i - radius)
+            b = min(len(labels), i + radius + 1)
+            chunk = labels[a:b]
+            # mode
+            vals, counts = np.unique(chunk, return_counts=True)
+            out[i] = int(vals[int(np.argmax(counts))])
+        return out
 
     @staticmethod
     def _kmeans_with_centers(

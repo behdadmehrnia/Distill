@@ -1,37 +1,41 @@
 from __future__ import annotations
 
-from aiohttp import web
+from typing import Any, Dict
 
-from api.tuning import make_tuning, public_tuning_payload, _sanitize
+from fastapi import APIRouter, HTTPException, Request
+
+from api.tuning import _sanitize, make_tuning, public_tuning_payload
+
+router = APIRouter(tags=["tuning"])
 
 
-async def get_tuning(request: web.Request) -> web.Response:
-    return web.json_response(public_tuning_payload(request.app["tuning"]))
+@router.get("/tuning")
+async def get_tuning(request: Request) -> Dict[str, Any]:
+    return public_tuning_payload(request.app.state.tuning)
 
 
-async def put_tuning(request: web.Request) -> web.Response:
+@router.put("/tuning")
+async def put_tuning(request: Request) -> Dict[str, Any]:
     try:
         body = await request.json()
-    except Exception:
-        raise web.HTTPBadRequest(text="invalid json")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid json") from exc
 
     values = body.get("values") if isinstance(body, dict) else None
     if not isinstance(values, dict):
         values = body if isinstance(body, dict) else {}
 
     cleaned = _sanitize(values)
-    tuning = request.app["tuning"]
+    tuning = request.app.state.tuning
     tuning.update(cleaned)
-
-    manager = request.app["manager"]
-    manager.apply_tuning(tuning)
-
-    return web.json_response(public_tuning_payload(tuning))
+    request.app.state.manager.apply_tuning(tuning)
+    return public_tuning_payload(tuning)
 
 
-async def reset_tuning(request: web.Request) -> web.Response:
+@router.post("/tuning/reset")
+async def reset_tuning(request: Request) -> Dict[str, Any]:
     fresh = make_tuning()
-    request.app["tuning"].clear()
-    request.app["tuning"].update(fresh)
-    request.app["manager"].apply_tuning(fresh)
-    return web.json_response(public_tuning_payload(fresh))
+    request.app.state.tuning.clear()
+    request.app.state.tuning.update(fresh)
+    request.app.state.manager.apply_tuning(fresh)
+    return public_tuning_payload(fresh)

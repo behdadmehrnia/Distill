@@ -10,6 +10,7 @@ from api.meeting.chunker import OverlappingChunker
 from api.meeting.diarization import SpeakerDiarizer
 from api.meeting.insights import _parse_json_response, format_transcript_for_llm
 from api.meeting.models import MeetingRecord, SpeakerInterval, TranscriptSegment
+from api.meeting.review import TranscriptReviewAgent, gate_stt_text
 from api.meeting.store import TranscriptStore
 
 
@@ -77,6 +78,41 @@ def test_align_and_dedupe():
     assert not segments[0].is_overlap
 
 
+def test_align_skips_false_overlap_from_frame_edge_flicker():
+    """Abutting turns + tiny 40ms overlaps must not become هم‌صحبتی."""
+    intervals = [
+        SpeakerInterval("SPEAKER_00", 0, 3040, False),
+        SpeakerInterval("SPEAKER_01", 3000, 6040, False),  # 40ms edge flicker
+        SpeakerInterval("SPEAKER_00", 6000, 8000, False),
+    ]
+    segments = align_stt_with_diarization(
+        "m1",
+        [(0, 8000, "سلام فقط یک نفر صحبت می‌کند")],
+        intervals,
+        min_overlap_ms=1200,
+    )
+    assert segments
+    assert all(not s.is_overlap for s in segments)
+
+
+def test_fallback_diarization_prefers_single_speaker_on_mono_noise():
+    sr = 16000
+    rng = np.random.default_rng(0)
+    # One continuous voice-like signal (not two talkers)
+    t = np.linspace(0, 6, sr * 6, endpoint=False)
+    audio = (0.05 * np.sin(2 * np.pi * 180 * t) + 0.01 * rng.standard_normal(len(t))).astype(
+        np.float32
+    )
+    diarizer = SpeakerDiarizer(max_speakers=2, energy_threshold=0.005)
+    intervals = diarizer.diarize(audio, sr)
+    speakers = {iv.speaker_id for iv in intervals}
+    assert len(speakers) == 1
+    # No temporal overlaps between intervals
+    ordered = sorted(intervals, key=lambda x: x.start_ms)
+    for a, b in zip(ordered, ordered[1:]):
+        assert a.end_ms <= b.start_ms + 1
+
+
 def test_store_roundtrip(store):
     meeting = MeetingRecord.create("جلسه تست")
     store.save_meeting(meeting)
@@ -109,3 +145,37 @@ def test_insights_json_parse_and_format():
     text = format_transcript_for_llm([seg])
     assert "SPEAKER_00" in text
     assert "سلام" in text
+
+
+def test_stt_review_drops_whisper_hallucination_loop():
+    junk = " ".join(["خیلی"] * 40)
+    result = gate_stt_text(junk)
+    assert result.action == "drop"
+    assert not result.accepted
+    assert result.score < 0.35
+
+
+def test_stt_review_keeps_normal_persian():
+    result = gate_stt_text("چه خبره صدای چیز")
+    assert result.accepted
+    assert result.action in {"keep", "fix"}
+    assert "خبر" in result.text
+
+
+def test_stt_review_collapses_mild_repetition():
+    result = gate_stt_text("خیلی خیلی خیلی خوب بود جلسه")
+    assert result.accepted
+    # Consecutive runs collapsed to one token
+    assert result.text.count("خیلی") <= 2
+
+
+@pytest.mark.asyncio
+async def test_review_agent_finalize_without_llm():
+    agent = TranscriptReviewAgent(llm=None, enabled=False)
+    segs = [
+        TranscriptSegment.create("m1", "SPEAKER_00", 0, 1000, " ".join(["خیلی"] * 30)),
+        TranscriptSegment.create("m1", "SPEAKER_00", 1000, 2000, "سلام دوستان"),
+    ]
+    out = await agent.review_segments(segs)
+    assert len(out) == 1
+    assert out[0].text == "سلام دوستان"

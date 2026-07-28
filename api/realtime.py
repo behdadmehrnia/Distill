@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Set
 
-from aiohttp import web
+from fastapi import FastAPI, WebSocket
 
 
-async def broadcast(app: web.Application, meeting_id: str, event: Dict[str, Any]) -> None:
-    sockets = list(app["ws_by_meeting"].get(meeting_id, set()))
+async def broadcast(app: FastAPI, meeting_id: str, event: Dict[str, Any]) -> None:
+    sockets: Set[WebSocket] = set(app.state.ws_by_meeting.get(meeting_id, set()))
     dead = []
     for ws in sockets:
-        if ws.closed:
-            dead.append(ws)
-            continue
         try:
             await ws.send_json(event)
         except Exception:
             dead.append(ws)
+    bucket = app.state.ws_by_meeting.get(meeting_id)
+    if not bucket:
+        return
     for ws in dead:
-        app["ws_by_meeting"].get(meeting_id, set()).discard(ws)
+        bucket.discard(ws)
