@@ -35,7 +35,7 @@ class Settings:
     """Runtime settings. Paths are fixed; secrets/endpoints come from the environment."""
 
     host: str = "0.0.0.0"
-    port: int = 8030
+    port: int = 8000
     db_path: Path = DB_PATH
     upload_dir: Path = UPLOAD_DIR
     audio_dir: Path = AUDIO_DIR
@@ -62,7 +62,7 @@ class Settings:
     def from_env(cls) -> "Settings":
         return cls(
             host=_env_str("MEETING_HOST", "0.0.0.0") or "0.0.0.0",
-            port=_env_int("MEETING_PORT", 8030),
+            port=_env_int("MEETING_PORT", 8000),
             db_path=DB_PATH,
             upload_dir=UPLOAD_DIR,
             audio_dir=AUDIO_DIR,

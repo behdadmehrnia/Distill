@@ -26,8 +26,8 @@ python -m api
 # یا: python main.py
 ```
 
-UI لندینگ: `http://localhost:8030/`  
-UI دستیار: `http://localhost:8030/assistant`
+UI لندینگ: `http://localhost:8000/`  
+UI دستیار: `http://localhost:8000/assistant`
 
 ## Docker
 
@@ -45,13 +45,13 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-سرویس روی `http://localhost:8030` در دسترس است.
+سرویس روی `http://localhost:8000` در دسترس است.
 
 فقط با Docker (بدون compose):
 
 ```bash
 docker build -t distill .
-docker run --rm -p 8030:8030 --env-file .env \
+docker run --rm -p 8000:8000 --env-file .env \
   -v distill-data:/app/data \
   distill
 ```
@@ -84,7 +84,7 @@ pip install -r requirements.optional.txt  # torch CPU + pyannote
 | `AUDIO_SAMPLE_RATE` | `16000` | نرخ نمونه‌برداری |
 | `AUDIO_CHANNELS` | `1` | تعداد کانال (مونو) |
 | `MEETING_HOST` | `0.0.0.0` | بایند سرور |
-| `MEETING_PORT` | `8030` | پورت |
+| `MEETING_PORT` | `8000` | پورت |
 | `MEETING_WINDOW_MS` | `8000` | طول پنجره STT |
 | `MEETING_HOP_MS` | `2000` | گام پنجره |
 | `MEETING_DIARIZE_EVERY_MS` | `20000` | فاصله diarization زنده |

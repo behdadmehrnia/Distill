@@ -8,7 +8,6 @@ OPENAPI_SPEC = {
     "openapi": "3.0.3",
     "info": {
         "title": "Distill API",
-        "description": "Distill — Voice transcript و تحلیل جلسه",
         "version": "0.1.0",
     },
     "paths": {

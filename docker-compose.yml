@@ -4,13 +4,13 @@ services:
     image: distill:latest
     container_name: distill
     ports:
-      - "${MEETING_PORT:-8030}:8030"
+      - "${MEETING_PORT:-8000}:8000"
     env_file:
       - .env
     environment:
       # Paths are fixed in code under /app/data and /app/api/web
       MEETING_HOST: "0.0.0.0"
-      MEETING_PORT: "8030"
+      MEETING_PORT: "8000"
     volumes:
       # Persists SQLite DB, uploads, live audio, STT cache
       - distill-data:/app/data
