@@ -66,6 +66,16 @@ pip install -r requirements.optional.txt  # torch CPU + pyannote
 
 ## متغیرهای محیطی
 
+مسیرهای ماندگار در کد ثابت‌اند و از env خوانده نمی‌شوند:
+
+- `data/meetings.db`
+- `data/uploads/`
+- `data/audio/`
+- `data/stt_cache/`
+- `api/web/`
+
+در Docker همین‌ها زیر `/app/...` هستند؛ volume فقط روی `/app/data` کافی است.
+
 | متغیر | پیش‌فرض | توضیح |
 |--------|---------|--------|
 | `LLM_ENDPOINT` | — | آدرس chat completions |
@@ -75,7 +85,6 @@ pip install -r requirements.optional.txt  # torch CPU + pyannote
 | `AUDIO_CHANNELS` | `1` | تعداد کانال (مونو) |
 | `MEETING_HOST` | `0.0.0.0` | بایند سرور |
 | `MEETING_PORT` | `8030` | پورت |
-| `MEETING_DB` | `./data/meetings.db` | مسیر SQLite |
 | `MEETING_WINDOW_MS` | `8000` | طول پنجره STT |
 | `MEETING_HOP_MS` | `2000` | گام پنجره |
 | `MEETING_DIARIZE_EVERY_MS` | `20000` | فاصله diarization زنده |

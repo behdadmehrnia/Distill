@@ -7,19 +7,20 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
+# Fixed on-disk layout (not env-configurable) so Docker volume `/app/data` always matches.
+DATA_DIR = ROOT_DIR / "data"
+DB_PATH = DATA_DIR / "meetings.db"
+UPLOAD_DIR = DATA_DIR / "uploads"
+AUDIO_DIR = DATA_DIR / "audio"
+STT_CACHE_DIR = DATA_DIR / "stt_cache"
+WEB_DIR = ROOT_DIR / "api" / "web"
+
 
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
         return default
     return int(raw)
-
-
-def _env_path(name: str, default: Path) -> Path:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return Path(raw)
 
 
 def _env_str(name: str, default: str | None = None) -> str | None:
@@ -31,14 +32,15 @@ def _env_str(name: str, default: str | None = None) -> str | None:
 
 @dataclass(frozen=True)
 class Settings:
-    """All Distill settings are loaded from environment variables."""
+    """Runtime settings. Paths are fixed; secrets/endpoints come from the environment."""
 
     host: str = "0.0.0.0"
     port: int = 8030
-    db_path: Path = ROOT_DIR / "data" / "meetings.db"
-    upload_dir: Path = ROOT_DIR / "data" / "uploads"
-    audio_dir: Path = ROOT_DIR / "data" / "audio"
-    web_dir: Path = ROOT_DIR / "api" / "web"
+    db_path: Path = DB_PATH
+    upload_dir: Path = UPLOAD_DIR
+    audio_dir: Path = AUDIO_DIR
+    web_dir: Path = WEB_DIR
+    stt_cache_dir: Path = STT_CACHE_DIR
 
     sample_rate: int = 16000
     channels: int = 1
@@ -49,7 +51,6 @@ class Settings:
     stt_endpoint: str | None = None
     stt_api_key: str | None = None
     stt_model: str | None = None
-    stt_cache_dir: Path = ROOT_DIR / "data" / "stt_cache"
 
     llm_endpoint: str | None = None
     llm_api_key: str | None = None
@@ -62,10 +63,11 @@ class Settings:
         return cls(
             host=_env_str("MEETING_HOST", "0.0.0.0") or "0.0.0.0",
             port=_env_int("MEETING_PORT", 8030),
-            db_path=_env_path("MEETING_DB", ROOT_DIR / "data" / "meetings.db"),
-            upload_dir=_env_path("MEETING_UPLOAD_DIR", ROOT_DIR / "data" / "uploads"),
-            audio_dir=_env_path("MEETING_AUDIO_DIR", ROOT_DIR / "data" / "audio"),
-            web_dir=_env_path("MEETING_WEB_DIR", ROOT_DIR / "api" / "web"),
+            db_path=DB_PATH,
+            upload_dir=UPLOAD_DIR,
+            audio_dir=AUDIO_DIR,
+            web_dir=WEB_DIR,
+            stt_cache_dir=STT_CACHE_DIR,
             sample_rate=_env_int("AUDIO_SAMPLE_RATE", 16000),
             channels=_env_int("AUDIO_CHANNELS", 1),
             window_ms=_env_int("MEETING_WINDOW_MS", 8000),
@@ -76,7 +78,6 @@ class Settings:
             or _env_str("GAP_TOKEN")
             or _env_str("LLM_API_KEY"),
             stt_model=_env_str("STT_MODEL"),
-            stt_cache_dir=_env_path("STT_CACHE_DIR", ROOT_DIR / "data" / "stt_cache"),
             llm_endpoint=_env_str("LLM_ENDPOINT"),
             llm_api_key=_env_str("LLM_API_KEY"),
             llm_model=_env_str("LLM_MODEL_NAME"),

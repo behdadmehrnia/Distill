@@ -5,12 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     MEETING_HOST=0.0.0.0 \
-    MEETING_PORT=8030 \
-    MEETING_DB=/app/data/meetings.db \
-    MEETING_UPLOAD_DIR=/app/data/uploads \
-    MEETING_AUDIO_DIR=/app/data/audio \
-    MEETING_WEB_DIR=/app/api/web \
-    STT_CACHE_DIR=/app/data/stt_cache
+    MEETING_PORT=8030
 
 WORKDIR /app
 
