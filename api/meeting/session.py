@@ -109,20 +109,34 @@ class MeetingSession:
                 if not text:
                     continue
                 self._pending_stt.append((chunk.start_ms, chunk.end_ms, text))
-                segments = align_stt_with_diarization(
-                    self.meeting_id,
-                    [(chunk.start_ms, chunk.end_ms, text)],
-                    self._speaker_intervals,
-                    provisional=True,
-                )
-                for seg in segments:
-                    self.store.save_segment(seg)
-                    await self._emit({"type": "segment", "segment": seg.to_dict()})
+                await self._publish_live_transcript()
             except Exception as exc:
                 logger.exception("STT chunk failed: %s", exc)
                 await self._emit({"type": "error", "message": f"STT error: {exc}"})
             finally:
                 self._stt_queue.task_done()
+
+    async def _publish_live_transcript(self) -> None:
+        """Realign + dedupe all pending hop windows and replace provisional UI rows."""
+        if not self._pending_stt:
+            return
+        segments = align_stt_with_diarization(
+            self.meeting_id,
+            list(self._pending_stt),
+            self._speaker_intervals,
+            provisional=True,
+        )
+        segments = dedupe_overlapping_transcripts(segments)
+        self.store.delete_provisional_segments(self.meeting_id)
+        for seg in segments:
+            self.store.save_segment(seg)
+        await self._emit(
+            {
+                "type": "transcript",
+                "meeting_id": self.meeting_id,
+                "segments": [s.to_dict() for s in segments],
+            }
+        )
 
     async def _refresh_diarization(self, provisional: bool = True) -> None:
         async with self._lock:
@@ -150,15 +164,19 @@ class MeetingSession:
                     provisional=provisional,
                 )
                 segments = dedupe_overlapping_transcripts(segments)
-                # Always rebuild from pending STT windows after diarization refresh
-                self.store.delete_provisional_segments(self.meeting_id)
-                if not provisional:
-                    self.store.replace_meeting_segments(self.meeting_id, segments)
-                else:
+                if provisional:
+                    self.store.delete_provisional_segments(self.meeting_id)
                     for seg in segments:
                         self.store.save_segment(seg)
-                for seg in segments:
-                    await self._emit({"type": "segment", "segment": seg.to_dict()})
+                else:
+                    self.store.replace_meeting_segments(self.meeting_id, segments)
+                await self._emit(
+                    {
+                        "type": "transcript",
+                        "meeting_id": self.meeting_id,
+                        "segments": [s.to_dict() for s in segments],
+                    }
+                )
 
     async def stop(self) -> MeetingRecord:
         if not self._running:
@@ -253,8 +271,13 @@ class MeetingSession:
         )
         segments = dedupe_overlapping_transcripts(segments)
         self.store.replace_meeting_segments(self.meeting_id, segments)
-        for seg in segments:
-            await self._emit({"type": "segment", "segment": seg.to_dict()})
+        await self._emit(
+            {
+                "type": "transcript",
+                "meeting_id": self.meeting_id,
+                "segments": [s.to_dict() for s in segments],
+            }
+        )
 
         self.record.status = MeetingStatus.STOPPED
         self.record.stopped_at = time.time()

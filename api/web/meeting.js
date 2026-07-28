@@ -292,17 +292,20 @@ class DistillClient {
   onWsMessage(event) {
     try {
       const msg = JSON.parse(event.data);
-      if (msg.type === "segment" && msg.segment) {
+      if (msg.type === "transcript" && Array.isArray(msg.segments)) {
+        this.replaceTranscript(msg.segments);
+      } else if (msg.type === "segment" && msg.segment) {
         this.upsertSegment(msg.segment);
       } else if (msg.type === "status") {
         if (msg.status === "processing") this.setStatus("processing", "در حال پردازش");
-        if (msg.status === "stopped") this.setStatus("connected", "پایان یافت");
+        if (msg.status === "stopped") {
+          this.setStatus("connected", "متوقف شد – آماده تحلیل");
+          this.stopTimer(false);
+          if (this.insightsBtn) this.insightsBtn.disabled = false;
+          this.refreshTranscript().catch(() => {});
+        }
         if (msg.status === "recording") this.setStatus("recording", "در حال ضبط");
       } else if (msg.type === "speaker_update") {
-        const overlaps = (msg.overlaps || []).length;
-        if (overlaps > 0) {
-          this.setStatus("recording", `ضبط — هم‌پوشانی: ${overlaps}`);
-        }
         this.refreshTranscript().catch(() => {});
       } else if (msg.type === "insights") {
         this.renderInsights(msg.insights);
@@ -312,6 +315,12 @@ class DistillClient {
     } catch (err) {
       console.error(err);
     }
+  }
+
+  replaceTranscript(segments) {
+    this.segments.clear();
+    (segments || []).forEach((s) => this.segments.set(s.id, s));
+    this.renderTimeline();
   }
 
   speakerColor(speakerId) {
@@ -344,32 +353,69 @@ class DistillClient {
   renderTimeline() {
     const list = Array.from(this.segments.values())
       .filter((s) => (s.text || "").trim())
-      .sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms);
+      .sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms || String(a.speaker_id).localeCompare(String(b.speaker_id)));
 
     if (!list.length) {
       this.clearTimeline(false);
       return;
     }
 
+    // Group simultaneous-talk rows (same span + same text) into one visual card
+    const groups = [];
+    const used = new Set();
+    list.forEach((seg, idx) => {
+      if (used.has(idx)) return;
+      if (seg.is_overlap) {
+        const peers = list.filter((other, j) => {
+          if (j < idx) return false;
+          return (
+            other.is_overlap &&
+            other.start_ms === seg.start_ms &&
+            other.end_ms === seg.end_ms &&
+            other.text === seg.text
+          );
+        });
+        peers.forEach((p) => {
+          const j = list.indexOf(p);
+          if (j >= 0) used.add(j);
+        });
+        const speakers = [
+          ...new Set([
+            ...(seg.overlap_speakers || []),
+            ...peers.map((p) => p.speaker_id),
+          ]),
+        ];
+        groups.push({ type: "overlap", seg, speakers });
+      } else {
+        used.add(idx);
+        groups.push({ type: "single", seg, speakers: [seg.speaker_id] });
+      }
+    });
+
     this.timeline.innerHTML = "";
-    list.forEach((seg) => {
+    groups.forEach((g) => {
       const row = document.createElement("div");
-      row.className = "segment";
-      const color = this.speakerColor(seg.speaker_id);
-      const overlap = seg.is_overlap
-        ? '<span class="badge">هم‌پوشانی</span>'
-        : "";
-      const provisional = seg.provisional
+      row.className = g.type === "overlap" ? "segment segment-overlap" : "segment";
+      const provisional = g.seg.provisional
         ? '<span class="badge badge-muted">موقت</span>'
         : "";
+      const speakerHtml = g.speakers
+        .map((spk) => {
+          const color = this.speakerColor(spk);
+          return `<span class="speaker-chip"><span class="speaker-dot" style="background:${color}"></span><span class="speaker-name" style="color:${color}">${this.escape(spk)}</span></span>`;
+        })
+        .join("");
+      const badge =
+        g.type === "overlap"
+          ? '<span class="badge">هم‌صحبتی</span>'
+          : "";
       row.innerHTML = `
         <div class="segment-meta">
-          <span class="speaker-dot" style="background:${color}"></span>
-          <span class="speaker-name" style="color:${color}">${this.escape(seg.speaker_id)}</span>
-          <span>${this.formatTs(seg.start_ms)} – ${this.formatTs(seg.end_ms)}</span>
-          ${overlap}${provisional}
+          <div class="speaker-row">${speakerHtml}</div>
+          <span>${this.formatTs(g.seg.start_ms)} – ${this.formatTs(g.seg.end_ms)}</span>
+          ${badge}${provisional}
         </div>
-        <div class="segment-text">${this.escape(seg.text)}</div>
+        <div class="segment-text">${this.escape(g.seg.text)}</div>
       `;
       this.timeline.appendChild(row);
     });

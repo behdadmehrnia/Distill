@@ -25,6 +25,7 @@ class TranscriptSegment:
     text: str
     is_overlap: bool = False
     provisional: bool = False
+    overlap_speakers: List[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
 
     @staticmethod
@@ -36,7 +37,11 @@ class TranscriptSegment:
         text: str,
         is_overlap: bool = False,
         provisional: bool = False,
+        overlap_speakers: Optional[List[str]] = None,
     ) -> "TranscriptSegment":
+        speakers = list(overlap_speakers or [])
+        if is_overlap and speaker_id not in speakers:
+            speakers = [speaker_id, *[s for s in speakers if s != speaker_id]]
         return TranscriptSegment(
             id=str(uuid.uuid4()),
             meeting_id=meeting_id,
@@ -46,6 +51,7 @@ class TranscriptSegment:
             text=text.strip(),
             is_overlap=is_overlap,
             provisional=provisional,
+            overlap_speakers=speakers,
         )
 
     def to_dict(self) -> Dict[str, Any]:

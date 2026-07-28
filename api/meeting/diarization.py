@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -185,40 +185,80 @@ class SpeakerDiarizer:
         X = (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-6)
 
         n_speakers = self._estimate_speakers(X)
-        labels = self._kmeans(X, n_speakers)
+        labels, centers = self._kmeans_with_centers(X, n_speakers)
+        dists = ((X[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+
+        # Soft multi-label: ambiguous frames belong to top-2 speakers → overlapping spans
+        membership: Dict[int, List[Tuple[int, int]]] = {i: [] for i in range(n_speakers)}
+        for idx, t in enumerate(times):
+            order = np.argsort(dists[idx])
+            primary = int(order[0])
+            membership[primary].append((t, t + frame))
+            if n_speakers >= 2:
+                second = int(order[1])
+                d0 = float(dists[idx, primary])
+                d1 = float(dists[idx, second])
+                rms_feat = float(X[idx, 0])
+                if d1 <= d0 * 1.35 + 0.15 and rms_feat > 0.2:
+                    membership[second].append((t, t + frame))
 
         intervals: List[SpeakerInterval] = []
-        cur_label = int(labels[0])
-        cur_start = times[0]
-        prev_end = times[0] + frame
+        for lab, spans in membership.items():
+            if not spans:
+                continue
+            intervals.extend(self._spans_to_intervals(f"SPEAKER_{lab:02d}", spans, sr))
+        if not intervals:
+            return [
+                SpeakerInterval("SPEAKER_00", 0, int(len(audio) * 1000 / sr), False)
+            ]
+        return self._mark_true_overlaps(self._merge_short_intervals(intervals))
 
-        for idx in range(1, len(labels)):
-            lab = int(labels[idx])
-            t = times[idx]
-            if lab != cur_label:
-                start_ms = int(cur_start * 1000 / sr)
-                end_ms = int(prev_end * 1000 / sr)
-                intervals.append(
+    @staticmethod
+    def _spans_to_intervals(
+        speaker_id: str,
+        spans: List[Tuple[int, int]],
+        sr: int,
+        max_gap_samples: Optional[int] = None,
+    ) -> List[SpeakerInterval]:
+        if not spans:
+            return []
+        max_gap = max_gap_samples if max_gap_samples is not None else int(sr * 0.08)
+        spans = sorted(spans, key=lambda x: x[0])
+        cur_s, cur_e = spans[0]
+        out: List[SpeakerInterval] = []
+        for s, e in spans[1:]:
+            if s <= cur_e + max_gap:
+                cur_e = max(cur_e, e)
+            else:
+                out.append(
                     SpeakerInterval(
-                        speaker_id=f"SPEAKER_{cur_label:02d}",
-                        start_ms=start_ms,
-                        end_ms=end_ms,
+                        speaker_id=speaker_id,
+                        start_ms=int(cur_s * 1000 / sr),
+                        end_ms=int(cur_e * 1000 / sr),
                         is_overlap=False,
                     )
                 )
-                cur_label = lab
-                cur_start = t
-            prev_end = t + frame
-
-        intervals.append(
+                cur_s, cur_e = s, e
+        out.append(
             SpeakerInterval(
-                speaker_id=f"SPEAKER_{cur_label:02d}",
-                start_ms=int(cur_start * 1000 / sr),
-                end_ms=int(prev_end * 1000 / sr),
+                speaker_id=speaker_id,
+                start_ms=int(cur_s * 1000 / sr),
+                end_ms=int(cur_e * 1000 / sr),
                 is_overlap=False,
             )
         )
-        return self._merge_short_intervals(intervals)
+        return out
+
+    @staticmethod
+    def _mark_true_overlaps(intervals: List[SpeakerInterval]) -> List[SpeakerInterval]:
+        for i, a in enumerate(intervals):
+            for b in intervals[i + 1 :]:
+                if a.speaker_id == b.speaker_id:
+                    continue
+                if min(a.end_ms, b.end_ms) > max(a.start_ms, b.start_ms):
+                    a.is_overlap = True
+                    b.is_overlap = True
+        return intervals
 
     @staticmethod
     def _merge_short_intervals(
@@ -226,38 +266,34 @@ class SpeakerDiarizer:
     ) -> List[SpeakerInterval]:
         if not intervals:
             return []
-        merged: List[SpeakerInterval] = [intervals[0]]
-        for iv in intervals[1:]:
-            prev = merged[-1]
-            dur = iv.end_ms - iv.start_ms
-            if (
-                iv.speaker_id == prev.speaker_id
-                or dur < min_ms
-                or (prev.end_ms - prev.start_ms) < min_ms
-            ):
-                # absorb short blips into previous turn; keep overlap if either flagged
-                prev.end_ms = max(prev.end_ms, iv.end_ms)
-                prev.is_overlap = prev.is_overlap or iv.is_overlap
-                if dur >= min_ms and (prev.end_ms - prev.start_ms) >= min_ms:
-                    # if absorbed segment was a different long-enough speaker, keep label of longer
-                    pass
-            else:
-                # mark boundary between different speakers as potential interruption
-                if iv.speaker_id != prev.speaker_id:
-                    iv.is_overlap = True
-                    prev.is_overlap = True
-                merged.append(iv)
-        return merged
+        by_spk: Dict[str, List[SpeakerInterval]] = {}
+        for iv in sorted(intervals, key=lambda x: (x.speaker_id, x.start_ms)):
+            by_spk.setdefault(iv.speaker_id, []).append(iv)
+
+        merged: List[SpeakerInterval] = []
+        for items in by_spk.values():
+            cur = items[0]
+            for iv in items[1:]:
+                gap = iv.start_ms - cur.end_ms
+                if gap <= 120 or (iv.end_ms - iv.start_ms) < min_ms:
+                    cur.end_ms = max(cur.end_ms, iv.end_ms)
+                    cur.is_overlap = cur.is_overlap or iv.is_overlap
+                else:
+                    merged.append(cur)
+                    cur = iv
+            merged.append(cur)
+        return sorted(merged, key=lambda x: x.start_ms)
 
     def _estimate_speakers(self, X: np.ndarray) -> int:
-        # Cap by configured range; prefer 2-4 for typical meetings
         n = min(self.max_speakers, max(self.min_speakers, min(4, max(2, len(X) // 40))))
         return n
 
     @staticmethod
-    def _kmeans(X: np.ndarray, k: int, iters: int = 15) -> np.ndarray:
+    def _kmeans_with_centers(
+        X: np.ndarray, k: int, iters: int = 15
+    ) -> Tuple[np.ndarray, np.ndarray]:
         rng = np.random.default_rng(42)
-        centers = X[rng.choice(len(X), size=k, replace=False)]
+        centers = X[rng.choice(len(X), size=k, replace=False)].copy()
         labels = np.zeros(len(X), dtype=np.int32)
         for _ in range(iters):
             dists = ((X[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
@@ -266,4 +302,9 @@ class SpeakerDiarizer:
                 members = X[labels == i]
                 if len(members):
                     centers[i] = members.mean(axis=0)
+        return labels, centers
+
+    @staticmethod
+    def _kmeans(X: np.ndarray, k: int, iters: int = 15) -> np.ndarray:
+        labels, _ = SpeakerDiarizer._kmeans_with_centers(X, k, iters)
         return labels

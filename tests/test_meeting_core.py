@@ -36,17 +36,45 @@ def test_dominant_speaker_and_overlap():
     assert speaker in {"SPEAKER_00", "SPEAKER_01"}
     assert overlap is True
 
+    turns = [
+        SpeakerInterval("SPEAKER_00", 0, 4000, False),
+        SpeakerInterval("SPEAKER_01", 4000, 8000, False),
+    ]
+    _, overlap2 = dominant_speaker(0, 8000, turns)
+    assert overlap2 is False
 
-def test_align_and_dedupe():
-    intervals = [SpeakerInterval("SPEAKER_00", 0, 10000, False)]
+
+def test_align_emits_both_speakers_on_overlap():
+    intervals = [
+        SpeakerInterval("SPEAKER_00", 0, 8000, True),
+        SpeakerInterval("SPEAKER_01", 3000, 7000, True),
+    ]
     segments = align_stt_with_diarization(
         "m1",
-        [(0, 2000, "سلام"), (100, 2100, "سلام")],
+        [(0, 8000, "سلام هم‌زمان صحبت می‌کنیم")],
+        intervals,
+    )
+    overlap_rows = [s for s in segments if s.is_overlap]
+    speakers = {s.speaker_id for s in overlap_rows}
+    assert speakers == {"SPEAKER_00", "SPEAKER_01"}
+    assert all(s.text for s in overlap_rows)
+
+
+def test_align_and_dedupe():
+    intervals = [SpeakerInterval("SPEAKER_00", 0, 20000, False)]
+    segments = align_stt_with_diarization(
+        "m1",
+        [
+            (0, 8000, "سلام دوستان امروز درباره چت جی پی تی صحبت می‌کنیم"),
+            (2000, 10000, "سلام دوستان امروز درباره چت جی پی تی صحبت می‌کنیم و کاربردش"),
+            (4000, 12000, "امروز درباره چت جی پی تی صحبت می‌کنیم و کاربردش در ۱۴۰۵"),
+        ],
         intervals,
     )
     deduped = dedupe_overlapping_transcripts(segments)
-    assert len(deduped) >= 1
+    assert len(deduped) == 1
     assert deduped[0].speaker_id == "SPEAKER_00"
+    assert not deduped[0].is_overlap
 
 
 def test_store_roundtrip(store):

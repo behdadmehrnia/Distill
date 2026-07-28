@@ -57,6 +57,7 @@ class TranscriptStore:
                         is_overlap INTEGER NOT NULL DEFAULT 0,
                         provisional INTEGER NOT NULL DEFAULT 0,
                         created_at REAL NOT NULL,
+                        overlap_speakers TEXT NOT NULL DEFAULT '[]',
                         FOREIGN KEY(meeting_id) REFERENCES meetings(id)
                     );
 
@@ -75,6 +76,14 @@ class TranscriptStore:
                     );
                     """
                 )
+                cols = {
+                    r[1]
+                    for r in conn.execute("PRAGMA table_info(segments)").fetchall()
+                }
+                if "overlap_speakers" not in cols:
+                    conn.execute(
+                        "ALTER TABLE segments ADD COLUMN overlap_speakers TEXT NOT NULL DEFAULT '[]'"
+                    )
                 conn.commit()
             finally:
                 conn.close()
@@ -156,15 +165,16 @@ class TranscriptStore:
                     """
                     INSERT INTO segments (
                         id, meeting_id, speaker_id, start_ms, end_ms, text,
-                        is_overlap, provisional, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_overlap, provisional, created_at, overlap_speakers
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         speaker_id=excluded.speaker_id,
                         start_ms=excluded.start_ms,
                         end_ms=excluded.end_ms,
                         text=excluded.text,
                         is_overlap=excluded.is_overlap,
-                        provisional=excluded.provisional
+                        provisional=excluded.provisional,
+                        overlap_speakers=excluded.overlap_speakers
                     """,
                     (
                         segment.id,
@@ -176,6 +186,7 @@ class TranscriptStore:
                         1 if segment.is_overlap else 0,
                         1 if segment.provisional else 0,
                         segment.created_at,
+                        json.dumps(segment.overlap_speakers or [], ensure_ascii=False),
                     ),
                 )
                 conn.commit()
@@ -193,8 +204,8 @@ class TranscriptStore:
                     """
                     INSERT INTO segments (
                         id, meeting_id, speaker_id, start_ms, end_ms, text,
-                        is_overlap, provisional, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_overlap, provisional, created_at, overlap_speakers
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -207,6 +218,7 @@ class TranscriptStore:
                             1 if s.is_overlap else 0,
                             1 if s.provisional else 0,
                             s.created_at,
+                            json.dumps(s.overlap_speakers or [], ensure_ascii=False),
                         )
                         for s in segments
                     ],
@@ -315,6 +327,13 @@ class TranscriptStore:
 
     @staticmethod
     def _row_to_segment(row: sqlite3.Row) -> TranscriptSegment:
+        keys = row.keys()
+        overlap_speakers = []
+        if "overlap_speakers" in keys and row["overlap_speakers"]:
+            try:
+                overlap_speakers = json.loads(row["overlap_speakers"])
+            except json.JSONDecodeError:
+                overlap_speakers = []
         return TranscriptSegment(
             id=row["id"],
             meeting_id=row["meeting_id"],
@@ -324,5 +343,6 @@ class TranscriptStore:
             text=row["text"],
             is_overlap=bool(row["is_overlap"]),
             provisional=bool(row["provisional"]),
+            overlap_speakers=overlap_speakers,
             created_at=row["created_at"],
         )

@@ -30,12 +30,23 @@ def format_transcript_for_llm(
 ) -> str:
     speaker_map = speaker_map or {}
     lines = []
+    seen_overlap = set()
     for seg in segments:
-        label = speaker_map.get(seg.speaker_id, seg.speaker_id)
         start = _fmt_ts(seg.start_ms)
         end = _fmt_ts(seg.end_ms)
-        overlap = " [OVERLAP]" if seg.is_overlap else ""
-        lines.append(f"[{start}-{end}] {label}{overlap}: {seg.text}")
+        if seg.is_overlap:
+            key = (seg.start_ms, seg.end_ms, seg.text)
+            if key in seen_overlap:
+                continue
+            seen_overlap.add(key)
+            names = seg.overlap_speakers or [seg.speaker_id]
+            labels = [speaker_map.get(s, s) for s in names]
+            lines.append(
+                f"[{start}-{end}] {' + '.join(labels)} [OVERLAP / هم‌صحبتی]: {seg.text}"
+            )
+        else:
+            label = speaker_map.get(seg.speaker_id, seg.speaker_id)
+            lines.append(f"[{start}-{end}] {label}: {seg.text}")
     return "\n".join(lines)
 
 
