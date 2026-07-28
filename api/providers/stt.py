@@ -10,6 +10,8 @@ from typing import Optional
 import aiohttp
 import numpy as np
 
+from api.providers.http_util import client_session
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gapgpt/whisper-1"
@@ -90,7 +92,7 @@ class OpenAICompatibleSTT:
         form.add_field("language", language or "fa")
         form.add_field("model", model or self.model)
 
-        async with aiohttp.ClientSession() as session:
+        async with client_session() as session:
             async with session.post(self.endpoint, data=form, headers=headers) as response:
                 if response.status != 200:
                     error_text = await response.text()

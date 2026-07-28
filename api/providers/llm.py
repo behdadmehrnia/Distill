@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
+from api.providers.http_util import client_session
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +52,7 @@ class OpenAICompatibleLLM:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         logger.info("LLM request to %s model=%s", self.endpoint, payload["model"])
-        async with aiohttp.ClientSession(timeout=self.timeout) as session:
+        async with client_session(timeout=self.timeout) as session:
             async with session.post(self.endpoint, json=payload, headers=headers) as resp:
                 body = await resp.text()
                 if resp.status >= 400:

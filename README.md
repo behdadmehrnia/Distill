@@ -27,7 +27,8 @@ python -m api
 ```
 
 UI لندینگ: `http://localhost:8000/`  
-UI دستیار: `http://localhost:8000/assistant`
+UI دستیار: `http://localhost:8000/assistant`  
+باز کردن جلسه قبلی: `http://localhost:8000/assistant/{meeting_id}`
 
 ## Docker
 
@@ -106,6 +107,7 @@ pytest
 |-----|------|--------|
 | `GET` | `/` | لندینگ Distill |
 | `GET` | `/assistant` | UI دستDistill |
+| `GET` | `/assistant/{meeting_id}` | UI دستیار با تاریخچه همان جلسه |
 | `GET` | `/docs` | مستندات Swagger |
 | `GET` | `/health` | سلامت سرویس |
 | `POST` | `/meetings` | ایجاد جلسه |

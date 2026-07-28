@@ -5,6 +5,7 @@ aiohttp>=3.9,<4
 numpy>=1.26,<3
 python-dotenv>=1.0
 pydub>=0.25
+certifi>=2024.0.0
 audioop-lts; python_version >= "3.13"
 
 # Dev / tests

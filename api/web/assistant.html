@@ -66,6 +66,14 @@
       padding: 0.35rem 0.75rem;
       font-size: 0.82rem;
       color: #999;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .nav-status:hover {
+      border-color: #f9d423;
+      color: #e0e0e0;
     }
 
     .status-dot {
@@ -171,6 +179,17 @@
     .field input[type="text"]:focus,
     .field select:focus {
       border-color: #f9d423;
+    }
+
+    .field input.field-invalid {
+      border-color: #ef4444;
+    }
+
+    .field-error {
+      color: #ef4444;
+      font-size: 0.75rem;
+      margin: -0.1rem 0 0.35rem;
+      text-align: right;
     }
 
     .field input[type="file"] {
@@ -509,6 +528,117 @@
     .insights-grid li + li { margin-top: 0.3rem; }
 
     .hidden { display: none !important; }
+
+    .tuning-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      background: rgba(0, 0, 0, 0.55);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 1rem;
+      overflow: auto;
+    }
+
+    .tuning-overlay.hidden { display: none !important; }
+
+    .tuning-panel {
+      width: min(520px, 100%);
+      margin: 3.5rem auto 1.5rem;
+      background: #1f1f1f;
+      border: 1px solid #333;
+      border-radius: 12px;
+      padding: 1rem 1.1rem 1.15rem;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+    }
+
+    .tuning-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.85rem;
+    }
+
+    .tuning-head h3 {
+      color: #f9d423;
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+
+    .tuning-note {
+      color: #777;
+      font-size: 0.75rem;
+      margin-bottom: 0.85rem;
+      line-height: 1.6;
+    }
+
+    .tuning-group {
+      margin-bottom: 0.95rem;
+      border-top: 1px solid #2e2e2e;
+      padding-top: 0.7rem;
+    }
+
+    .tuning-group h4 {
+      color: #aaa;
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-bottom: 0.55rem;
+    }
+
+    .tuning-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.35rem 0.75rem;
+      align-items: center;
+      margin-bottom: 0.55rem;
+    }
+
+    .tuning-row label {
+      color: #ddd;
+      font-size: 0.82rem;
+    }
+
+    .tuning-row .hint {
+      grid-column: 1 / -1;
+      color: #666;
+      font-size: 0.7rem;
+      margin-top: -0.25rem;
+    }
+
+    .tuning-row .apply-tag {
+      font-size: 0.65rem;
+      color: #888;
+      border: 1px solid #333;
+      border-radius: 999px;
+      padding: 0.05rem 0.4rem;
+      margin-inline-start: 0.35rem;
+    }
+
+    .tuning-row input {
+      width: 7.5rem;
+      background: #151515;
+      border: 1px solid #333;
+      border-radius: 8px;
+      color: #e0e0e0;
+      padding: 0.4rem 0.55rem;
+      font: inherit;
+      text-align: center;
+    }
+
+    .tuning-row input:focus {
+      outline: none;
+      border-color: #f9d423;
+    }
+
+    .tuning-actions {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.85rem;
+    }
+
+    .tuning-actions .btn { width: auto; flex: 1; }
   </style>
 </head>
 <body>
@@ -521,7 +651,7 @@
       Distill
     </a>
     <div class="nav-meta">
-      <div class="nav-status">
+      <div id="statusChip" class="nav-status" title="کلیک برای تنظیم حساسیت‌ها" role="button" tabindex="0">
         <span id="connectionStatus" class="status-dot" aria-hidden="true"></span>
         <span id="statusText">آماده</span>
       </div>
@@ -533,10 +663,11 @@
     <aside class="panel controls-panel">
       <h3 class="panel-title">جلسه</h3>
 
-      <div class="field">
-        <label for="meetingTitle">عنوان جلسه</label>
-        <input id="meetingTitle" type="text" value="جلسه مدیران" />
-      </div>
+        <div class="field">
+          <label for="meetingTitle">عنوان جلسه</label>
+          <p id="meetingTitleError" class="field-error hidden" role="alert">لطفاً عنوان جلسه را وارد کنید</p>
+          <input id="meetingTitle" type="text" placeholder="مثلاً جلسه مدیران ۲۱ تیر" autocomplete="off" required />
+        </div>
 
       <div id="liveSource" class="source-mode">
         <div class="field">
@@ -612,6 +743,24 @@
           <ul id="insightDecisions"></ul>
           <ul id="insightActions"></ul>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tuningPanel" class="tuning-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="tuningTitle">
+    <div class="tuning-panel">
+      <div class="tuning-head">
+        <h3 id="tuningTitle">تنظیم حساسیت‌ها</h3>
+        <button id="closeTuningBtn" class="linkish" type="button">بستن</button>
+      </div>
+      <p class="tuning-note">
+        با کلیک روی وضعیت باز می‌شود. مقادیر «زنده» فوری اعمال می‌شوند؛
+        «جلسه بعد» فقط از ضبط بعدی اثر دارد (مثل طول پنجره STT).
+      </p>
+      <div id="tuningFields"></div>
+      <div class="tuning-actions">
+        <button id="resetTuningBtn" class="btn btn-ghost" type="button">بازنشانی</button>
+        <button id="saveTuningBtn" class="btn btn-primary" type="button">اعمال</button>
       </div>
     </div>
   </div>

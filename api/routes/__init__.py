@@ -1,6 +1,6 @@
 from aiohttp import web
 
-from api.routes import docs, health, meetings, pages
+from api.routes import docs, health, meetings, pages, tuning
 
 
 def setup_routes(app: web.Application) -> None:
@@ -10,9 +10,14 @@ def setup_routes(app: web.Application) -> None:
 
     app.router.add_get("/", pages.serve_landing)
     app.router.add_get("/assistant", pages.serve_assistant)
+    app.router.add_get("/assistant/{meeting_id}", pages.serve_assistant_session)
     app.router.add_get("/styles.css", pages.serve_css)
     app.router.add_get("/meeting.js", pages.serve_js)
     app.router.add_get("/logo.svg", pages.serve_logo)
+
+    app.router.add_get("/tuning", tuning.get_tuning)
+    app.router.add_put("/tuning", tuning.put_tuning)
+    app.router.add_post("/tuning/reset", tuning.reset_tuning)
 
     app.router.add_get("/meetings", meetings.list_meetings)
     app.router.add_post("/meetings", meetings.create_meeting)

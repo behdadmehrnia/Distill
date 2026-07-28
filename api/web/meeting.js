@@ -39,11 +39,90 @@ class DistillClient {
     this.insightsPanel = document.getElementById("insightsPanel");
     this.recordTimer = document.getElementById("recordTimer");
     this.levelMeter = document.getElementById("levelMeter");
+    this.statusChip = document.getElementById("statusChip");
+    this.tuningPanel = document.getElementById("tuningPanel");
+    this.tuningFields = document.getElementById("tuningFields");
     this._timerStartedAt = null;
     this._timerInterval = null;
+    this._tuningSchema = [];
+    this._tuningValues = {};
+    this._tuningDefaults = {};
 
     this.bindEvents();
     this.loadAudioDevices();
+    this.loadTuning().catch((err) => console.error(err));
+    if (this.meetingTitle) {
+      this.meetingTitle.addEventListener("input", () => {
+        this.meetingTitle.classList.remove("field-invalid");
+        const err = document.getElementById("meetingTitleError");
+        if (err) err.classList.add("hidden");
+      });
+    }
+    this.bootstrapFromUrl().catch((err) => console.error(err));
+  }
+
+  meetingIdFromPath() {
+    const parts = window.location.pathname.replace(/\/+$/, "").split("/");
+    // /assistant/{uuid}
+    if (parts.length >= 3 && parts[1] === "assistant" && parts[2]) {
+      return parts[2];
+    }
+    return null;
+  }
+
+  setSessionUrl(meetingId) {
+    if (!meetingId) return;
+    const next = `/assistant/${meetingId}`;
+    if (window.location.pathname !== next) {
+      window.history.replaceState({ meetingId }, "", next);
+    }
+  }
+
+  async bootstrapFromUrl() {
+    const id = this.meetingIdFromPath();
+    if (!id) return;
+    await this.loadExistingMeeting(id);
+  }
+
+  async loadExistingMeeting(meetingId) {
+    this.setStatus("processing", "در حال بارگذاری جلسه…");
+    const res = await fetch(`/meetings/${meetingId}`);
+    if (!res.ok) {
+      this.setStatus("disconnected", "جلسه پیدا نشد");
+      if (this.meetingMeta) {
+        this.meetingMeta.textContent = `جلسه یافت نشد: ${meetingId}`;
+      }
+      return;
+    }
+    const meeting = await res.json();
+    this.meetingId = meeting.id;
+    if (this.meetingTitle) {
+      this.meetingTitle.value = meeting.title || "";
+      this.meetingTitle.classList.remove("field-invalid");
+    }
+    this.setMeetingMeta();
+    this.setSessionUrl(meeting.id);
+    await this.refreshTranscript();
+
+    // Load saved insights if any (ignore 404)
+    try {
+      const insightsRes = await fetch(`/meetings/${meeting.id}/insights`);
+      if (insightsRes.ok) {
+        const insights = await insightsRes.json();
+        // Keep panel closed; just enable knowing history exists
+        this._cachedInsights = insights;
+      }
+    } catch (_) {}
+
+    const status = meeting.status || "stopped";
+    if (status === "recording") {
+      this.setStatus("recording", "جلسه در حال ضبط (تاریخچه بارگذاری شد)");
+    } else if (status === "processing") {
+      this.setStatus("processing", "در حال پردازش");
+    } else {
+      this.setStatus("connected", "تاریخچه جلسه بارگذاری شد");
+    }
+    if (this.insightsBtn) this.insightsBtn.disabled = false;
   }
 
   bindEvents() {
@@ -64,6 +143,27 @@ class DistillClient {
       showLive.addEventListener("click", () => this.setSourceMode("live"));
     }
 
+    if (this.statusChip) {
+      this.statusChip.addEventListener("click", () => this.openTuning());
+      this.statusChip.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") {
+          ev.preventDefault();
+          this.openTuning();
+        }
+      });
+    }
+    const closeTuning = document.getElementById("closeTuningBtn");
+    const saveTuning = document.getElementById("saveTuningBtn");
+    const resetTuning = document.getElementById("resetTuningBtn");
+    if (closeTuning) closeTuning.addEventListener("click", () => this.closeTuning());
+    if (saveTuning) saveTuning.addEventListener("click", () => this.saveTuning());
+    if (resetTuning) resetTuning.addEventListener("click", () => this.resetTuning());
+    if (this.tuningPanel) {
+      this.tuningPanel.addEventListener("click", (ev) => {
+        if (ev.target === this.tuningPanel) this.closeTuning();
+      });
+    }
+
     const closeInsights = document.getElementById("closeInsightsBtn");
     if (closeInsights) {
       closeInsights.addEventListener("click", () => this.closeInsights());
@@ -73,6 +173,111 @@ class DistillClient {
         if (ev.target === this.insightsPanel) this.closeInsights();
       });
     }
+  }
+
+  async loadTuning() {
+    const res = await fetch("/tuning");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    this._tuningSchema = data.schema || [];
+    this._tuningValues = { ...(data.values || {}) };
+    this._tuningDefaults = { ...(data.defaults || {}) };
+    this.renderTuningFields();
+  }
+
+  renderTuningFields() {
+    if (!this.tuningFields) return;
+    const groups = {};
+    this._tuningSchema.forEach((item) => {
+      const g = item.group || "سایر";
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(item);
+    });
+    this.tuningFields.innerHTML = "";
+    Object.entries(groups).forEach(([group, items]) => {
+      const box = document.createElement("div");
+      box.className = "tuning-group";
+      box.innerHTML = `<h4>${this.escape(group)}</h4>`;
+      items.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "tuning-row";
+        const applyLabel = item.apply === "live" ? "زنده" : "جلسه بعد";
+        const unit = item.unit ? ` (${item.unit})` : "";
+        const val = this._tuningValues[item.key];
+        row.innerHTML = `
+          <label for="tune_${item.key}">
+            ${this.escape(item.label)}${this.escape(unit)}
+            <span class="apply-tag">${applyLabel}</span>
+          </label>
+          <input id="tune_${item.key}" data-key="${item.key}" type="${item.type === "number" ? "number" : "text"}"
+            ${item.min != null ? `min="${item.min}"` : ""}
+            ${item.max != null ? `max="${item.max}"` : ""}
+            ${item.step != null ? `step="${item.step}"` : ""}
+            value="${this.escape(String(val ?? ""))}" />
+          ${item.help ? `<div class="hint">${this.escape(item.help)}</div>` : ""}
+        `;
+        box.appendChild(row);
+      });
+      this.tuningFields.appendChild(box);
+    });
+  }
+
+  collectTuningFromForm() {
+    const values = { ...this._tuningValues };
+    if (!this.tuningFields) return values;
+    this.tuningFields.querySelectorAll("input[data-key]").forEach((input) => {
+      const key = input.getAttribute("data-key");
+      const schema = this._tuningSchema.find((s) => s.key === key);
+      if (!schema) return;
+      if (schema.type === "number") {
+        const n = Number(input.value);
+        if (!Number.isNaN(n)) values[key] = n;
+      } else {
+        values[key] = input.value;
+      }
+    });
+    return values;
+  }
+
+  openTuning() {
+    if (!this.tuningPanel) return;
+    this.renderTuningFields();
+    this.tuningPanel.classList.remove("hidden");
+  }
+
+  closeTuning() {
+    if (this.tuningPanel) this.tuningPanel.classList.add("hidden");
+  }
+
+  async saveTuning() {
+    const values = this.collectTuningFromForm();
+    const res = await fetch("/tuning", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values }),
+    });
+    if (!res.ok) {
+      alert(`ذخیره تنظیمات ناموفق: ${await res.text()}`);
+      return;
+    }
+    const data = await res.json();
+    this._tuningValues = { ...(data.values || {}) };
+    this.closeTuning();
+    this.setStatus("connected", "تنظیمات اعمال شد");
+  }
+
+  async resetTuning() {
+    const res = await fetch("/tuning/reset", { method: "POST" });
+    if (!res.ok) {
+      alert(`بازنشانی ناموفق: ${await res.text()}`);
+      return;
+    }
+    const data = await res.json();
+    this._tuningSchema = data.schema || this._tuningSchema;
+    this._tuningValues = { ...(data.values || {}) };
+    this._tuningDefaults = { ...(data.defaults || {}) };
+    this.renderTuningFields();
+    this.setStatus("connected", "تنظیمات به پیش‌فرض برگشت");
   }
 
   setSourceMode(mode) {
@@ -147,9 +352,26 @@ class DistillClient {
     this.insightsBtn.disabled = false;
   }
 
+  requireMeetingTitle() {
+    const title = (this.meetingTitle?.value || "").trim();
+    const err = document.getElementById("meetingTitleError");
+    if (!title) {
+      if (this.meetingTitle) {
+        this.meetingTitle.focus();
+        this.meetingTitle.classList.add("field-invalid");
+      }
+      if (err) err.classList.remove("hidden");
+      return null;
+    }
+    if (this.meetingTitle) this.meetingTitle.classList.remove("field-invalid");
+    if (err) err.classList.add("hidden");
+    return title;
+  }
+
   async startLive() {
     try {
-      const title = this.meetingTitle.value.trim() || "جلسه جدید";
+      const title = this.requireMeetingTitle();
+      if (!title) return;
       const res = await fetch("/meetings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -159,6 +381,7 @@ class DistillClient {
       const meeting = await res.json();
       this.meetingId = meeting.id;
       this.setMeetingMeta();
+      this.setSessionUrl(meeting.id);
       this.clearTimeline(true);
 
       await this.connectWebSocket(this.meetingId);
@@ -181,23 +404,32 @@ class DistillClient {
     try {
       this.isRecording = false;
       this.stopMic();
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: "stop" }));
-      }
+      // Only stop via HTTP — avoid double-stop race with WS "stop"
       if (this.meetingId) {
+        this.setStatus("processing", "در حال پردازش…");
         await fetch(`/meetings/${this.meetingId}/stop`, { method: "POST" });
         await this.refreshTranscript();
+        const hasText = Array.from(this.segments.values()).some((s) => (s.text || "").trim());
+        if (!hasText) {
+          this.setStatus("connected", "متوقف شد — متنی دریافت نشد (STT)");
+        } else {
+          this.setStatus("connected", "متوقف شد — آماده تحلیل");
+        }
       }
     } catch (err) {
       console.error(err);
+      this.setStatus("disconnected", "خطا در توقف");
     } finally {
-      if (this.ws) this.ws.close();
+      if (this.ws) {
+        try { this.ws.close(); } catch (_) {}
+        this.ws = null;
+      }
       this.startBtn.classList.remove("hidden");
       this.stopBtn.classList.add("hidden");
       this.audioLevel.classList.add("hidden");
-      this.setStatus("connected", "متوقف شد — آماده تحلیل");
       this.stopTimer(false);
       if (this.levelMeter) this.levelMeter.classList.remove("active");
+      if (this.insightsBtn && this.meetingId) this.insightsBtn.disabled = false;
     }
   }
 
@@ -311,6 +543,7 @@ class DistillClient {
         this.renderInsights(msg.insights);
       } else if (msg.type === "error") {
         console.error(msg.message);
+        this.setStatus("processing", `خطا: ${String(msg.message || "").slice(0, 80)}`);
       }
     } catch (err) {
       console.error(err);
@@ -438,9 +671,10 @@ class DistillClient {
       alert("ابتدا یک فایل صوتی انتخاب کنید");
       return;
     }
+    const title = this.requireMeetingTitle();
+    if (!title) return;
     try {
       this.setStatus("processing", "آپلود و پیاده‌سازی…");
-      const title = this.meetingTitle.value.trim() || file.name;
       const created = await fetch("/meetings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -450,6 +684,7 @@ class DistillClient {
       const meeting = await created.json();
       this.meetingId = meeting.id;
       this.setMeetingMeta();
+      this.setSessionUrl(meeting.id);
       this.clearTimeline(true);
 
       const form = new FormData();
@@ -476,15 +711,27 @@ class DistillClient {
     try {
       this.insightsBtn.disabled = true;
       this.insightsBtn.textContent = "در حال تولید…";
+
+      // Show existing insights first if already saved for this session
+      if (this._cachedInsights) {
+        this.renderInsights(this._cachedInsights);
+      }
+
       const res = await fetch(`/meetings/${this.meetingId}/insights`, {
         method: "POST",
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        if (this._cachedInsights) return;
+        throw new Error(await res.text());
+      }
       const data = await res.json();
+      this._cachedInsights = data;
       this.renderInsights(data);
     } catch (err) {
       console.error(err);
-      alert(`تولید تحلیل ناموفق: ${err.message}`);
+      if (!this._cachedInsights) {
+        alert(`تولید تحلیل ناموفق: ${err.message}`);
+      }
     } finally {
       this.insightsBtn.disabled = false;
       this.insightsBtn.textContent = "تولید خلاصه و تصمیمات";

@@ -34,6 +34,15 @@ async def serve_assistant(request: web.Request) -> web.Response:
     return _web_file(request, "assistant.html")
 
 
+async def serve_assistant_session(request: web.Request) -> web.Response:
+    """Open assistant UI scoped to an existing meeting id."""
+    meeting_id = request.match_info["meeting_id"]
+    meeting = request.app["manager"].store.get_meeting(meeting_id)
+    if not meeting:
+        raise web.HTTPNotFound(text="meeting not found")
+    return _web_file(request, "assistant.html")
+
+
 async def serve_css(request: web.Request) -> web.Response:
     return _web_file(request, "styles.css")
 

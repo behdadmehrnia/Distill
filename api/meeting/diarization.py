@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -26,10 +26,14 @@ class SpeakerDiarizer:
         min_speakers: int = 1,
         max_speakers: int = 8,
         hf_token: Optional[str] = None,
+        energy_threshold: float = 0.01,
+        merge_short_ms: int = 400,
     ):
         self.sample_rate = sample_rate
         self.min_speakers = min_speakers
         self.max_speakers = max_speakers
+        self.energy_threshold = energy_threshold
+        self.merge_short_ms = merge_short_ms
         self.hf_token = (
             hf_token
             or os.getenv("HF_TOKEN")
@@ -39,6 +43,16 @@ class SpeakerDiarizer:
         self._pipeline = None
         self._backend = "fallback"
         self._try_load_pyannote()
+
+    def apply_tuning(self, tuning: Dict[str, Any]) -> None:
+        if "min_speakers" in tuning:
+            self.min_speakers = int(tuning["min_speakers"])
+        if "max_speakers" in tuning:
+            self.max_speakers = int(tuning["max_speakers"])
+        if "energy_threshold" in tuning:
+            self.energy_threshold = float(tuning["energy_threshold"])
+        if "merge_short_ms" in tuning:
+            self.merge_short_ms = int(tuning["merge_short_ms"])
 
     def _try_load_pyannote(self) -> None:
         try:
@@ -165,7 +179,7 @@ class SpeakerDiarizer:
         for start in range(0, len(audio) - frame + 1, hop):
             chunk = audio[start : start + frame]
             rms = float(np.sqrt(np.mean(np.square(chunk)) + 1e-12))
-            if rms < 0.01:
+            if rms < self.energy_threshold:
                 continue
             # crude spectral centroid via FFT magnitude
             spec = np.abs(np.fft.rfft(chunk * np.hanning(len(chunk))))
@@ -185,33 +199,38 @@ class SpeakerDiarizer:
         X = (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-6)
 
         n_speakers = self._estimate_speakers(X)
-        labels, centers = self._kmeans_with_centers(X, n_speakers)
-        dists = ((X[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+        labels = self._kmeans(X, n_speakers)
 
-        # Soft multi-label: ambiguous frames belong to top-2 speakers → overlapping spans
-        membership: Dict[int, List[Tuple[int, int]]] = {i: [] for i in range(n_speakers)}
-        for idx, t in enumerate(times):
-            order = np.argsort(dists[idx])
-            primary = int(order[0])
-            membership[primary].append((t, t + frame))
-            if n_speakers >= 2:
-                second = int(order[1])
-                d0 = float(dists[idx, primary])
-                d1 = float(dists[idx, second])
-                rms_feat = float(X[idx, 0])
-                if d1 <= d0 * 1.35 + 0.15 and rms_feat > 0.2:
-                    membership[second].append((t, t + frame))
-
+        # Hard labels only — soft multi-label invented fake overlaps on mono mic.
+        # True simultaneous-talk detection needs pyannote (optional).
         intervals: List[SpeakerInterval] = []
-        for lab, spans in membership.items():
-            if not spans:
-                continue
-            intervals.extend(self._spans_to_intervals(f"SPEAKER_{lab:02d}", spans, sr))
-        if not intervals:
-            return [
-                SpeakerInterval("SPEAKER_00", 0, int(len(audio) * 1000 / sr), False)
-            ]
-        return self._mark_true_overlaps(self._merge_short_intervals(intervals))
+        cur_label = int(labels[0])
+        cur_start = times[0]
+        prev_end = times[0] + frame
+        for idx in range(1, len(labels)):
+            lab = int(labels[idx])
+            t = times[idx]
+            if lab != cur_label:
+                intervals.append(
+                    SpeakerInterval(
+                        speaker_id=f"SPEAKER_{cur_label:02d}",
+                        start_ms=int(cur_start * 1000 / sr),
+                        end_ms=int(prev_end * 1000 / sr),
+                        is_overlap=False,
+                    )
+                )
+                cur_label = lab
+                cur_start = t
+            prev_end = t + frame
+        intervals.append(
+            SpeakerInterval(
+                speaker_id=f"SPEAKER_{cur_label:02d}",
+                start_ms=int(cur_start * 1000 / sr),
+                end_ms=int(prev_end * 1000 / sr),
+                is_overlap=False,
+            )
+        )
+        return self._merge_short_intervals(intervals, min_ms=self.merge_short_ms)
 
     @staticmethod
     def _spans_to_intervals(
@@ -285,8 +304,10 @@ class SpeakerDiarizer:
         return sorted(merged, key=lambda x: x.start_ms)
 
     def _estimate_speakers(self, X: np.ndarray) -> int:
-        n = min(self.max_speakers, max(self.min_speakers, min(4, max(2, len(X) // 40))))
-        return n
+        # Prefer 1–2 for short/mono meeting audio; avoid inventing 4 speakers
+        if len(X) < 80:
+            return 1
+        return min(self.max_speakers, max(self.min_speakers, min(2, max(1, len(X) // 80))))
 
     @staticmethod
     def _kmeans_with_centers(

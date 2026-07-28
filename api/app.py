@@ -13,6 +13,7 @@ from api.meeting.store import TranscriptStore
 from api.providers.llm import OpenAICompatibleLLM
 from api.providers.stt import OpenAICompatibleSTT
 from api.routes import setup_routes
+from api.tuning import make_tuning
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,13 @@ def create_app(settings: Settings | None = None) -> web.Application:
     """Application factory for Distill API."""
     settings = settings or Settings.from_env()
     settings.ensure_dirs()
+    tuning = make_tuning(
+        {
+            "window_ms": settings.window_ms,
+            "hop_ms": settings.hop_ms,
+            "diarize_every_ms": settings.diarize_every_ms,
+        }
+    )
 
     stt_kwargs: Dict[str, Any] = {
         "cache_dir": str(settings.stt_cache_dir),
@@ -43,21 +51,27 @@ def create_app(settings: Settings | None = None) -> web.Application:
     diarizer = SpeakerDiarizer(
         sample_rate=settings.sample_rate,
         hf_token=settings.hf_token,
+        min_speakers=int(tuning["min_speakers"]),
+        max_speakers=int(tuning["max_speakers"]),
+        energy_threshold=float(tuning["energy_threshold"]),
+        merge_short_ms=int(tuning["merge_short_ms"]),
     )
     manager = MeetingManager(
         store=store,
         stt_provider=stt,
         diarizer=diarizer,
+        tuning=tuning,
         sample_rate=settings.sample_rate,
-        window_ms=settings.window_ms,
-        hop_ms=settings.hop_ms,
-        diarize_every_ms=settings.diarize_every_ms,
+        window_ms=int(tuning["window_ms"]),
+        hop_ms=int(tuning["hop_ms"]),
+        diarize_every_ms=int(tuning["diarize_every_ms"]),
         audio_dir=str(settings.audio_dir),
     )
     insights = MeetingInsightsGenerator(llm)
 
     app = web.Application(client_max_size=200 * 1024 * 1024)
     app["settings"] = settings
+    app["tuning"] = tuning
     app["manager"] = manager
     app["insights"] = insights
     app["ws_by_meeting"] = {}

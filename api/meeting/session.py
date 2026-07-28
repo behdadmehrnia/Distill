@@ -38,6 +38,7 @@ class MeetingSession:
         diarize_every_ms: int = 20000,
         audio_dir: str = "./data/audio",
         on_event: Optional[EventCallback] = None,
+        tuning: Optional[Dict[str, Any]] = None,
     ):
         self.record = record
         self.store = store
@@ -46,21 +47,46 @@ class MeetingSession:
         self.sample_rate = sample_rate
         self.diarize_every_ms = diarize_every_ms
         self.on_event = on_event
+        self.tuning = tuning if tuning is not None else {}
 
         os.makedirs(audio_dir, exist_ok=True)
         audio_path = os.path.join(audio_dir, f"{record.id}.wav")
         self.ingest = AudioIngest(sample_rate=sample_rate, audio_path=audio_path)
+        win = int(self.tuning.get("window_ms", window_ms))
+        hop = int(self.tuning.get("hop_ms", hop_ms))
+        if "diarize_every_ms" in self.tuning:
+            self.diarize_every_ms = int(self.tuning["diarize_every_ms"])
         self.chunker = OverlappingChunker(
-            sample_rate=sample_rate, window_ms=window_ms, hop_ms=hop_ms
+            sample_rate=sample_rate,
+            window_ms=win,
+            hop_ms=hop,
+            min_speech_rms=float(self.tuning.get("min_speech_rms", 0.008)),
         )
 
         self._lock = asyncio.Lock()
+        self._stop_lock = asyncio.Lock()
         self._stt_queue: asyncio.Queue = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._last_diarize_ms = 0
         self._speaker_intervals = []
         self._pending_stt: List[tuple[int, int, str]] = []
         self._running = False
+        self._stopping = False
+
+    def apply_tuning(self, tuning: Dict[str, Any]) -> None:
+        """Apply live-tunable knobs (window/hop need a new session)."""
+        self.tuning = tuning
+        if "diarize_every_ms" in tuning:
+            self.diarize_every_ms = int(tuning["diarize_every_ms"])
+        if "min_speech_rms" in tuning:
+            self.chunker.min_speech_rms = float(tuning["min_speech_rms"])
+
+    def _align_kwargs(self) -> Dict[str, Any]:
+        return {
+            "min_overlap_ms": int(self.tuning.get("min_overlap_ms", 700)),
+            "dedupe_similarity": float(self.tuning.get("dedupe_similarity", 0.45)),
+            "dedupe_time_overlap": float(self.tuning.get("dedupe_time_overlap", 0.35)),
+        }
 
     @property
     def meeting_id(self) -> str:
@@ -104,9 +130,11 @@ class MeetingSession:
                 self._stt_queue.task_done()
                 break
             try:
-                text = await self.stt.transcribe(chunk.audio)
+                lang = str(self.tuning.get("stt_language") or "fa")
+                text = await self.stt.transcribe(chunk.audio, language=lang)
                 text = (text or "").strip()
-                if not text:
+                # Drop Whisper junk (".", "،", …) before it pollutes the timeline
+                if len(text) < 2 or not any(ch.isalpha() for ch in text):
                     continue
                 self._pending_stt.append((chunk.start_ms, chunk.end_ms, text))
                 await self._publish_live_transcript()
@@ -125,8 +153,13 @@ class MeetingSession:
             list(self._pending_stt),
             self._speaker_intervals,
             provisional=True,
+            **self._align_kwargs(),
         )
-        segments = dedupe_overlapping_transcripts(segments)
+        segments = dedupe_overlapping_transcripts(
+            segments,
+            similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
+            min_time_overlap_ratio=float(self.tuning.get("dedupe_time_overlap", 0.35)),
+        )
         self.store.delete_provisional_segments(self.meeting_id)
         for seg in segments:
             self.store.save_segment(seg)
@@ -162,8 +195,13 @@ class MeetingSession:
                     list(self._pending_stt),
                     intervals,
                     provisional=provisional,
+                    **self._align_kwargs(),
                 )
-                segments = dedupe_overlapping_transcripts(segments)
+                segments = dedupe_overlapping_transcripts(
+                    segments,
+                    similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
+                    min_time_overlap_ratio=float(self.tuning.get("dedupe_time_overlap", 0.35)),
+                )
                 if provisional:
                     self.store.delete_provisional_segments(self.meeting_id)
                     for seg in segments:
@@ -179,37 +217,39 @@ class MeetingSession:
                 )
 
     async def stop(self) -> MeetingRecord:
-        if not self._running:
+        async with self._stop_lock:
+            if self._stopping or not self._running:
+                return self.record
+            self._stopping = True
+
+            self.record.status = MeetingStatus.PROCESSING
+            self.store.save_meeting(self.record)
+            await self._emit({"type": "status", "status": "processing", "meeting_id": self.meeting_id})
+
+            # Flush remaining audio window
+            rem = self.chunker.flush_remainder(self.ingest.get_buffer())
+            if rem is not None:
+                await self._stt_queue.put(rem)
+
+            await self._stt_queue.put(None)
+            if self._worker_task:
+                await self._worker_task
+
+            # Finalize diarization + alignment
+            await self._refresh_diarization(provisional=False)
+
+            try:
+                path = self.ingest.save_wav()
+                self.record.audio_path = path
+            except Exception as exc:
+                logger.warning("Could not save WAV: %s", exc)
+
+            self._running = False
+            self.record.status = MeetingStatus.STOPPED
+            self.record.stopped_at = time.time()
+            self.store.save_meeting(self.record)
+            await self._emit({"type": "status", "status": "stopped", "meeting_id": self.meeting_id})
             return self.record
-
-        self.record.status = MeetingStatus.PROCESSING
-        self.store.save_meeting(self.record)
-        await self._emit({"type": "status", "status": "processing", "meeting_id": self.meeting_id})
-
-        # Flush remaining audio window
-        rem = self.chunker.flush_remainder(self.ingest.get_buffer())
-        if rem is not None:
-            await self._stt_queue.put(rem)
-
-        await self._stt_queue.put(None)
-        if self._worker_task:
-            await self._worker_task
-
-        # Finalize diarization + alignment
-        await self._refresh_diarization(provisional=False)
-
-        try:
-            path = self.ingest.save_wav()
-            self.record.audio_path = path
-        except Exception as exc:
-            logger.warning("Could not save WAV: %s", exc)
-
-        self._running = False
-        self.record.status = MeetingStatus.STOPPED
-        self.record.stopped_at = time.time()
-        self.store.save_meeting(self.record)
-        await self._emit({"type": "status", "status": "stopped", "meeting_id": self.meeting_id})
-        return self.record
 
     async def process_uploaded_file(self, path: str) -> List[TranscriptSegment]:
         """Offline path: load file → diarize → windowed STT → align → store."""
@@ -248,28 +288,38 @@ class MeetingSession:
         stt_results: List[tuple[int, int, str]] = []
         for chunk in windows:
             try:
-                text = await self.stt.transcribe(chunk.audio)
+                lang = str(self.tuning.get("stt_language") or "fa")
+                text = await self.stt.transcribe(chunk.audio, language=lang)
                 text = (text or "").strip()
-                if text:
-                    stt_results.append((chunk.start_ms, chunk.end_ms, text))
-                    await self._emit(
-                        {
-                            "type": "status",
-                            "status": "transcribing",
-                            "progress": {
-                                "chunk": chunk.index,
-                                "start_ms": chunk.start_ms,
-                                "end_ms": chunk.end_ms,
-                            },
-                        }
-                    )
+                if len(text) < 2 or not any(ch.isalpha() for ch in text):
+                    continue
+                stt_results.append((chunk.start_ms, chunk.end_ms, text))
+                await self._emit(
+                    {
+                        "type": "status",
+                        "status": "transcribing",
+                        "progress": {
+                            "chunk": chunk.index,
+                            "start_ms": chunk.start_ms,
+                            "end_ms": chunk.end_ms,
+                        },
+                    }
+                )
             except Exception as exc:
                 logger.exception("Offline STT failed: %s", exc)
 
         segments = align_stt_with_diarization(
-            self.meeting_id, stt_results, intervals, provisional=False
+            self.meeting_id,
+            stt_results,
+            intervals,
+            provisional=False,
+            **self._align_kwargs(),
         )
-        segments = dedupe_overlapping_transcripts(segments)
+        segments = dedupe_overlapping_transcripts(
+            segments,
+            similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
+            min_time_overlap_ratio=float(self.tuning.get("dedupe_time_overlap", 0.35)),
+        )
         self.store.replace_meeting_segments(self.meeting_id, segments)
         await self._emit(
             {
@@ -294,13 +344,33 @@ class MeetingManager:
         store: TranscriptStore,
         stt_provider,
         diarizer: Optional[SpeakerDiarizer] = None,
+        tuning: Optional[Dict[str, Any]] = None,
         **session_kwargs,
     ):
         self.store = store
         self.stt = stt_provider
         self.diarizer = diarizer or SpeakerDiarizer()
+        self.tuning = tuning if tuning is not None else {}
         self.session_kwargs = session_kwargs
         self._sessions: Dict[str, MeetingSession] = {}
+
+    def apply_tuning(self, tuning: Dict[str, Any]) -> None:
+        self.tuning = tuning
+        # Keep session_kwargs in sync for newly created meetings
+        self.session_kwargs["window_ms"] = int(tuning.get("window_ms", 8000))
+        self.session_kwargs["hop_ms"] = int(tuning.get("hop_ms", 2000))
+        self.session_kwargs["diarize_every_ms"] = int(tuning.get("diarize_every_ms", 20000))
+        if hasattr(self.diarizer, "apply_tuning"):
+            self.diarizer.apply_tuning(tuning)
+        for session in self._sessions.values():
+            session.apply_tuning(tuning)
+
+    def _session_args(self, on_event: Optional[EventCallback] = None) -> Dict[str, Any]:
+        return {
+            **self.session_kwargs,
+            "tuning": self.tuning,
+            "on_event": on_event,
+        }
 
     def create_meeting(
         self,
@@ -315,8 +385,7 @@ class MeetingManager:
             store=self.store,
             stt_provider=self.stt,
             diarizer=self.diarizer,
-            on_event=on_event,
-            **self.session_kwargs,
+            **self._session_args(on_event),
         )
         self._sessions[record.id] = session
         return session
@@ -338,8 +407,7 @@ class MeetingManager:
             store=self.store,
             stt_provider=self.stt,
             diarizer=self.diarizer,
-            on_event=on_event,
-            **self.session_kwargs,
+            **self._session_args(on_event),
         )
         self._sessions[meeting_id] = session
         return session

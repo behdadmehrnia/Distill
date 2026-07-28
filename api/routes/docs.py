@@ -11,6 +11,31 @@ OPENAPI_SPEC = {
         "version": "0.1.0",
     },
     "paths": {
+        "/assistant": {
+            "get": {
+                "summary": "Assistant UI",
+                "tags": ["pages"],
+                "responses": {"200": {"description": "HTML"}},
+            }
+        },
+        "/assistant/{meeting_id}": {
+            "get": {
+                "summary": "Assistant UI for an existing meeting",
+                "tags": ["pages"],
+                "parameters": [
+                    {
+                        "name": "meeting_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    }
+                ],
+                "responses": {
+                    "200": {"description": "HTML with session history loaded by client"},
+                    "404": {"description": "Meeting not found"},
+                },
+            }
+        },
         "/health": {
             "get": {
                 "summary": "Health check",

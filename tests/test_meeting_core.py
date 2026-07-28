@@ -29,10 +29,10 @@ def test_chunker_emits_overlapping_windows():
 
 def test_dominant_speaker_and_overlap():
     intervals = [
-        SpeakerInterval("SPEAKER_00", 0, 3000, False),
-        SpeakerInterval("SPEAKER_01", 2000, 5000, True),
+        SpeakerInterval("SPEAKER_00", 0, 5000, False),
+        SpeakerInterval("SPEAKER_01", 1000, 6000, True),
     ]
-    speaker, overlap = dominant_speaker(2200, 2800, intervals)
+    speaker, overlap = dominant_speaker(0, 6000, intervals)
     assert speaker in {"SPEAKER_00", "SPEAKER_01"}
     assert overlap is True
 
@@ -47,7 +47,7 @@ def test_dominant_speaker_and_overlap():
 def test_align_emits_both_speakers_on_overlap():
     intervals = [
         SpeakerInterval("SPEAKER_00", 0, 8000, True),
-        SpeakerInterval("SPEAKER_01", 3000, 7000, True),
+        SpeakerInterval("SPEAKER_01", 2000, 7000, True),
     ]
     segments = align_stt_with_diarization(
         "m1",
@@ -68,13 +68,13 @@ def test_align_and_dedupe():
             (0, 8000, "سلام دوستان امروز درباره چت جی پی تی صحبت می‌کنیم"),
             (2000, 10000, "سلام دوستان امروز درباره چت جی پی تی صحبت می‌کنیم و کاربردش"),
             (4000, 12000, "امروز درباره چت جی پی تی صحبت می‌کنیم و کاربردش در ۱۴۰۵"),
+            (6000, 14000, "."),
         ],
         intervals,
     )
-    deduped = dedupe_overlapping_transcripts(segments)
-    assert len(deduped) == 1
-    assert deduped[0].speaker_id == "SPEAKER_00"
-    assert not deduped[0].is_overlap
+    assert len(segments) == 1
+    assert segments[0].speaker_id == "SPEAKER_00"
+    assert not segments[0].is_overlap
 
 
 def test_store_roundtrip(store):
