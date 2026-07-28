@@ -60,9 +60,11 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        # Prefer MEETING_PORT; fall back to PORT (common on PaaS like Hamdocker)
+        port = _env_int("MEETING_PORT", 0) or _env_int("PORT", 8000)
         return cls(
             host=_env_str("MEETING_HOST", "0.0.0.0") or "0.0.0.0",
-            port=_env_int("MEETING_PORT", 8000),
+            port=port,
             db_path=DB_PATH,
             upload_dir=UPLOAD_DIR,
             audio_dir=AUDIO_DIR,
