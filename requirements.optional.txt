@@ -1,0 +1,9 @@
+# Optional CPU-only extras — NOT installed by default.
+# Use only if you want pyannote diarization instead of the built-in fallback.
+# Requires HF_TOKEN and accepting pyannote model terms on Hugging Face.
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchaudio
+soundfile
+pyannote.audio

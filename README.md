@@ -20,6 +20,7 @@ data/
 ```bash
 cp .env.example .env
 # تمام تنظیمات را در .env ویرایش کنید
+# ffmpeg را روی سیستم نصب کنید (برای pydub)
 pip install -r requirements.txt
 python -m api
 # یا: python main.py
@@ -27,6 +28,41 @@ python -m api
 
 UI لندینگ: `http://localhost:8030/`  
 UI دستیار: `http://localhost:8030/assistant`
+
+## Docker
+
+کل API (لندینگ، دستیار، REST، WebSocket، `/docs`) داخل یک کانتینر اجرا می‌شود. دادهٔ ماندگار روی volume به `/app/data` مپ می‌شود:
+
+- `meetings.db` — دیتابیس جلسات
+- `uploads/` — فایل‌های آپلودی
+- `audio/` — صوت ضبط زنده
+- `stt_cache/` — کش رونویسی
+
+```bash
+cp .env.example .env
+# کلیدها و endpointها را در .env تنظیم کنید
+
+docker compose up -d --build
+```
+
+سرویس روی `http://localhost:8030` در دسترس است.
+
+فقط با Docker (بدون compose):
+
+```bash
+docker build -t distill .
+docker run --rm -p 8030:8030 --env-file .env \
+  -v distill-data:/app/data \
+  distill
+```
+
+وابستگی‌ها **CPU-only و سبک** هستند (بدون CUDA/torch). diarization با fallback داخلی کار می‌کند. برای کیفیت بالاتر اختیاری:
+
+```bash
+pip install -r requirements.optional.txt  # torch CPU + pyannote
+```
+
+روی host هم برای `pydub` به `ffmpeg` نیاز است.
 
 ## متغیرهای محیطی
 
