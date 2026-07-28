@@ -1,0 +1,11 @@
+[project]
+name = "distill"
+version = "0.1.0"
+description = "Distill — Distill | Distill"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]

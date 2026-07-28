@@ -112,5 +112,11 @@ websockets==15.0.1
 Werkzeug==3.1.4
 yarl==1.22.0
 
-load_dotenv
+python-dotenv
 pydub
+audioop-lts; python_version >= "3.13"
+pytest
+pytest-asyncio
+pytest-aiohttp
+# Optional for higher-quality speaker diarization (needs HF_TOKEN):
+# pyannote.audio

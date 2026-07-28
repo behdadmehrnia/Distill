@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Distill — داشبورد ضبط</title>
+  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;700;900&display=swap" rel="stylesheet" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      height: 100dvh;
+      overflow: hidden;
+    }
+
+    body {
+      font-family: 'Vazirmatn', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #1a1a1a;
+      color: #e0e0e0;
+      direction: rtl;
+      display: flex;
+      flex-direction: column;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    .navbar {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.7rem 1.25rem;
+      background: #151515;
+      border-bottom: 1px solid #333;
+    }
+
+    .nav-brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.7rem;
+      color: #f9d423;
+      font-weight: 900;
+      font-size: 1.2rem;
+    }
+
+    .nav-brand svg { display: block; }
+
+    .nav-meta {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+
+    .nav-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      background: #242424;
+      border: 1px solid #333;
+      border-radius: 999px;
+      padding: 0.35rem 0.75rem;
+      font-size: 0.82rem;
+      color: #999;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #666;
+      flex-shrink: 0;
+    }
+
+    .status-dot.is-ok { background: #4ade80; }
+    .status-dot.is-recording {
+      background: #ef4444;
+      animation: recPulse 1.2s infinite;
+    }
+    .status-dot.is-processing { background: #f9d423; }
+
+    @keyframes recPulse {
+      0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45); }
+      70% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+    }
+
+    .nav-timer {
+      font-variant-numeric: tabular-nums;
+      color: #f9d423;
+      font-weight: 700;
+      font-size: 0.9rem;
+      min-width: 4.2rem;
+      text-align: center;
+    }
+
+    .nav-timer.idle { color: #666; }
+
+    .dashboard {
+      flex: 1;
+      min-height: 0;
+      width: min(1200px, calc(100% - 1.5rem));
+      margin: 0 auto;
+      padding: 0.85rem 0;
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      gap: 0.85rem;
+      overflow: hidden;
+    }
+
+    @media (max-width: 860px) {
+      .dashboard {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+      .controls-panel {
+        max-height: 42vh;
+        overflow-y: auto;
+      }
+    }
+
+    .panel {
+      background: #242424;
+      border: 1px solid #333;
+      border-radius: 12px;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .controls-panel {
+      padding: 1rem;
+      gap: 0.85rem;
+    }
+
+    .panel-title {
+      color: #f9d423;
+      font-size: 1.05rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .field { margin-bottom: 0.15rem; }
+
+    .field label {
+      display: block;
+      text-align: right;
+      margin-bottom: 0.3rem;
+      color: #888;
+      font-size: 0.8rem;
+    }
+
+    .field input[type="text"],
+    .field select,
+    .field input[type="file"] {
+      width: 100%;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      color: #e0e0e0;
+      padding: 0.65rem 0.75rem;
+      font: inherit;
+      outline: none;
+    }
+
+    .field input[type="text"]:focus,
+    .field select:focus {
+      border-color: #f9d423;
+    }
+
+    .field input[type="file"] {
+      padding: 0.45rem;
+      color: #999;
+      font-size: 0.8rem;
+    }
+
+    .source-mode {
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+    }
+
+    .source-switch {
+      display: block;
+      width: 100%;
+      margin-top: 0.35rem;
+      padding: 0;
+      border: 0;
+      background: none;
+      font: inherit;
+      font-size: 0.8rem;
+      color: #777;
+      text-align: center;
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .source-switch:hover { color: #f9d423; }
+
+    .record-block {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.15rem 0 0;
+    }
+
+    .level-meter {
+      display: flex;
+      align-items: flex-end;
+      gap: 3px;
+      height: 28px;
+      opacity: 0.35;
+      transition: opacity 0.2s;
+    }
+
+    .level-meter.active { opacity: 1; }
+
+    .level-meter span {
+      width: 4px;
+      background: #f9d423;
+      border-radius: 2px;
+      height: 20%;
+      transition: height 0.08s linear;
+    }
+
+    .btn-row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      width: 100%;
+    }
+
+    .btn {
+      appearance: none;
+      border: 0;
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.2s, box-shadow 0.2s, opacity 0.2s;
+      width: 100%;
+    }
+
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: #f9d423;
+      color: #1a1a1a;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: #e6c320;
+      box-shadow: 0 4px 20px rgba(249, 212, 35, 0.25);
+    }
+
+    .btn-danger {
+      background: #3a3a3a;
+      color: #fff;
+      border: 1px solid #555;
+    }
+
+    .btn-danger:hover:not(:disabled) { background: #484848; }
+
+    .btn-ghost {
+      background: transparent;
+      color: #e0e0e0;
+      border: 1px solid #333;
+    }
+
+    .btn-ghost:hover:not(:disabled) { border-color: #f9d423; }
+
+    .btn-accent {
+      background: rgba(249, 212, 35, 0.1);
+      color: #f9d423;
+      border: 1px solid rgba(249, 212, 35, 0.35);
+    }
+
+    .btn-accent:hover:not(:disabled) {
+      background: rgba(249, 212, 35, 0.18);
+    }
+
+    .sep {
+      border: 0;
+      border-top: 1px solid #333;
+      margin: 0.15rem 0;
+    }
+
+    .meta {
+      color: #666;
+      font-size: 0.72rem;
+      word-break: break-all;
+      text-align: center;
+    }
+
+    .controls-bottom {
+      margin-top: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+      padding-top: 0.35rem;
+    }
+
+    .display-panel {
+      padding: 0.95rem;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 0.7rem;
+      flex-shrink: 0;
+    }
+
+    .panel-head h2 {
+      color: #f9d423;
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .linkish {
+      background: none;
+      border: 0;
+      color: #888;
+      font: inherit;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+
+    .linkish:hover { color: #f9d423; }
+
+    .timeline {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+    }
+
+    .timeline::-webkit-scrollbar { width: 8px; }
+    .timeline::-webkit-scrollbar-thumb {
+      background: #444;
+      border-radius: 8px;
+    }
+
+    .timeline-empty {
+      margin: auto;
+      text-align: center;
+      color: #777;
+      padding: 2rem 1rem;
+    }
+
+    .timeline-empty .rec-ring {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      border: 3px solid #333;
+      margin: 0 auto 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #f9d423;
+      font-size: 1.4rem;
+    }
+
+    .segment {
+      background: #1a1a1a;
+      border: 1px solid #2e2e2e;
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+    }
+
+    .segment-meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.4rem;
+      margin-bottom: 0.35rem;
+      font-size: 0.78rem;
+      color: #888;
+    }
+
+    .speaker-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .speaker-name { font-weight: 700; }
+
+    .segment-text {
+      color: #e0e0e0;
+      line-height: 1.85;
+      font-size: 0.95rem;
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 0.72rem;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      background: rgba(249, 212, 35, 0.12);
+      color: #f9d423;
+      border: 1px solid rgba(249, 212, 35, 0.3);
+    }
+
+    .badge-muted {
+      background: transparent;
+      color: #777;
+      border-color: #333;
+    }
+
+    .insights-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      background: rgba(0, 0, 0, 0.55);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+
+    .insights-overlay.hidden { display: none !important; }
+
+    .insights-modal {
+      width: min(900px, 100%);
+      max-height: min(80vh, 640px);
+      background: #242424;
+      border: 1px solid #333;
+      border-radius: 12px;
+      padding: 1.15rem 1.25rem;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+    }
+
+    .insights-modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
+    .insights-modal-head h3 {
+      color: #f9d423;
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+
+    .insights-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+    }
+
+    @media (max-width: 800px) {
+      .insights-grid { grid-template-columns: 1fr; }
+    }
+
+    .insights-grid h3 {
+      color: #888;
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .insights-grid p,
+    .insights-grid ul {
+      color: #e0e0e0;
+      font-size: 0.92rem;
+      line-height: 1.75;
+    }
+
+    .insights-grid ul { padding-inline-start: 1.1rem; }
+    .insights-grid li + li { margin-top: 0.3rem; }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <a class="nav-brand" href="/">
+      <svg width="42" height="20" viewBox="0 0 36 17" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M8.5 0.5C12.9183 0.5 16.5 4.08172 16.5 8.5C16.5 12.9183 12.9183 16.5 8.5 16.5C4.08172 16.5 0.5 12.9183 0.5 8.5C0.5 4.08172 4.08172 0.5 8.5 0.5Z" stroke="#FFC828"/>
+        <path d="M27.5 17C32.1944 17 36 13.1944 36 8.5C36 3.80558 32.1944 0 27.5 0C22.8056 0 19 3.80558 19 8.5C19 13.1944 22.8056 17 27.5 17Z" fill="#FFC828"/>
+      </svg>
+      Distill
+    </a>
+    <div class="nav-meta">
+      <div class="nav-status">
+        <span id="connectionStatus" class="status-dot" aria-hidden="true"></span>
+        <span id="statusText">آماده</span>
+      </div>
+      <div id="recordTimer" class="nav-timer idle">00:00</div>
+    </div>
+  </nav>
+
+  <main class="dashboard">
+    <aside class="panel controls-panel">
+      <h3 class="panel-title">جلسه</h3>
+
+      <div class="field">
+        <label for="meetingTitle">عنوان جلسه</label>
+        <input id="meetingTitle" type="text" value="جلسه مدیران" />
+      </div>
+
+      <div id="liveSource" class="source-mode">
+        <div class="field">
+          <label for="audioInput">میکروفون</label>
+          <select id="audioInput">
+            <option value="">میکروفون پیش‌فرض</option>
+          </select>
+        </div>
+
+        <div class="record-block">
+          <div id="levelMeter" class="level-meter" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <div class="btn-row">
+            <button id="startBtn" class="btn btn-primary" type="button">شروع ضبط</button>
+            <button id="stopBtn" class="btn btn-danger hidden" type="button">توقف</button>
+          </div>
+          <span id="audioLevel" class="hidden">در حال شنیدن…</span>
+        </div>
+
+        <button id="showUploadMode" class="source-switch" type="button">آپلود فایل</button>
+      </div>
+
+      <div id="uploadSource" class="source-mode hidden">
+        <div class="field">
+          <label for="uploadFile">آپلود فایل</label>
+          <input id="uploadFile" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg" />
+        </div>
+        <button id="uploadBtn" class="btn btn-ghost" type="button">پیاده‌سازی از فایل</button>
+        <button id="showLiveMode" class="source-switch" type="button">ضبط جلسه</button>
+      </div>
+
+      <div class="controls-bottom">
+        <button id="insightsBtn" class="btn btn-accent" type="button" disabled>
+          تولید خلاصه و تصمیمات
+        </button>
+        <p id="meetingMeta" class="meta">جلسه‌ای انتخاب نشده</p>
+      </div>
+    </aside>
+
+    <section class="panel display-panel">
+      <div class="panel-head">
+        <h2>متن زنده</h2>
+        <button id="clearBtn" class="linkish" type="button">پاک کردن نمایش</button>
+      </div>
+      <div id="timeline" class="timeline">
+        <div class="timeline-empty">
+          <div class="rec-ring">●</div>
+          <p>برای شروع ضبط، دکمه زرد را بزنید.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="insightsPanel" class="insights-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="insightsTitle">
+    <div class="insights-modal">
+      <div class="insights-modal-head">
+        <h3 id="insightsTitle">تحلیل جلسه</h3>
+        <button id="closeInsightsBtn" class="linkish" type="button">بستن</button>
+      </div>
+      <div class="insights-grid">
+        <div>
+          <h3>خلاصه</h3>
+          <p id="insightSummary"></p>
+        </div>
+        <div>
+          <h3>نکات کلیدی</h3>
+          <ul id="insightHighlights"></ul>
+        </div>
+        <div>
+          <h3>تصمیمات / اقدامات</h3>
+          <ul id="insightDecisions"></ul>
+          <ul id="insightActions"></ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/meeting.js"></script>
+</body>
+</html>
