@@ -42,6 +42,9 @@ class SpeakerDiarizer:
         )
         self._pipeline = None
         self._backend = "fallback"
+        self._label_map: Dict[int, str] = {}
+        self._speaker_centroids: Dict[str, np.ndarray] = {}
+        self._prev_intervals: List[SpeakerInterval] = []
         self._try_load_pyannote()
 
     def apply_tuning(self, tuning: Dict[str, Any]) -> None:
@@ -203,6 +206,9 @@ class SpeakerDiarizer:
         # Smooth label flicker (mono mic often oscillates between 2 clusters)
         labels = self._smooth_labels(labels, window=5)
 
+        # Remap cluster IDs → persistent SPEAKER_XX via centroids + time overlap
+        labels = self._remap_labels(labels, X, times, sr, frame)
+
         # Abutting hard labels: end previous turn at the new turn's start.
         # Overlapping analysis frames (30ms/15ms hop) must NOT create fake overlaps.
         intervals: List[SpeakerInterval] = []
@@ -215,9 +221,12 @@ class SpeakerDiarizer:
                 end_ms = int(t * 1000 / sr)
                 start_ms = int(cur_start * 1000 / sr)
                 if end_ms > start_ms:
+                    speaker_id = self._label_map.get(
+                        cur_label, f"SPEAKER_{cur_label:02d}"
+                    )
                     intervals.append(
                         SpeakerInterval(
-                            speaker_id=f"SPEAKER_{cur_label:02d}",
+                            speaker_id=speaker_id,
                             start_ms=start_ms,
                             end_ms=end_ms,
                             is_overlap=False,
@@ -228,15 +237,114 @@ class SpeakerDiarizer:
         end_ms = int((times[-1] + frame) * 1000 / sr)
         start_ms = int(cur_start * 1000 / sr)
         if end_ms > start_ms:
+            speaker_id = self._label_map.get(cur_label, f"SPEAKER_{cur_label:02d}")
             intervals.append(
                 SpeakerInterval(
-                    speaker_id=f"SPEAKER_{cur_label:02d}",
+                    speaker_id=speaker_id,
                     start_ms=start_ms,
                     end_ms=end_ms,
                     is_overlap=False,
                 )
             )
-        return self._merge_short_intervals(intervals, min_ms=self.merge_short_ms)
+        merged = self._merge_short_intervals(intervals, min_ms=self.merge_short_ms)
+        self._prev_intervals = list(merged)
+        return merged
+
+    def _remap_labels(
+        self,
+        labels: np.ndarray,
+        X: np.ndarray,
+        times: List[int],
+        sr: int,
+        frame: int,
+    ) -> np.ndarray:
+        """Map fresh KMeans IDs onto persistent SPEAKER_XX labels."""
+        unique = sorted({int(x) for x in labels})
+        new_centroids: Dict[int, np.ndarray] = {}
+        for lab in unique:
+            members = X[labels == lab]
+            if len(members):
+                new_centroids[lab] = members.mean(axis=0)
+
+        # Build provisional time spans per new cluster for overlap matching
+        provisional: Dict[int, List[Tuple[int, int]]] = {lab: [] for lab in unique}
+        for lab, t in zip(labels, times):
+            start_ms = int(t * 1000 / sr)
+            end_ms = int((t + frame) * 1000 / sr)
+            provisional[int(lab)].append((start_ms, end_ms))
+
+        mapping: Dict[int, str] = {}
+        used_speakers: set = set()
+
+        # 1) Centroid cosine similarity against cached speakers
+        for lab, centroid in new_centroids.items():
+            best_spk: Optional[str] = None
+            best_sim = 0.8
+            for spk_id, old_cent in self._speaker_centroids.items():
+                if spk_id in used_speakers:
+                    continue
+                sim = self._cosine_similarity(centroid, old_cent)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_spk = spk_id
+            if best_spk is not None:
+                mapping[lab] = best_spk
+                used_speakers.add(best_spk)
+
+        # 2) Maximum time-overlap against previous intervals for unmatched clusters
+        if self._prev_intervals:
+            for lab in unique:
+                if lab in mapping:
+                    continue
+                best_spk = None
+                best_ov = 0
+                for old in self._prev_intervals:
+                    if old.speaker_id in used_speakers:
+                        continue
+                    ov = 0
+                    for s, e in provisional.get(lab, []):
+                        ov += max(0, min(e, old.end_ms) - max(s, old.start_ms))
+                    if ov > best_ov:
+                        best_ov = ov
+                        best_spk = old.speaker_id
+                if best_spk is not None and best_ov > 0:
+                    mapping[lab] = best_spk
+                    used_speakers.add(best_spk)
+
+        # 3) Assign fresh SPEAKER_XX for still-unmapped clusters
+        next_idx = 0
+        existing_ids = set(self._speaker_centroids.keys()) | used_speakers
+        for lab in unique:
+            if lab in mapping:
+                continue
+            while f"SPEAKER_{next_idx:02d}" in existing_ids:
+                next_idx += 1
+            spk = f"SPEAKER_{next_idx:02d}"
+            mapping[lab] = spk
+            existing_ids.add(spk)
+            next_idx += 1
+
+        self._label_map = mapping
+
+        # Update centroid cache with remapped speaker IDs
+        for lab, centroid in new_centroids.items():
+            spk = mapping[lab]
+            if spk in self._speaker_centroids:
+                # EMA blend for stability across refreshes
+                old = self._speaker_centroids[spk]
+                self._speaker_centroids[spk] = 0.6 * old + 0.4 * centroid
+            else:
+                self._speaker_centroids[spk] = centroid.copy()
+
+        return labels
+
+    @staticmethod
+    def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+        na = float(np.linalg.norm(a))
+        nb = float(np.linalg.norm(b))
+        if na < 1e-12 or nb < 1e-12:
+            return 0.0
+        return float(np.dot(a, b) / (na * nb))
 
     @staticmethod
     def _spans_to_intervals(

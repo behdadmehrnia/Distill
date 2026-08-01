@@ -32,6 +32,8 @@ class TranscriptStore:
         with self._lock:
             conn = self._connect()
             try:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA busy_timeout=5000;")
                 conn.executescript(
                     """
                     CREATE TABLE IF NOT EXISTS meetings (

@@ -20,14 +20,14 @@ class OverlappingChunker:
     """
     Emit overlapping windows from a continuous PCM buffer.
 
-    Defaults: 8s window / 2s hop — balances live latency vs continuity.
+    Defaults: 8s window / 6s hop (~2s context overlap for Whisper continuity).
     """
 
     def __init__(
         self,
         sample_rate: int = 16000,
         window_ms: int = 8000,
-        hop_ms: int = 2000,
+        hop_ms: int = 6000,
         min_speech_rms: float = 0.008,
     ):
         self.sample_rate = sample_rate

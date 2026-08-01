@@ -83,6 +83,38 @@ async def get_transcript(request: Request, meeting_id: str) -> Dict[str, Any]:
     return {"meeting_id": meeting_id, "segments": [s.to_dict() for s in segments]}
 
 
+@router.get("/meetings/{meeting_id}/debug")
+async def get_meeting_debug(request: Request, meeting_id: str) -> Dict[str, Any]:
+    store = request.app.state.manager.store
+    meeting = store.get_meeting(meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="meeting not found")
+    session = request.app.state.manager.get(meeting_id)
+    if session is not None:
+        return session.debug_stats()
+    # Session already gone — return stored meeting metadata + empty counters
+    return {
+        "meeting_id": meeting_id,
+        "chunks_processed": 0,
+        "chunks_retried": 0,
+        "chunks_dropped": 0,
+        "stt_calls": 0,
+        "stt_retries": 0,
+        "stt_dropped": 0,
+        "stt_total_ms": 0,
+        "stt_cache_hits": 0,
+        "stt_cache_misses": 0,
+        "stt_cache_hit_rate": None,
+        "diarization_backend": getattr(
+            request.app.state.manager.diarizer, "backend", "unknown"
+        ),
+        "speakers_detected": 0,
+        "speaker_ids": [],
+        "tuning": dict(request.app.state.tuning),
+        "note": "session not in memory; counters unavailable",
+    }
+
+
 @router.post("/meetings/{meeting_id}/upload")
 async def upload_audio(
     request: Request,

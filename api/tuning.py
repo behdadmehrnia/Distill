@@ -8,10 +8,12 @@ from typing import Any, Dict, List
 
 # Defaults match current production-ish behavior
 DEFAULT_TUNING: Dict[str, Any] = {
-    "window_ms": 6000,
-    "hop_ms": 1500,
+    "window_ms": 8000,
+    "hop_ms": 6000,
     "diarize_every_ms": 20000,
     "min_speech_rms": 0.008,
+    "stt_workers": 2,
+    "stt_retry_count": 3,
     "energy_threshold": 0.01,
     "min_speakers": 1,
     "max_speakers": 2,
@@ -33,11 +35,11 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "label": "طول پنجره STT",
         "unit": "ms",
         "type": "number",
-        "min": 2000,
-        "max": 20000,
+        "min": 4000,
+        "max": 15000,
         "step": 500,
         "apply": "next_session",
-        "help": "هر تکه صوت چند میلی‌ثانیه به STT برود",
+        "help": "هر تکه صوت چند میلی‌ثانیه به STT برود — فقط روی جلسات جدید اعمال می‌شود",
     },
     {
         "key": "hop_ms",
@@ -45,11 +47,35 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "label": "گام پنجره (hop)",
         "unit": "ms",
         "type": "number",
-        "min": 500,
-        "max": 8000,
-        "step": 250,
+        "min": 2000,
+        "max": 12000,
+        "step": 500,
         "apply": "next_session",
-        "help": "فاصله شروع پنجره‌های هم‌پوشان",
+        "help": "فاصله شروع پنجره‌ها (~۲ثانیه هم‌پوشانی برای Whisper) — فقط جلسات جدید",
+    },
+    {
+        "key": "stt_workers",
+        "group": "ضبط / STT",
+        "label": "تعداد worker موازی STT",
+        "unit": "",
+        "type": "number",
+        "min": 1,
+        "max": 5,
+        "step": 1,
+        "apply": "next_session",
+        "help": "چند درخواست STT هم‌زمان — فقط روی جلسات جدید",
+    },
+    {
+        "key": "stt_retry_count",
+        "group": "ضبط / STT",
+        "label": "تعداد تلاش مجدد STT",
+        "unit": "",
+        "type": "number",
+        "min": 0,
+        "max": 5,
+        "step": 1,
+        "apply": "live",
+        "help": "در صورت خطا، چند بار با backoff دوباره امتحان شود",
     },
     {
         "key": "min_speech_rms",
@@ -57,7 +83,7 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "label": "آستانه انرژی گفتار (RMS)",
         "unit": "",
         "type": "number",
-        "min": 0.001,
+        "min": 0.002,
         "max": 0.05,
         "step": 0.001,
         "apply": "live",
@@ -77,9 +103,10 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "group": "کیفیت Whisper",
         "label": "حالت Review Agent",
         "unit": "",
-        "type": "text",
+        "type": "select",
+        "options": ["off", "heuristic", "finalize", "live"],
         "apply": "live",
-        "help": "off | heuristic | finalize | live — پیش‌فرض finalize (فیلتر سریع + Gemma در پایان)",
+        "help": "off | heuristic | finalize | live — پیش‌فرض finalize",
     },
     {
         "key": "stt_min_quality",
@@ -87,8 +114,8 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "label": "حداقل نمره کیفیت STT",
         "unit": "0–1",
         "type": "number",
-        "min": 0.0,
-        "max": 1.0,
+        "min": 0.1,
+        "max": 0.8,
         "step": 0.05,
         "apply": "live",
         "help": "زیر این نمره، متن hallucination حذف می‌شود (تکرار خیلی خیلی…)",
@@ -99,7 +126,7 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "label": "فاصله diarization زنده",
         "unit": "ms",
         "type": "number",
-        "min": 5000,
+        "min": 10000,
         "max": 60000,
         "step": 1000,
         "apply": "live",
@@ -157,8 +184,8 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "label": "حداقل طول هم‌صحبتی",
         "unit": "ms",
         "type": "number",
-        "min": 200,
-        "max": 5000,
+        "min": 500,
+        "max": 3000,
         "step": 100,
         "apply": "live",
         "help": "زیر این مقدار، هم‌صحبتی اعلام نمی‌شود (برای میک تکی بهتر است بالا باشد)",
@@ -169,8 +196,8 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "label": "شباهت متن برای dedupe",
         "unit": "0–1",
         "type": "number",
-        "min": 0.1,
-        "max": 0.95,
+        "min": 0.2,
+        "max": 0.8,
         "step": 0.05,
         "apply": "live",
         "help": "پنجره‌های hop با متن شبیه، یکی می‌شوند",
@@ -187,6 +214,18 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "apply": "live",
     },
 ]
+
+_INT_KEYS = {
+    "window_ms",
+    "hop_ms",
+    "diarize_every_ms",
+    "min_speakers",
+    "max_speakers",
+    "merge_short_ms",
+    "min_overlap_ms",
+    "stt_workers",
+    "stt_retry_count",
+}
 
 
 def make_tuning(overrides: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -208,15 +247,7 @@ def _sanitize(raw: Dict[str, Any]) -> Dict[str, Any]:
                 num = float(val)
             except (TypeError, ValueError):
                 continue
-            if key in {
-                "window_ms",
-                "hop_ms",
-                "diarize_every_ms",
-                "min_speakers",
-                "max_speakers",
-                "merge_short_ms",
-                "min_overlap_ms",
-            }:
+            if key in _INT_KEYS:
                 num = int(round(num))
             lo, hi = item.get("min"), item.get("max")
             if lo is not None:
@@ -224,6 +255,12 @@ def _sanitize(raw: Dict[str, Any]) -> Dict[str, Any]:
             if hi is not None:
                 num = min(hi, num)
             out[key] = num
+        elif item["type"] == "select":
+            text = str(val).strip().lower()
+            options = [str(o).lower() for o in item.get("options") or []]
+            if text not in options:
+                text = str(DEFAULT_TUNING.get(key, "")).lower()
+            out[key] = text
         else:
             text = str(val).strip() or str(DEFAULT_TUNING[key])
             if key == "stt_review_mode":

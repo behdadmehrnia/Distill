@@ -34,6 +34,8 @@ class OpenAICompatibleSTT:
         self.cache_dir = cache_dir
         self.sample_rate = sample_rate
         self.model = model
+        self.cache_hits = 0
+        self.cache_misses = 0
         os.makedirs(cache_dir, exist_ok=True)
 
     def _pcm_to_wav(self, pcm_content: bytes) -> bytes:
@@ -44,18 +46,6 @@ class OpenAICompatibleSTT:
             wav_file.setframerate(self.sample_rate)
             wav_file.writeframes(pcm_content)
         return buf.getvalue()
-
-    def _wav_to_mp3(self, wav_content: bytes) -> bytes:
-        try:
-            from pydub import AudioSegment
-        except ImportError as exc:
-            raise ImportError(
-                "pydub is required for STT encoding. Install pydub and audioop-lts."
-            ) from exc
-        audio = AudioSegment.from_wav(io.BytesIO(wav_content))
-        out = io.BytesIO()
-        audio.export(out, format="mp3", bitrate="128k")
-        return out.getvalue()
 
     @staticmethod
     def _file_hash(content: bytes) -> str:
@@ -72,11 +62,12 @@ class OpenAICompatibleSTT:
 
         cache_file = os.path.join(self.cache_dir, f"{self._file_hash(pcm_bytes)}.txt")
         if os.path.exists(cache_file):
+            self.cache_hits += 1
             with open(cache_file, "r", encoding="utf-8") as f:
                 return f.read().strip()
 
+        self.cache_misses += 1
         wav_content = self._pcm_to_wav(pcm_bytes)
-        mp3_content = self._wav_to_mp3(wav_content)
 
         headers = {}
         if self.api_key:
@@ -85,9 +76,9 @@ class OpenAICompatibleSTT:
         form = aiohttp.FormData()
         form.add_field(
             "file",
-            mp3_content,
-            filename="audio.mp3",
-            content_type="audio/mpeg",
+            wav_content,
+            filename="audio.wav",
+            content_type="audio/wav",
         )
         form.add_field("language", language or "fa")
         form.add_field("model", model or self.model)

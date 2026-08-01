@@ -218,17 +218,34 @@ class DistillClient {
         const applyLabel = item.apply === "live" ? "زنده" : "جلسه بعد";
         const unit = item.unit ? ` (${item.unit})` : "";
         const val = this._tuningValues[item.key];
+        let control = "";
+        if (item.type === "select" && Array.isArray(item.options)) {
+          const opts = item.options
+            .map((o) => {
+              const selected = String(val) === String(o) ? " selected" : "";
+              return `<option value="${this.escape(String(o))}"${selected}>${this.escape(String(o))}</option>`;
+            })
+            .join("");
+          control = `<select id="tune_${item.key}" data-key="${item.key}">${opts}</select>`;
+        } else {
+          control = `<input id="tune_${item.key}" data-key="${item.key}" type="${item.type === "number" ? "number" : "text"}"
+            ${item.min != null ? `min="${item.min}"` : ""}
+            ${item.max != null ? `max="${item.max}"` : ""}
+            ${item.step != null ? `step="${item.step}"` : ""}
+            value="${this.escape(String(val ?? ""))}" />`;
+        }
+        const nextOnly =
+          item.apply === "next_session"
+            ? `<div class="hint next-session-note">فقط روی جلسات جدید اثر دارد (نه جلسه جاری)</div>`
+            : "";
         row.innerHTML = `
           <label for="tune_${item.key}">
             ${this.escape(item.label)}${this.escape(unit)}
             <span class="apply-tag">${applyLabel}</span>
           </label>
-          <input id="tune_${item.key}" data-key="${item.key}" type="${item.type === "number" ? "number" : "text"}"
-            ${item.min != null ? `min="${item.min}"` : ""}
-            ${item.max != null ? `max="${item.max}"` : ""}
-            ${item.step != null ? `step="${item.step}"` : ""}
-            value="${this.escape(String(val ?? ""))}" />
+          ${control}
           ${item.help ? `<div class="hint">${this.escape(item.help)}</div>` : ""}
+          ${nextOnly}
         `;
         box.appendChild(row);
       });
@@ -239,7 +256,7 @@ class DistillClient {
   collectTuningFromForm() {
     const values = { ...this._tuningValues };
     if (!this.tuningFields) return values;
-    this.tuningFields.querySelectorAll("input[data-key]").forEach((input) => {
+    this.tuningFields.querySelectorAll("input[data-key], select[data-key]").forEach((input) => {
       const key = input.getAttribute("data-key");
       const schema = this._tuningSchema.find((s) => s.key === key);
       if (!schema) return;
@@ -392,17 +409,19 @@ class DistillClient {
         document.body.removeChild(ta);
       }
     }
-    const btn = this.meetingMeta?.querySelector("[data-copy-session]");
-    if (!btn) return;
-    const prev = btn.textContent;
-    btn.textContent = "لینک کپی شد";
-    btn.classList.add("copied");
+    this.showCopyToast("لینک جلسه کپی شد");
+  }
+
+  showCopyToast(message = "لینک جلسه کپی شد") {
+    const toast = document.getElementById("copyToast");
+    const text = document.getElementById("copyToastText");
+    if (!toast) return;
+    if (text) text.textContent = message;
+    toast.classList.add("is-visible");
     clearTimeout(this._copyFlashTimer);
     this._copyFlashTimer = setTimeout(() => {
-      if (!btn.isConnected) return;
-      btn.textContent = prev;
-      btn.classList.remove("copied");
-    }, 1600);
+      toast.classList.remove("is-visible");
+    }, 1800);
   }
 
   hasTranscriptContext() {

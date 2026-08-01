@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 EventCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 
+_STT_BACKOFF_S = (0.5, 1.0, 2.0)
+
 
 class MeetingSession:
     """Owns continuous capture, windowed STT, and periodic diarization for one meeting."""
@@ -36,7 +38,7 @@ class MeetingSession:
         review_agent: Optional[TranscriptReviewAgent] = None,
         sample_rate: int = 16000,
         window_ms: int = 8000,
-        hop_ms: int = 2000,
+        hop_ms: int = 6000,
         diarize_every_ms: int = 20000,
         audio_dir: str = "./data/audio",
         on_event: Optional[EventCallback] = None,
@@ -68,13 +70,24 @@ class MeetingSession:
 
         self._lock = asyncio.Lock()
         self._stop_lock = asyncio.Lock()
+        self._pending_lock = asyncio.Lock()
         self._stt_queue: asyncio.Queue = asyncio.Queue()
-        self._worker_task: Optional[asyncio.Task] = None
+        self._worker_tasks: List[asyncio.Task] = []
         self._last_diarize_ms = 0
         self._speaker_intervals = []
         self._pending_stt: List[tuple[int, int, str]] = []
         self._running = False
         self._stopping = False
+
+        # Debug counters
+        self._stt_calls = 0
+        self._stt_retries = 0
+        self._stt_dropped = 0
+        self._stt_total_ms = 0.0
+        self._chunks_processed = 0
+        self._cache_hits_at_start = getattr(stt_provider, "cache_hits", 0)
+        self._cache_misses_at_start = getattr(stt_provider, "cache_misses", 0)
+        self._active_tuning: Dict[str, Any] = dict(self.tuning)
 
     def apply_tuning(self, tuning: Dict[str, Any]) -> None:
         """Apply live-tunable knobs (window/hop need a new session)."""
@@ -100,6 +113,35 @@ class MeetingSession:
         if mode not in {"off", "heuristic", "finalize", "live"}:
             return "finalize"
         return mode
+
+    def _stt_workers(self) -> int:
+        return max(1, min(5, int(self.tuning.get("stt_workers", 2))))
+
+    def _stt_retry_count(self) -> int:
+        return max(0, min(5, int(self.tuning.get("stt_retry_count", 3))))
+
+    def debug_stats(self) -> Dict[str, Any]:
+        hits = getattr(self.stt, "cache_hits", 0) - self._cache_hits_at_start
+        misses = getattr(self.stt, "cache_misses", 0) - self._cache_misses_at_start
+        total_cache = hits + misses
+        speakers = {iv.speaker_id for iv in self._speaker_intervals}
+        return {
+            "meeting_id": self.meeting_id,
+            "chunks_processed": self._chunks_processed,
+            "chunks_retried": self._stt_retries,
+            "chunks_dropped": self._stt_dropped,
+            "stt_calls": self._stt_calls,
+            "stt_retries": self._stt_retries,
+            "stt_dropped": self._stt_dropped,
+            "stt_total_ms": round(self._stt_total_ms, 1),
+            "stt_cache_hits": hits,
+            "stt_cache_misses": misses,
+            "stt_cache_hit_rate": round(hits / total_cache, 3) if total_cache else None,
+            "diarization_backend": self.diarizer.backend,
+            "speakers_detected": len(speakers),
+            "speaker_ids": sorted(speakers),
+            "tuning": dict(self._active_tuning),
+        }
 
     async def _gate_stt_text(self, text: str) -> Optional[str]:
         mode = self._review_mode()
@@ -165,11 +207,15 @@ class MeetingSession:
         if self._running:
             return
         self._running = True
+        self._active_tuning = dict(self.tuning)
         self.record.status = MeetingStatus.RECORDING
         self.record.started_at = time.time()
         self.record.audio_path = self.ingest.audio_path
         self.store.save_meeting(self.record)
-        self._worker_task = asyncio.create_task(self._stt_worker())
+        n_workers = self._stt_workers()
+        self._worker_tasks = [
+            asyncio.create_task(self._stt_worker()) for _ in range(n_workers)
+        ]
         await self._emit({"type": "status", "status": self.record.status.value, "meeting_id": self.meeting_id})
 
     async def append_audio_int16(self, samples: np.ndarray) -> None:
@@ -185,6 +231,38 @@ class MeetingSession:
         if self.ingest.duration_ms - self._last_diarize_ms >= self.diarize_every_ms:
             asyncio.create_task(self._refresh_diarization(provisional=True))
 
+    async def _transcribe_with_retry(self, audio: np.ndarray, language: str) -> Optional[str]:
+        """Call STT with exponential backoff; return None if all attempts fail."""
+        retries = self._stt_retry_count()
+        last_exc: Optional[Exception] = None
+        for attempt in range(retries + 1):
+            t0 = time.perf_counter()
+            try:
+                text = await self.stt.transcribe(audio, language=language)
+                self._stt_calls += 1
+                self._stt_total_ms += (time.perf_counter() - t0) * 1000.0
+                return text
+            except Exception as exc:
+                self._stt_calls += 1
+                self._stt_total_ms += (time.perf_counter() - t0) * 1000.0
+                last_exc = exc
+                if attempt >= retries:
+                    break
+                delay = _STT_BACKOFF_S[min(attempt, len(_STT_BACKOFF_S) - 1)]
+                self._stt_retries += 1
+                logger.warning(
+                    "STT attempt %d/%d failed (%s); retrying in %.1fs",
+                    attempt + 1,
+                    retries + 1,
+                    exc,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+        self._stt_dropped += 1
+        logger.exception("STT chunk dropped after retries: %s", last_exc)
+        await self._emit({"type": "error", "message": f"STT error: {last_exc}"})
+        return None
+
     async def _stt_worker(self) -> None:
         while True:
             chunk = await self._stt_queue.get()
@@ -193,14 +271,19 @@ class MeetingSession:
                 break
             try:
                 lang = str(self.tuning.get("stt_language") or "fa")
-                text = await self.stt.transcribe(chunk.audio, language=lang)
+                text = await self._transcribe_with_retry(chunk.audio, lang)
+                if text is None:
+                    continue
                 text = await self._gate_stt_text(text)
                 if not text:
                     continue
-                self._pending_stt.append((chunk.start_ms, chunk.end_ms, text))
-                await self._publish_live_transcript()
+                async with self._pending_lock:
+                    self._pending_stt.append((chunk.start_ms, chunk.end_ms, text))
+                    self._chunks_processed += 1
+                    await self._publish_live_transcript()
             except Exception as exc:
                 logger.exception("STT chunk failed: %s", exc)
+                self._stt_dropped += 1
                 await self._emit({"type": "error", "message": f"STT error: {exc}"})
             finally:
                 self._stt_queue.task_done()
@@ -221,9 +304,7 @@ class MeetingSession:
             similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
             min_time_overlap_ratio=float(self.tuning.get("dedupe_time_overlap", 0.35)),
         )
-        self.store.delete_provisional_segments(self.meeting_id)
-        for seg in segments:
-            self.store.save_segment(seg)
+        self.store.replace_meeting_segments(self.meeting_id, segments)
         await self._emit(
             {
                 "type": "transcript",
@@ -265,12 +346,7 @@ class MeetingSession:
                 )
                 if not provisional:
                     segments = await self._finalize_review(segments)
-                if provisional:
-                    self.store.delete_provisional_segments(self.meeting_id)
-                    for seg in segments:
-                        self.store.save_segment(seg)
-                else:
-                    self.store.replace_meeting_segments(self.meeting_id, segments)
+                self.store.replace_meeting_segments(self.meeting_id, segments)
                 await self._emit(
                     {
                         "type": "transcript",
@@ -294,9 +370,12 @@ class MeetingSession:
             if rem is not None:
                 await self._stt_queue.put(rem)
 
-            await self._stt_queue.put(None)
-            if self._worker_task:
-                await self._worker_task
+            n_workers = len(self._worker_tasks) or 1
+            for _ in range(n_workers):
+                await self._stt_queue.put(None)
+            if self._worker_tasks:
+                await asyncio.gather(*self._worker_tasks)
+            self._worker_tasks = []
 
             # Finalize diarization + alignment
             await self._refresh_diarization(provisional=False)
@@ -316,6 +395,7 @@ class MeetingSession:
 
     async def process_uploaded_file(self, path: str) -> List[TranscriptSegment]:
         """Offline path: load file → diarize → windowed STT → align → store."""
+        self._active_tuning = dict(self.tuning)
         self.record.status = MeetingStatus.PROCESSING
         self.record.started_at = time.time()
         self.store.save_meeting(self.record)
@@ -349,14 +429,21 @@ class MeetingSession:
             windows.append(rem)
 
         stt_results: List[tuple[int, int, str]] = []
-        for chunk in windows:
-            try:
+        results_lock = asyncio.Lock()
+        sem = asyncio.Semaphore(self._stt_workers())
+
+        async def _process_chunk(chunk) -> None:
+            async with sem:
                 lang = str(self.tuning.get("stt_language") or "fa")
-                text = await self.stt.transcribe(chunk.audio, language=lang)
+                text = await self._transcribe_with_retry(chunk.audio, lang)
+                if text is None:
+                    return
                 text = await self._gate_stt_text(text)
                 if not text:
-                    continue
-                stt_results.append((chunk.start_ms, chunk.end_ms, text))
+                    return
+                async with results_lock:
+                    stt_results.append((chunk.start_ms, chunk.end_ms, text))
+                    self._chunks_processed += 1
                 await self._emit(
                     {
                         "type": "status",
@@ -368,8 +455,9 @@ class MeetingSession:
                         },
                     }
                 )
-            except Exception as exc:
-                logger.exception("Offline STT failed: %s", exc)
+
+        await asyncio.gather(*[_process_chunk(c) for c in windows])
+        stt_results.sort(key=lambda x: x[0])
 
         segments = align_stt_with_diarization(
             self.meeting_id,
@@ -424,7 +512,7 @@ class MeetingManager:
         self.tuning = tuning
         # Keep session_kwargs in sync for newly created meetings
         self.session_kwargs["window_ms"] = int(tuning.get("window_ms", 8000))
-        self.session_kwargs["hop_ms"] = int(tuning.get("hop_ms", 2000))
+        self.session_kwargs["hop_ms"] = int(tuning.get("hop_ms", 6000))
         self.session_kwargs["diarize_every_ms"] = int(tuning.get("diarize_every_ms", 20000))
         if hasattr(self.diarizer, "apply_tuning"):
             self.diarizer.apply_tuning(tuning)

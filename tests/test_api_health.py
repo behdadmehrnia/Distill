@@ -1,12 +1,10 @@
-import pytest
-from httpx import ASGITransport, AsyncClient
+from fastapi.testclient import TestClient
 
 from api.app import create_app
 from api.config import Settings
 
 
-@pytest.fixture
-async def client(tmp_path):
+def _make_client(tmp_path) -> TestClient:
     base = Settings.from_env()
     settings = Settings(
         host="127.0.0.1",
@@ -18,33 +16,45 @@ async def client(tmp_path):
         web_dir=base.web_dir,
     )
     app = create_app(settings)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
+    return TestClient(app)
 
 
-@pytest.mark.asyncio
-async def test_health(client):
-    resp = await client.get("/health")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["service"] == "distill"
+def test_health(tmp_path):
+    with _make_client(tmp_path) as client:
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["service"] == "distill"
 
 
-@pytest.mark.asyncio
-async def test_create_meeting_without_start(client):
-    resp = await client.post("/meetings", json={"title": "تست", "start": False})
-    assert resp.status_code == 201
-    data = resp.json()
-    assert data["title"] == "تست"
-    assert "id" in data
+def test_create_meeting_without_start(tmp_path):
+    with _make_client(tmp_path) as client:
+        resp = client.post("/meetings", json={"title": "تست", "start": False})
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["title"] == "تست"
+        assert "id" in data
 
-    listing = await client.get("/meetings")
-    body = listing.json()
-    assert any(m["id"] == data["id"] for m in body["meetings"])
+        listing = client.get("/meetings")
+        body = listing.json()
+        assert any(m["id"] == data["id"] for m in body["meetings"])
 
 
-@pytest.mark.asyncio
-async def test_transcript_404(client):
-    resp = await client.get("/meetings/does-not-exist/transcript")
-    assert resp.status_code == 404
+def test_transcript_404(tmp_path):
+    with _make_client(tmp_path) as client:
+        resp = client.get("/meetings/does-not-exist/transcript")
+        assert resp.status_code == 404
+
+
+def test_meeting_debug_endpoint(tmp_path):
+    with _make_client(tmp_path) as client:
+        created = client.post("/meetings", json={"title": "دیباگ", "start": False})
+        assert created.status_code == 201
+        meeting_id = created.json()["id"]
+        resp = client.get(f"/meetings/{meeting_id}/debug")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["meeting_id"] == meeting_id
+        assert "stt_calls" in data
+        assert "tuning" in data
+        assert "diarization_backend" in data
