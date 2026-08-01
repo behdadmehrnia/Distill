@@ -1,9 +1,12 @@
-# Optional CPU-only extras — NOT installed by default.
-# Use only if you want pyannote diarization instead of the built-in fallback.
+# CPU-only diarization extras — installed in the Docker image as well.
 # Requires HF_TOKEN and accepting pyannote model terms on Hugging Face.
+#
+# Local install (torch must be CPU wheels — install torch first):
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.optional.txt
+#
+# Do NOT list torch here: PyPI may resolve a CUDA build. The Dockerfile and
+# the commands above pin the official CPU wheel index.
 
---extra-index-url https://download.pytorch.org/whl/cpu
-torch
-torchaudio
 soundfile
 pyannote.audio

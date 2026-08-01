@@ -397,6 +397,12 @@
       flex-shrink: 0;
     }
 
+    .panel-head-actions {
+      display: inline-flex;
+      gap: 0.75rem;
+      align-items: center;
+    }
+
     .panel-head h2 {
       color: #f9d423;
       font-size: 1rem;
@@ -454,11 +460,160 @@
       border: 1px solid #2e2e2e;
       border-radius: 10px;
       padding: 0.85rem 1rem;
+      transition: border-color 0.25s ease, background 0.25s ease, transform 0.35s ease;
+    }
+
+    .segment-live {
+      border-color: rgba(249, 212, 35, 0.28);
+      background: linear-gradient(180deg, rgba(249, 212, 35, 0.05), #1a1a1a 60%);
+    }
+
+    .segment-polish {
+      animation: polish-card 0.85s ease;
     }
 
     .segment-overlap {
       border-color: rgba(249, 212, 35, 0.45);
       background: linear-gradient(180deg, rgba(249, 212, 35, 0.06), #1a1a1a 55%);
+    }
+
+    .timeline-is-merging .segment-merge-out {
+      animation: merge-shrink 0.32s ease forwards;
+      pointer-events: none;
+    }
+
+    @keyframes merge-shrink {
+      to {
+        opacity: 0;
+        transform: scale(0.94) translateY(10px);
+        filter: blur(2px);
+      }
+    }
+
+    .segment-text {
+      color: #e0e0e0;
+      line-height: 1.85;
+      font-size: 0.95rem;
+    }
+
+    .segment-text.has-caret::after {
+      content: "";
+      display: inline-block;
+      width: 2px;
+      height: 1.05em;
+      margin-inline-start: 3px;
+      background: #f9d423;
+      vertical-align: -0.15em;
+      animation: caret-blink 0.95s step-end infinite;
+    }
+
+    .stream-word,
+    .polish-word {
+      display: inline;
+      opacity: 0;
+      filter: blur(2px);
+      transform: translateY(4px);
+      animation: word-in 0.38s ease forwards;
+    }
+
+    .stream-word.is-stable {
+      opacity: 1;
+      filter: none;
+      transform: none;
+      animation: none;
+    }
+
+    .stream-word.is-new {
+      color: #f5e6a3;
+    }
+
+    .segment-text.is-polishing .polish-word {
+      animation-name: polish-word-in;
+    }
+
+    .badge-live {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #f9d423;
+      box-shadow: 0 0 0 0 rgba(249, 212, 35, 0.55);
+      animation: live-pulse 1.4s ease infinite;
+    }
+
+    .badge-polish {
+      background: rgba(249, 212, 35, 0.16);
+      color: #f9d423;
+      border-color: rgba(249, 212, 35, 0.4);
+    }
+
+    @keyframes word-in {
+      to {
+        opacity: 1;
+        filter: blur(0);
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes polish-word-in {
+      from {
+        opacity: 0;
+        letter-spacing: 0.04em;
+        filter: blur(3px);
+      }
+      to {
+        opacity: 1;
+        letter-spacing: normal;
+        filter: blur(0);
+      }
+    }
+
+    @keyframes caret-blink {
+      50% { opacity: 0; }
+    }
+
+    @keyframes live-pulse {
+      0% { box-shadow: 0 0 0 0 rgba(249, 212, 35, 0.5); }
+      70% { box-shadow: 0 0 0 7px rgba(249, 212, 35, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(249, 212, 35, 0); }
+    }
+
+    @keyframes polish-card {
+      0% {
+        transform: scale(0.985);
+        box-shadow: 0 0 0 0 rgba(249, 212, 35, 0);
+      }
+      45% {
+        transform: scale(1.01);
+        box-shadow: 0 0 0 3px rgba(249, 212, 35, 0.28);
+        border-color: rgba(249, 212, 35, 0.55);
+      }
+      100% {
+        transform: scale(1);
+        box-shadow: 0 0 0 0 rgba(249, 212, 35, 0);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .segment-polish,
+      .timeline-is-merging .segment,
+      .stream-word,
+      .polish-word,
+      .live-dot,
+      .segment-text.has-caret::after {
+        animation: none !important;
+      }
+      .stream-word,
+      .polish-word {
+        opacity: 1;
+        filter: none;
+        transform: none;
+      }
     }
 
     .segment-meta {
@@ -482,6 +637,16 @@
       display: inline-flex;
       align-items: center;
       gap: 0.3rem;
+      background: transparent;
+      border: 0;
+      padding: 0;
+      cursor: pointer;
+      font: inherit;
+      color: inherit;
+    }
+
+    .speaker-chip:hover .speaker-name {
+      text-decoration: underline;
     }
 
     .speaker-dot {
@@ -492,12 +657,6 @@
     }
 
     .speaker-name { font-weight: 700; }
-
-    .segment-text {
-      color: #e0e0e0;
-      line-height: 1.85;
-      font-size: 0.95rem;
-    }
 
     .badge {
       display: inline-block;
@@ -700,6 +859,33 @@
     }
 
     .tuning-actions .btn { width: auto; flex: 1; }
+
+    .debug-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.65rem 1rem;
+      margin: 0;
+    }
+    .debug-grid div {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      padding: 0.55rem 0.65rem;
+      border: 1px solid #333;
+      border-radius: 8px;
+      background: #151515;
+    }
+    .debug-grid dt {
+      margin: 0;
+      font-size: 0.7rem;
+      color: #888;
+    }
+    .debug-grid dd {
+      margin: 0;
+      font-weight: 700;
+      color: #e0e0e0;
+      word-break: break-word;
+    }
   </style>
 </head>
 <body>
@@ -773,7 +959,10 @@
     <section class="panel display-panel">
       <div class="panel-head">
         <h2>متن زنده</h2>
-        <button id="clearBtn" class="linkish" type="button">پاک کردن نمایش</button>
+        <div class="panel-head-actions">
+          <button id="debugBtn" class="linkish" type="button">دیباگ</button>
+          <button id="clearBtn" class="linkish" type="button">پاک کردن نمایش</button>
+        </div>
       </div>
       <div id="timeline" class="timeline">
         <div class="timeline-empty">
@@ -805,6 +994,17 @@
           <ul id="insightActions"></ul>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div id="debugPanel" class="tuning-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="debugTitle">
+    <div class="tuning-panel">
+      <div class="tuning-head">
+        <h3 id="debugTitle">دیباگ جلسه</h3>
+        <button id="closeDebugBtn" class="linkish" type="button">بستن</button>
+      </div>
+      <p class="tuning-note">شمارنده‌های STT و diarization برای جلسه جاری (یا آخرین جلسه بازشده).</p>
+      <div id="debugBody"></div>
     </div>
   </div>
 

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 EventCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 
 _STT_BACKOFF_S = (0.5, 1.0, 2.0)
+
+# (start_ms, end_ms, text, optional absolute word timings)
+PendingStt = Tuple[int, int, str, Optional[Sequence[Tuple[str, int, int]]]]
 
 
 class MeetingSession:
@@ -68,14 +71,15 @@ class MeetingSession:
             min_speech_rms=float(self.tuning.get("min_speech_rms", 0.008)),
         )
 
-        self._lock = asyncio.Lock()
+        self._diarize_lock = asyncio.Lock()
         self._stop_lock = asyncio.Lock()
-        self._pending_lock = asyncio.Lock()
+        # Serializes pending_stt mutations + DB replace + transcript emit
+        self._transcript_lock = asyncio.Lock()
         self._stt_queue: asyncio.Queue = asyncio.Queue()
         self._worker_tasks: List[asyncio.Task] = []
         self._last_diarize_ms = 0
         self._speaker_intervals = []
-        self._pending_stt: List[tuple[int, int, str]] = []
+        self._pending_stt: List[PendingStt] = []
         self._running = False
         self._stopping = False
 
@@ -85,6 +89,7 @@ class MeetingSession:
         self._stt_dropped = 0
         self._stt_total_ms = 0.0
         self._chunks_processed = 0
+        self._stt_with_timings = 0
         self._cache_hits_at_start = getattr(stt_provider, "cache_hits", 0)
         self._cache_misses_at_start = getattr(stt_provider, "cache_misses", 0)
         self._active_tuning: Dict[str, Any] = dict(self.tuning)
@@ -96,6 +101,18 @@ class MeetingSession:
             self.diarize_every_ms = int(tuning["diarize_every_ms"])
         if "min_speech_rms" in tuning:
             self.chunker.min_speech_rms = float(tuning["min_speech_rms"])
+        if hasattr(self.diarizer, "apply_tuning"):
+            self.diarizer.apply_tuning(tuning)
+
+    def set_speaker_map(self, mapping: Dict[str, str]) -> MeetingRecord:
+        cleaned = {
+            str(k).strip(): str(v).strip()
+            for k, v in (mapping or {}).items()
+            if str(k).strip() and str(v).strip()
+        }
+        self.record.speaker_map.update(cleaned)
+        self.store.save_meeting(self.record)
+        return self.record
 
     def _align_kwargs(self) -> Dict[str, Any]:
         return {
@@ -134,12 +151,14 @@ class MeetingSession:
             "stt_retries": self._stt_retries,
             "stt_dropped": self._stt_dropped,
             "stt_total_ms": round(self._stt_total_ms, 1),
+            "stt_with_timings": self._stt_with_timings,
             "stt_cache_hits": hits,
             "stt_cache_misses": misses,
             "stt_cache_hit_rate": round(hits / total_cache, 3) if total_cache else None,
             "diarization_backend": self.diarizer.backend,
             "speakers_detected": len(speakers),
             "speaker_ids": sorted(speakers),
+            "speaker_map": dict(self.record.speaker_map),
             "tuning": dict(self._active_tuning),
         }
 
@@ -174,7 +193,6 @@ class MeetingSession:
     ) -> List[TranscriptSegment]:
         mode = self._review_mode()
         if mode in {"off", "heuristic"}:
-            # Still apply heuristic-only finalize to catch anything that slipped through
             if mode == "off":
                 return segments
             agent = TranscriptReviewAgent(llm=None, enabled=False)
@@ -184,7 +202,6 @@ class MeetingSession:
             )
 
         agent = self.review_agent or TranscriptReviewAgent(llm=None, enabled=False)
-        # finalize / live: use LLM on stop/upload if available
         if mode in {"finalize", "live"} and agent.llm is not None:
             agent.enabled = True
         return await agent.review_segments(
@@ -216,7 +233,26 @@ class MeetingSession:
         self._worker_tasks = [
             asyncio.create_task(self._stt_worker()) for _ in range(n_workers)
         ]
-        await self._emit({"type": "status", "status": self.record.status.value, "meeting_id": self.meeting_id})
+        await self._emit(
+            {
+                "type": "status",
+                "status": self.record.status.value,
+                "meeting_id": self.meeting_id,
+                "diarization_backend": self.diarizer.backend,
+            }
+        )
+        if self.diarizer.backend != "pyannote":
+            await self._emit(
+                {
+                    "type": "warning",
+                    "meeting_id": self.meeting_id,
+                    "code": "fallback_diarization",
+                    "message": (
+                        "Diarization backend is fallback (not pyannote). "
+                        "Speaker labels may be unreliable on a single mic."
+                    ),
+                }
+            )
 
     async def append_audio_int16(self, samples: np.ndarray) -> None:
         """Append PCM int16 without dropping — always keeps recording."""
@@ -231,17 +267,41 @@ class MeetingSession:
         if self.ingest.duration_ms - self._last_diarize_ms >= self.diarize_every_ms:
             asyncio.create_task(self._refresh_diarization(provisional=True))
 
-    async def _transcribe_with_retry(self, audio: np.ndarray, language: str) -> Optional[str]:
+    def _words_abs(
+        self, chunk_start_ms: int, result
+    ) -> Optional[List[Tuple[str, int, int]]]:
+        words = getattr(result, "words", None) or []
+        if not words:
+            return None
+        abs_words: List[Tuple[str, int, int]] = []
+        for w in words:
+            abs_words.append(
+                (
+                    w.word,
+                    chunk_start_ms + int(w.start_s * 1000),
+                    chunk_start_ms + int(w.end_s * 1000),
+                )
+            )
+        return abs_words
+
+    async def _transcribe_with_retry(self, audio: np.ndarray, language: str):
         """Call STT with exponential backoff; return None if all attempts fail."""
         retries = self._stt_retry_count()
         last_exc: Optional[Exception] = None
+        detailed = getattr(self.stt, "transcribe_detailed", None)
         for attempt in range(retries + 1):
             t0 = time.perf_counter()
             try:
-                text = await self.stt.transcribe(audio, language=language)
+                if detailed is not None:
+                    result = await detailed(audio, language=language)
+                else:
+                    text = await self.stt.transcribe(audio, language=language)
+                    from api.providers.stt import STTResult
+
+                    result = STTResult(text=text, words=[])
                 self._stt_calls += 1
                 self._stt_total_ms += (time.perf_counter() - t0) * 1000.0
-                return text
+                return result
             except Exception as exc:
                 self._stt_calls += 1
                 self._stt_total_ms += (time.perf_counter() - t0) * 1000.0
@@ -271,16 +331,21 @@ class MeetingSession:
                 break
             try:
                 lang = str(self.tuning.get("stt_language") or "fa")
-                text = await self._transcribe_with_retry(chunk.audio, lang)
-                if text is None:
+                result = await self._transcribe_with_retry(chunk.audio, lang)
+                if result is None:
                     continue
-                text = await self._gate_stt_text(text)
+                text = await self._gate_stt_text(result.text)
                 if not text:
                     continue
-                async with self._pending_lock:
-                    self._pending_stt.append((chunk.start_ms, chunk.end_ms, text))
+                words = self._words_abs(chunk.start_ms, result)
+                if words:
+                    self._stt_with_timings += 1
+                async with self._transcript_lock:
+                    self._upsert_pending_stt(
+                        chunk.start_ms, chunk.end_ms, text, words
+                    )
                     self._chunks_processed += 1
-                    await self._publish_live_transcript()
+                    await self._publish_live_transcript_unlocked()
             except Exception as exc:
                 logger.exception("STT chunk failed: %s", exc)
                 self._stt_dropped += 1
@@ -288,8 +353,42 @@ class MeetingSession:
             finally:
                 self._stt_queue.task_done()
 
-    async def _publish_live_transcript(self) -> None:
-        """Realign + dedupe all pending hop windows and replace provisional UI rows."""
+    def _upsert_pending_stt(
+        self,
+        start_ms: int,
+        end_ms: int,
+        text: str,
+        words: Optional[Sequence[Tuple[str, int, int]]],
+    ) -> None:
+        """Keep one pending row per spoken utterance; fold Whisper hop variants."""
+        from api.meeting.aligner import _overlap_ms, _pick_hop_text, _same_utterance
+
+        acc_s, acc_e, acc_t, acc_w = start_ms, end_ms, text, words
+        kept: List[PendingStt] = []
+        for prev in self._pending_stt:
+            ps, pe, pt, pw = prev[0], prev[1], prev[2], prev[3]
+            ov = _overlap_ms(ps, pe, acc_s, acc_e)
+            shorter = max(1, min(pe - ps, acc_e - acc_s))
+            near = acc_s - pe <= 1500 and ps - acc_e <= 1500
+            if (ov / shorter >= 0.12 or near) and _same_utterance(pt, acc_t):
+                acc_s = min(acc_s, ps)
+                acc_e = max(acc_e, pe)
+                before = acc_t
+                acc_t = _pick_hop_text(pt, acc_t)
+                if acc_t == pt:
+                    acc_w = pw or acc_w
+                elif acc_t == before:
+                    acc_w = acc_w or pw
+                else:
+                    acc_w = words or pw or acc_w
+            else:
+                kept.append(prev)
+        kept.append((acc_s, acc_e, acc_t, acc_w))
+        kept.sort(key=lambda x: x[0])
+        self._pending_stt = kept
+
+    async def _publish_live_transcript_unlocked(self) -> None:
+        """Caller must hold `_transcript_lock`."""
         if not self._pending_stt:
             return
         segments = align_stt_with_diarization(
@@ -314,13 +413,18 @@ class MeetingSession:
         )
 
     async def _refresh_diarization(self, provisional: bool = True) -> None:
-        async with self._lock:
+        async with self._diarize_lock:
             audio = self.ingest.get_buffer()
             if len(audio) < self.sample_rate:
                 return
-            intervals = await asyncio.to_thread(self.diarizer.diarize, audio, self.sample_rate)
+            intervals = await asyncio.to_thread(
+                self.diarizer.diarize, audio, self.sample_rate
+            )
+            duration_ms = self.ingest.duration_ms
+
+        async with self._transcript_lock:
             self._speaker_intervals = intervals
-            self._last_diarize_ms = self.ingest.duration_ms
+            self._last_diarize_ms = duration_ms
 
             await self._emit(
                 {
@@ -341,8 +445,12 @@ class MeetingSession:
                 )
                 segments = dedupe_overlapping_transcripts(
                     segments,
-                    similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
-                    min_time_overlap_ratio=float(self.tuning.get("dedupe_time_overlap", 0.35)),
+                    similarity_threshold=float(
+                        self.tuning.get("dedupe_similarity", 0.45)
+                    ),
+                    min_time_overlap_ratio=float(
+                        self.tuning.get("dedupe_time_overlap", 0.35)
+                    ),
                 )
                 if not provisional:
                     segments = await self._finalize_review(segments)
@@ -363,9 +471,10 @@ class MeetingSession:
 
             self.record.status = MeetingStatus.PROCESSING
             self.store.save_meeting(self.record)
-            await self._emit({"type": "status", "status": "processing", "meeting_id": self.meeting_id})
+            await self._emit(
+                {"type": "status", "status": "processing", "meeting_id": self.meeting_id}
+            )
 
-            # Flush remaining audio window
             rem = self.chunker.flush_remainder(self.ingest.get_buffer())
             if rem is not None:
                 await self._stt_queue.put(rem)
@@ -377,7 +486,6 @@ class MeetingSession:
                 await asyncio.gather(*self._worker_tasks)
             self._worker_tasks = []
 
-            # Finalize diarization + alignment
             await self._refresh_diarization(provisional=False)
 
             try:
@@ -390,7 +498,9 @@ class MeetingSession:
             self.record.status = MeetingStatus.STOPPED
             self.record.stopped_at = time.time()
             self.store.save_meeting(self.record)
-            await self._emit({"type": "status", "status": "stopped", "meeting_id": self.meeting_id})
+            await self._emit(
+                {"type": "status", "status": "stopped", "meeting_id": self.meeting_id}
+            )
             return self.record
 
     async def process_uploaded_file(self, path: str) -> List[TranscriptSegment]:
@@ -399,11 +509,26 @@ class MeetingSession:
         self.record.status = MeetingStatus.PROCESSING
         self.record.started_at = time.time()
         self.store.save_meeting(self.record)
-        await self._emit({"type": "status", "status": "processing", "meeting_id": self.meeting_id})
+        await self._emit(
+            {"type": "status", "status": "processing", "meeting_id": self.meeting_id}
+        )
+        if self.diarizer.backend != "pyannote":
+            await self._emit(
+                {
+                    "type": "warning",
+                    "meeting_id": self.meeting_id,
+                    "code": "fallback_diarization",
+                    "message": (
+                        "Diarization backend is fallback (not pyannote). "
+                        "Speaker labels may be unreliable on a single mic."
+                    ),
+                }
+            )
 
         self.ingest.load_from_file(path)
-        # Keep a copy under data/audio
-        out_path = self.ingest.audio_path or os.path.join("./data/audio", f"{self.meeting_id}.wav")
+        out_path = self.ingest.audio_path or os.path.join(
+            "./data/audio", f"{self.meeting_id}.wav"
+        )
         try:
             self.ingest.save_wav(out_path)
             self.record.audio_path = out_path
@@ -428,27 +553,54 @@ class MeetingSession:
         if rem is not None:
             windows.append(rem)
 
-        stt_results: List[tuple[int, int, str]] = []
+        stt_results: List[PendingStt] = []
         results_lock = asyncio.Lock()
         sem = asyncio.Semaphore(self._stt_workers())
+        total = len(windows)
+        done = 0
 
         async def _process_chunk(chunk) -> None:
+            nonlocal done
             async with sem:
                 lang = str(self.tuning.get("stt_language") or "fa")
-                text = await self._transcribe_with_retry(chunk.audio, lang)
-                if text is None:
+                result = await self._transcribe_with_retry(chunk.audio, lang)
+                if result is None:
+                    async with results_lock:
+                        done += 1
+                        current = done
+                    await self._emit(
+                        {
+                            "type": "status",
+                            "status": "transcribing",
+                            "progress": {
+                                "done": current,
+                                "total": total,
+                                "chunk": chunk.index,
+                                "start_ms": chunk.start_ms,
+                                "end_ms": chunk.end_ms,
+                            },
+                        }
+                    )
                     return
-                text = await self._gate_stt_text(text)
-                if not text:
-                    return
+                text = await self._gate_stt_text(result.text)
+                words = self._words_abs(chunk.start_ms, result) if text else None
+                if words:
+                    self._stt_with_timings += 1
                 async with results_lock:
-                    stt_results.append((chunk.start_ms, chunk.end_ms, text))
-                    self._chunks_processed += 1
+                    if text:
+                        stt_results.append(
+                            (chunk.start_ms, chunk.end_ms, text, words)
+                        )
+                        self._chunks_processed += 1
+                    done += 1
+                    current = done
                 await self._emit(
                     {
                         "type": "status",
                         "status": "transcribing",
                         "progress": {
+                            "done": current,
+                            "total": total,
                             "chunk": chunk.index,
                             "start_ms": chunk.start_ms,
                             "end_ms": chunk.end_ms,
@@ -456,7 +608,8 @@ class MeetingSession:
                     }
                 )
 
-        await asyncio.gather(*[_process_chunk(c) for c in windows])
+        if windows:
+            await asyncio.gather(*[_process_chunk(c) for c in windows])
         stt_results.sort(key=lambda x: x[0])
 
         segments = align_stt_with_diarization(
@@ -484,7 +637,9 @@ class MeetingSession:
         self.record.status = MeetingStatus.STOPPED
         self.record.stopped_at = time.time()
         self.store.save_meeting(self.record)
-        await self._emit({"type": "status", "status": "stopped", "meeting_id": self.meeting_id})
+        await self._emit(
+            {"type": "status", "status": "stopped", "meeting_id": self.meeting_id}
+        )
         return segments
 
 
@@ -510,14 +665,24 @@ class MeetingManager:
 
     def apply_tuning(self, tuning: Dict[str, Any]) -> None:
         self.tuning = tuning
-        # Keep session_kwargs in sync for newly created meetings
         self.session_kwargs["window_ms"] = int(tuning.get("window_ms", 8000))
         self.session_kwargs["hop_ms"] = int(tuning.get("hop_ms", 6000))
-        self.session_kwargs["diarize_every_ms"] = int(tuning.get("diarize_every_ms", 20000))
+        self.session_kwargs["diarize_every_ms"] = int(
+            tuning.get("diarize_every_ms", 20000)
+        )
         if hasattr(self.diarizer, "apply_tuning"):
             self.diarizer.apply_tuning(tuning)
         for session in self._sessions.values():
             session.apply_tuning(tuning)
+
+    def _fork_diarizer(self) -> SpeakerDiarizer:
+        if hasattr(self.diarizer, "fork"):
+            child = self.diarizer.fork()
+        else:
+            child = SpeakerDiarizer(sample_rate=self.diarizer.sample_rate)
+        if self.tuning and hasattr(child, "apply_tuning"):
+            child.apply_tuning(self.tuning)
+        return child
 
     def _session_args(self, on_event: Optional[EventCallback] = None) -> Dict[str, Any]:
         return {
@@ -538,7 +703,7 @@ class MeetingManager:
             record=record,
             store=self.store,
             stt_provider=self.stt,
-            diarizer=self.diarizer,
+            diarizer=self._fork_diarizer(),
             review_agent=self.review_agent,
             **self._session_args(on_event),
         )
@@ -548,7 +713,9 @@ class MeetingManager:
     def get(self, meeting_id: str) -> Optional[MeetingSession]:
         return self._sessions.get(meeting_id)
 
-    def get_or_restore(self, meeting_id: str, on_event: Optional[EventCallback] = None) -> Optional[MeetingSession]:
+    def get_or_restore(
+        self, meeting_id: str, on_event: Optional[EventCallback] = None
+    ) -> Optional[MeetingSession]:
         existing = self._sessions.get(meeting_id)
         if existing:
             if on_event:
@@ -561,7 +728,7 @@ class MeetingManager:
             record=record,
             store=self.store,
             stt_provider=self.stt,
-            diarizer=self.diarizer,
+            diarizer=self._fork_diarizer(),
             review_agent=self.review_agent,
             **self._session_args(on_event),
         )

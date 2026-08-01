@@ -57,26 +57,70 @@ class SpeakerDiarizer:
         if "merge_short_ms" in tuning:
             self.merge_short_ms = int(tuning["merge_short_ms"])
 
+    def reset_state(self) -> None:
+        """Clear per-meeting speaker identity caches (keep loaded pipeline)."""
+        self._label_map = {}
+        self._speaker_centroids = {}
+        self._prev_intervals = []
+
+    def fork(self) -> "SpeakerDiarizer":
+        """
+        Session-scoped clone: shares the expensive pyannote pipeline,
+        but starts with fresh label/centroid state so meetings cannot bleed.
+        """
+        child = SpeakerDiarizer.__new__(SpeakerDiarizer)
+        child.sample_rate = self.sample_rate
+        child.min_speakers = self.min_speakers
+        child.max_speakers = self.max_speakers
+        child.energy_threshold = self.energy_threshold
+        child.merge_short_ms = self.merge_short_ms
+        child.hf_token = self.hf_token
+        child._pipeline = self._pipeline
+        child._backend = self._backend
+        child._label_map = {}
+        child._speaker_centroids = {}
+        child._prev_intervals = []
+        return child
+
     def _try_load_pyannote(self) -> None:
         try:
             from pyannote.audio import Pipeline  # type: ignore
         except Exception as exc:
-            logger.info("pyannote not available (%s); using fallback diarization", exc)
+            logger.warning(
+                "pyannote not installed (%s); using fallback diarization "
+                "(speaker labels will be weak on mono mic). "
+                "Install requirements.optional.txt + set HF_TOKEN for production quality.",
+                exc,
+            )
             return
 
         if not self.hf_token:
-            logger.info("No HF token set; using fallback diarization")
+            logger.warning(
+                "HF_TOKEN not set; pyannote available but unused — falling back to "
+                "heuristic diarization. Set HF_TOKEN to enable speaker-diarization-3.1."
+            )
             return
 
         try:
-            self._pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                use_auth_token=self.hf_token,
-            )
+            # pyannote.audio 4.x / huggingface_hub use `token=`;
+            # older releases still accept `use_auth_token=`.
+            try:
+                self._pipeline = Pipeline.from_pretrained(
+                    "pyannote/speaker-diarization-3.1",
+                    token=self.hf_token,
+                )
+            except TypeError:
+                self._pipeline = Pipeline.from_pretrained(
+                    "pyannote/speaker-diarization-3.1",
+                    use_auth_token=self.hf_token,
+                )
             self._backend = "pyannote"
             logger.info("Loaded pyannote speaker-diarization-3.1")
         except Exception as exc:
-            logger.warning("Failed to load pyannote pipeline: %s", exc)
+            logger.warning(
+                "Failed to load pyannote pipeline (%s); using fallback diarization",
+                exc,
+            )
             self._pipeline = None
             self._backend = "fallback"
 

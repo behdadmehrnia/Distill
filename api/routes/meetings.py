@@ -65,6 +65,30 @@ async def get_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
     return meeting.to_dict()
 
 
+@router.patch("/meetings/{meeting_id}/speakers")
+async def update_speaker_map(request: Request, meeting_id: str) -> Dict[str, Any]:
+    """Map SPEAKER_XX ids to display names. Body: {"SPEAKER_00": "علی", ...} or {"speaker_map": {...}}."""
+    session = request.app.state.manager.get_or_restore(meeting_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="meeting not found")
+    try:
+        raw = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid json") from exc
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="expected object")
+    mapping = raw.get("speaker_map") if "speaker_map" in raw else raw
+    if not isinstance(mapping, dict):
+        raise HTTPException(status_code=400, detail="speaker_map must be an object")
+    record = session.set_speaker_map(mapping)
+    await broadcast(
+        request.app,
+        meeting_id,
+        {"type": "speaker_map", "meeting_id": meeting_id, "speaker_map": record.speaker_map},
+    )
+    return record.to_dict()
+
+
 @router.post("/meetings/{meeting_id}/stop")
 async def stop_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
     session = request.app.state.manager.get_or_restore(meeting_id)

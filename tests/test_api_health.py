@@ -25,6 +25,8 @@ def test_health(tmp_path):
         assert resp.status_code == 200
         data = resp.json()
         assert data["service"] == "distill"
+        assert "diarization_backend" in data
+        assert data["diarization_quality"] in {"high", "fallback"}
 
 
 def test_create_meeting_without_start(tmp_path):
@@ -58,3 +60,17 @@ def test_meeting_debug_endpoint(tmp_path):
         assert "stt_calls" in data
         assert "tuning" in data
         assert "diarization_backend" in data
+
+
+def test_speaker_map_patch(tmp_path):
+    with _make_client(tmp_path) as client:
+        created = client.post("/meetings", json={"title": "نام‌گذاری", "start": False})
+        meeting_id = created.json()["id"]
+        resp = client.patch(
+            f"/meetings/{meeting_id}/speakers",
+            json={"SPEAKER_00": "علی"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["speaker_map"]["SPEAKER_00"] == "علی"
+        again = client.get(f"/meetings/{meeting_id}")
+        assert again.json()["speaker_map"]["SPEAKER_00"] == "علی"

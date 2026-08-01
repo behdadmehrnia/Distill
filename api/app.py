@@ -92,12 +92,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        logger.info(
-            "Distill app ready (diarization=%s)",
+        backend = (
             app.state.manager.diarizer.backend
             if hasattr(app.state.manager, "diarizer")
-            else "n/a",
+            else "n/a"
         )
+        if backend != "pyannote":
+            logger.warning(
+                "Distill ready with FALLBACK diarization (backend=%s). "
+                "Speaker labels will be weak. Install requirements.optional.txt "
+                "and set HF_TOKEN for pyannote quality.",
+                backend,
+            )
+        else:
+            logger.info("Distill app ready (diarization=%s)", backend)
         yield
 
     app = FastAPI(
@@ -113,7 +121,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.state.ws_by_meeting = services["ws_by_meeting"]
 
     setup_routes(app)
-    logger.info("Distill app created (diarization=%s)", services["diarizer"].backend)
+    backend = services["diarizer"].backend
+    if backend != "pyannote":
+        logger.warning(
+            "Distill created with fallback diarization (backend=%s)", backend
+        )
+    else:
+        logger.info("Distill app created (diarization=%s)", backend)
     return app
 
 

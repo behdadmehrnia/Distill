@@ -11,8 +11,11 @@ services:
       # Paths are fixed in code under /app/data and /app/api/web
       MEETING_HOST: "0.0.0.0"
       MEETING_PORT: "8000"
+      # HF_TOKEN comes from .env — required for pyannote (image includes CPU torch)
+      CUDA_VISIBLE_DEVICES: ""
     volumes:
-      # Persists SQLite DB, uploads, live audio, STT cache
+      # Named volume survives image rebuild/redeploy: DB, uploads, audio,
+      # STT cache, and HuggingFace/torch model caches under /app/data
       - distill-data:/app/data
     restart: unless-stopped
 

@@ -239,6 +239,8 @@ def gate_stt_text(
     collapse_runs: bool = True,
 ) -> ReviewResult:
     """Fast heuristic gate: drop / lightly collapse / keep. No LLM."""
+    from api.meeting.aligner import _collapse_internal_repeats
+
     raw = (text or "").strip()
     score, reasons = score_stt_text(raw)
     if score < min_score:
@@ -254,8 +256,9 @@ def gate_stt_text(
     run = _max_consecutive_run(tokens)
     if collapse_runs and run >= 3:
         collapsed = _collapse_consecutive(tokens, keep=1)
-        # Rebuild with spaces (good enough for Persian ASR polish later)
-        fixed = localize_nonspeech_events(" ".join(collapsed))
+        fixed = localize_nonspeech_events(
+            _collapse_internal_repeats(" ".join(collapsed))
+        )
         return ReviewResult(
             action="fix",
             text=fixed,
@@ -264,11 +267,13 @@ def gate_stt_text(
             raw_text=raw,
         )
 
+    cleaned = _collapse_internal_repeats(localize_nonspeech_events(raw))
+    action: ReviewAction = "fix" if cleaned != raw else "keep"
     return ReviewResult(
-        action="keep",
-        text=localize_nonspeech_events(raw),
+        action=action,
+        text=cleaned,
         score=score,
-        reasons=reasons,
+        reasons=reasons + (["collapsed_phrases"] if action == "fix" else []),
         raw_text=raw,
     )
 

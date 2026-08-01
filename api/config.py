@@ -97,5 +97,9 @@ class Settings:
             self.upload_dir,
             self.audio_dir,
             self.stt_cache_dir,
+            # HF/torch caches (Docker sets HF_HOME/TORCH_HOME under /app/data)
+            DATA_DIR / "hf_cache",
+            DATA_DIR / "torch_cache",
+            DATA_DIR / "cache",
         ):
             path.mkdir(parents=True, exist_ok=True)

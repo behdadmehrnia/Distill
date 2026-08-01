@@ -19,5 +19,6 @@ audioop-lts; python_version >= "3.13"
 pytest>=8.0
 pytest-asyncio>=0.23
 
-# Optional higher-quality diarization (CPU torch + HF token):
+# Higher-quality diarization (CPU torch + HF token) — also installed in Docker:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 #   pip install -r requirements.optional.txt

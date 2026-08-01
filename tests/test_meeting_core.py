@@ -78,6 +78,89 @@ def test_align_and_dedupe():
     assert not segments[0].is_overlap
 
 
+def test_live_whisper_variants_coalesce_to_one_row():
+    """User said one sentence; overlapping hops must show as one provisional row."""
+    intervals = [SpeakerInterval("SPEAKER_00", 0, 20000, False)]
+    segments = align_stt_with_diarization(
+        "m1",
+        [
+            (0, 8000, "خب سلام الان میخوام ببینم متن رو چهار بار نمیرسی برام یا نه؟ میشه لطفا فعالان متن های"),
+            (
+                2000,
+                10000,
+                "سلام، الان می‌خوام ببینم متن رو چهار بار می‌نویسی برام یا نه؟ می‌شه لطفاً فعالان متن‌هایی که دارم بهت می‌گم رو سامیز نکن؟",
+            ),
+            (6000, 14000, "میشه لطفاً فعالان متن هایی که دارم بهت میگم رو سامورایز نکنی؟"),
+            (8000, 16000, "دارم بهت میگم رو سامورایز نکنی."),
+        ],
+        intervals,
+    )
+    assert len(segments) == 1
+    text = segments[0].text
+    assert "چهار بار" in text
+    # Should keep the fuller form, not 4 separate cards
+    assert text.count("سامیز") + text.count("سامورایز") <= 1
+
+
+def test_same_utterance_helper():
+    from api.meeting.aligner import _same_utterance
+
+    partial = "خب سلام الان میخوام ببینم متن رو چهار بار"
+    full = "سلام، الان می‌خوام ببینم متن رو چهار بار می‌نویسی برام یا نه؟"
+    assert _same_utterance(partial, full)
+    assert not _same_utterance(
+        "امروز درباره بودجه پروژه صحبت می‌کنیم",
+        "خب الان یه نفر دیگه بخواد حرف بزنه",
+    )
+
+
+def test_dissimilar_hops_do_not_erase_earlier_speech():
+    """Regression: later hop must not replace the whole timeline text."""
+    intervals = [SpeakerInterval("SPEAKER_00", 0, 60000, False)]
+    early = "امروز درباره بودجه پروژه و زمان‌بندی اسپرینت صحبت می‌کنیم"
+    late = "خب الان یه نفر دیگه بخواد حرف بزنه شما ببینید"
+    segments = align_stt_with_diarization(
+        "m1",
+        [
+            (0, 8000, early),
+            (6000, 14000, "ادامه بحث بودجه و زمان‌بندی"),
+            (60000, 68000, late),  # much later, no overlap chain swallow
+            (66000, 74000, late),
+        ],
+        intervals,
+    )
+    texts = " ".join(s.text for s in segments)
+    assert "بودجه" in texts
+    assert "حرف بزنه" in texts
+    # Must not be a single segment spanning 0→74s with only the late text
+    assert not (
+        len(segments) == 1
+        and segments[0].start_ms == 0
+        and "بودجه" not in segments[0].text
+    )
+
+
+def test_collapse_internal_repeats_helper():
+    from api.meeting.aligner import _collapse_internal_repeats
+
+    doubled = "البته این بار چهار بار ننوشتش عجیبه. البته این بار چهار بار ننوشتش عجیبه."
+    assert _collapse_internal_repeats(doubled).count("عجیبه") == 1
+    assert (
+        _collapse_internal_repeats("ننوشتش عجیبه ننوشتش عجیبه")
+        == "ننوشتش عجیبه"
+    )
+
+
+def test_pick_hop_text_never_concatenates():
+    from api.meeting.aligner import _pick_hop_text
+
+    a = "خب میخوام ببینم بازم همه چیو چهار بار تکرار میکنه یا نه"
+    b = "خب میخوام ببینم بازم همه چیو چهار بار تکرار میکنه یا نه عجیبه"
+    out = _pick_hop_text(a, b)
+    assert out != f"{a} {b}"
+    assert "عجیبه" in out or out == a
+
+
 def test_align_skips_false_overlap_from_frame_edge_flicker():
     """Abutting turns + tiny 40ms overlaps must not become هم‌صحبتی."""
     intervals = [

@@ -11,8 +11,15 @@ class DistillClient {
     this.meetingId = null;
     this.meetingStatus = null;
     this.segments = new Map();
+    this.speakerMap = {};
     this._insightsBusy = false;
     this._cachedInsights = null;
+    this._lastDebug = null;
+    this._prevGroupSnapshot = [];
+    this._reduceMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     // Yellow/gray family accents for speakers
     this.speakerColors = [
@@ -45,6 +52,8 @@ class DistillClient {
     this.statusChip = document.getElementById("statusChip");
     this.tuningPanel = document.getElementById("tuningPanel");
     this.tuningFields = document.getElementById("tuningFields");
+    this.debugPanel = document.getElementById("debugPanel");
+    this.debugBody = document.getElementById("debugBody");
     this._timerStartedAt = null;
     this._timerInterval = null;
     this._tuningSchema = [];
@@ -101,6 +110,7 @@ class DistillClient {
     const meeting = await res.json();
     this.meetingId = meeting.id;
     this.meetingStatus = meeting.status || "stopped";
+    this.speakerMap = { ...(meeting.speaker_map || {}) };
     this._cachedInsights = null;
     if (this.meetingTitle) {
       this.meetingTitle.value = meeting.title || "";
@@ -138,6 +148,15 @@ class DistillClient {
     this.uploadBtn.addEventListener("click", () => this.uploadRecording());
     this.insightsBtn.addEventListener("click", () => this.generateInsights());
     this.clearBtn.addEventListener("click", () => this.clearTimeline(true));
+    const debugBtn = document.getElementById("debugBtn");
+    if (debugBtn) debugBtn.addEventListener("click", () => this.openDebug());
+    const closeDebug = document.getElementById("closeDebugBtn");
+    if (closeDebug) closeDebug.addEventListener("click", () => this.closeDebug());
+    if (this.debugPanel) {
+      this.debugPanel.addEventListener("click", (ev) => {
+        if (ev.target === this.debugPanel) this.closeDebug();
+      });
+    }
     if (this.meetingMeta) {
       this.meetingMeta.addEventListener("click", (ev) => {
         if (ev.target.closest("[data-copy-session]")) {
@@ -482,6 +501,7 @@ class DistillClient {
       const meeting = await res.json();
       this.meetingId = meeting.id;
       this.meetingStatus = "recording";
+      this.speakerMap = { ...(meeting.speaker_map || {}) };
       this._cachedInsights = null;
       this.setMeetingMeta();
       this.setSessionUrl(meeting.id);
@@ -515,6 +535,7 @@ class DistillClient {
         await fetch(`/meetings/${this.meetingId}/stop`, { method: "POST" });
         this.meetingStatus = "stopped";
         await this.refreshTranscript();
+        await this.refreshDebug();
         const hasText = this.hasTranscriptContext();
         if (!hasText) {
           this.setStatus("connected", "متوقف شد — متنی دریافت نشد (STT)");
@@ -637,15 +658,30 @@ class DistillClient {
       } else if (msg.type === "status") {
         if (msg.status) this.meetingStatus = msg.status;
         if (msg.status === "processing") this.setStatus("processing", "در حال پردازش");
+        if (msg.status === "transcribing" && msg.progress) {
+          const p = msg.progress;
+          const done = p.done != null ? p.done : p.chunk;
+          const total = p.total != null ? p.total : "?";
+          this.setStatus("processing", `پیاده‌سازی ${done}/${total}`);
+        }
         if (msg.status === "stopped") {
           this.setStatus("connected", "متوقف شد – آماده تحلیل");
           this.stopTimer(false);
           this.refreshTranscript().catch(() => {});
+          this.refreshDebug().catch(() => {});
         }
         if (msg.status === "recording") this.setStatus("recording", "در حال ضبط");
         this.updateInsightsAvailability();
       } else if (msg.type === "speaker_update") {
         this.refreshTranscript().catch(() => {});
+      } else if (msg.type === "speaker_map" && msg.speaker_map) {
+        this.speakerMap = { ...msg.speaker_map };
+        this.renderTimeline();
+      } else if (msg.type === "warning") {
+        console.warn(msg.message || msg.code);
+        if (msg.code === "fallback_diarization") {
+          this.setStatus("processing", "هشدار: diarization ساده (بدون pyannote)");
+        }
       } else if (msg.type === "insights") {
         this.renderInsights(msg.insights);
       } else if (msg.type === "error") {
@@ -658,9 +694,317 @@ class DistillClient {
   }
 
   replaceTranscript(segments) {
-    this.segments.clear();
-    (segments || []).forEach((s) => this.segments.set(s.id, s));
-    this.renderTimeline();
+    const nextList = (segments || []).filter((s) => (s.text || "").trim());
+    const nextGroups = this.buildTimelineGroups(nextList);
+    const mergeFx = this.detectMergePolish(this._prevGroupSnapshot, nextGroups);
+    const shouldMergeAnim =
+      !this._reduceMotion &&
+      mergeFx &&
+      mergeFx.mergeFrom >= 2 &&
+      this.timeline.querySelector(".segment");
+
+    const apply = () => {
+      this.segments.clear();
+      nextList.forEach((s) => this.segments.set(s.id, s));
+      this.renderTimeline(nextGroups, mergeFx);
+      this._prevGroupSnapshot = nextGroups.map((g) => this.snapshotGroup(g));
+    };
+
+    if (shouldMergeAnim) {
+      this.timeline.classList.add("timeline-is-merging");
+      this.timeline.querySelectorAll(".segment").forEach((el) => {
+        el.classList.add("segment-merge-out");
+      });
+      window.setTimeout(apply, 320);
+    } else {
+      apply();
+    }
+  }
+
+  upsertSegment(seg) {
+    this.segments.set(seg.id, seg);
+    this.replaceTranscript(Array.from(this.segments.values()));
+  }
+
+  clearTimeline(resetData) {
+    if (resetData) {
+      this.segments.clear();
+      this._prevGroupSnapshot = [];
+    }
+    this.timeline.innerHTML = `
+      <div class="timeline-empty">
+        <div class="rec-ring">●</div>
+        <p>برای شروع ضبط، دکمه زرد را بزنید.</p>
+      </div>`;
+    this.updateInsightsAvailability();
+  }
+
+  snapshotGroup(g) {
+    return {
+      key: this.groupKey(g),
+      text: g.seg.text || "",
+      provisional: !!g.seg.provisional,
+      start_ms: g.seg.start_ms,
+      end_ms: g.seg.end_ms,
+      speakers: [...g.speakers],
+    };
+  }
+
+  groupKey(g) {
+    const spk = (g.speakers || []).slice().sort().join(",");
+    // Bucket by ~1.5s so hop-coalesced rows keep a stable DOM identity
+    const bucket = Math.floor((g.seg.start_ms || 0) / 1500);
+    return `${spk}|${bucket}`;
+  }
+
+  buildTimelineGroups(list) {
+    const ordered = [...list].sort(
+      (a, b) =>
+        a.start_ms - b.start_ms ||
+        a.end_ms - b.end_ms ||
+        String(a.speaker_id).localeCompare(String(b.speaker_id))
+    );
+    const groups = [];
+    const used = new Set();
+    ordered.forEach((seg, idx) => {
+      if (used.has(idx)) return;
+      if (seg.is_overlap) {
+        const peers = ordered.filter((other, j) => {
+          if (j < idx) return false;
+          return (
+            other.is_overlap &&
+            other.start_ms === seg.start_ms &&
+            other.end_ms === seg.end_ms &&
+            other.text === seg.text
+          );
+        });
+        peers.forEach((p) => {
+          const j = ordered.indexOf(p);
+          if (j >= 0) used.add(j);
+        });
+        const speakers = [
+          ...new Set([
+            ...(seg.overlap_speakers || []),
+            ...peers.map((p) => p.speaker_id),
+          ]),
+        ];
+        groups.push({ type: "overlap", seg, speakers });
+      } else {
+        used.add(idx);
+        groups.push({ type: "single", seg, speakers: [seg.speaker_id] });
+      }
+    });
+    return groups;
+  }
+
+  detectMergePolish(prev, next) {
+    if (!prev.length || !next.length) {
+      return { polishKeys: new Set(), mergeFrom: 0 };
+    }
+    const nextKeys = new Set(next.map((g) => this.groupKey(g)));
+    const polishKeys = new Set();
+    let mergeFrom = 0;
+
+    // Many provisional rows → fewer coalesced rows overlapping same span
+    const prevProv = prev.filter((p) => p.provisional);
+
+    prevProv.forEach((p) => {
+      const survivors = next.filter((g) => {
+        const ov =
+          Math.min(p.end_ms, g.seg.end_ms) - Math.max(p.start_ms, g.seg.start_ms);
+        return ov > 0 && (g.speakers || []).some((s) => p.speakers.includes(s));
+      });
+      if (survivors.length === 1 && prevProv.length > next.length) {
+        polishKeys.add(this.groupKey(survivors[0]));
+        mergeFrom = Math.max(mergeFrom, prevProv.length);
+      }
+      // Provisional → finalized
+      survivors.forEach((g) => {
+        if (p.provisional && !g.seg.provisional) {
+          polishKeys.add(this.groupKey(g));
+        }
+        // Same slot text jumped to a fuller polished sentence
+        if (
+          p.provisional &&
+          g.seg.provisional &&
+          g.seg.text !== p.text &&
+          g.seg.text.length > p.text.length + 8 &&
+          next.length <= prev.length
+        ) {
+          polishKeys.add(this.groupKey(g));
+        }
+      });
+    });
+
+    if (prev.length > next.length + 0) {
+      next.forEach((g) => {
+        if (!g.seg.provisional || polishKeys.size) return;
+        // collapsed hop variants into one live row
+        const related = prev.filter((p) => {
+          const ov =
+            Math.min(p.end_ms, g.seg.end_ms) - Math.max(p.start_ms, g.seg.start_ms);
+          return ov > 200;
+        });
+        if (related.length >= 2) polishKeys.add(this.groupKey(g));
+      });
+      mergeFrom = Math.max(mergeFrom, prev.length - next.length + 1);
+    }
+
+    return { polishKeys, mergeFrom, nextKeys };
+  }
+
+  renderTimeline(groups, mergeFx) {
+    const listGroups =
+      groups ||
+      this.buildTimelineGroups(
+        Array.from(this.segments.values()).filter((s) => (s.text || "").trim())
+      );
+
+    if (!listGroups.length) {
+      this.clearTimeline(false);
+      return;
+    }
+
+    const prevByKey = new Map(
+      (this._prevGroupSnapshot || []).map((p) => [p.key, p])
+    );
+    const polishKeys = (mergeFx && mergeFx.polishKeys) || new Set();
+
+    this.timeline.classList.remove("timeline-is-merging");
+    this.timeline.innerHTML = "";
+    listGroups.forEach((g) => {
+      const key = this.groupKey(g);
+      const prev = prevByKey.get(key);
+      const row = document.createElement("div");
+      const isLive = !!g.seg.provisional;
+      row.className = g.type === "overlap" ? "segment segment-overlap" : "segment";
+      if (isLive) row.classList.add("segment-live");
+      if (polishKeys.has(key)) row.classList.add("segment-polish");
+      row.dataset.groupKey = key;
+
+      const provisional = isLive
+        ? '<span class="badge badge-muted badge-live"><span class="live-dot"></span>موقت</span>'
+        : polishKeys.has(key)
+          ? '<span class="badge badge-polish">پالیش‌شده</span>'
+          : "";
+      const speakerHtml = g.speakers
+        .map((spk) => {
+          const color = this.speakerColor(spk);
+          const label = this.speakerLabel(spk);
+          return `<button type="button" class="speaker-chip" data-speaker-id="${this.escape(spk)}" title="کلیک برای نام‌گذاری">
+            <span class="speaker-dot" style="background:${color}"></span>
+            <span class="speaker-name" style="color:${color}">${this.escape(label)}</span>
+          </button>`;
+        })
+        .join("");
+      const badge =
+        g.type === "overlap"
+          ? '<span class="badge">هم‌صحبتی</span>'
+          : "";
+
+      row.innerHTML = `
+        <div class="segment-meta">
+          <div class="speaker-row">${speakerHtml}</div>
+          <span>${this.formatTs(g.seg.start_ms)} – ${this.formatTs(g.seg.end_ms)}</span>
+          ${badge}${provisional}
+        </div>
+        <div class="segment-text" data-role="text"></div>
+      `;
+
+      const textEl = row.querySelector('[data-role="text"]');
+      this.applyStreamingText(
+        textEl,
+        g.seg.text || "",
+        prev ? prev.text : "",
+        isLive,
+        polishKeys.has(key)
+      );
+
+      row.querySelectorAll("[data-speaker-id]").forEach((btn) => {
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          this.renameSpeaker(btn.getAttribute("data-speaker-id"));
+        });
+      });
+      this.timeline.appendChild(row);
+    });
+    this.timeline.scrollTop = this.timeline.scrollHeight;
+    this.updateInsightsAvailability();
+  }
+
+  applyStreamingText(el, newText, oldText, isLive, isPolish) {
+    if (!el) return;
+    const next = newText || "";
+    const prev = oldText || "";
+
+    if (this._reduceMotion) {
+      el.textContent = next;
+      return;
+    }
+
+    if (isPolish) {
+      el.classList.add("is-polishing");
+      el.innerHTML = "";
+      const words = next.split(/(\s+)/).filter((w) => w.length);
+      words.forEach((w, i) => {
+        const span = document.createElement("span");
+        span.className = "polish-word";
+        span.textContent = w;
+        span.style.animationDelay = `${Math.min(i * 22, 480)}ms`;
+        el.appendChild(span);
+      });
+      window.setTimeout(() => el.classList.remove("is-polishing"), 900);
+      return;
+    }
+
+    if (!prev) {
+      el.classList.add("is-streaming");
+      el.innerHTML = "";
+      const words = next.split(/(\s+)/).filter((w) => w.length);
+      words.forEach((w, i) => {
+        const span = document.createElement("span");
+        span.className = "stream-word";
+        span.textContent = w;
+        span.style.animationDelay = `${Math.min(i * 26, 520)}ms`;
+        el.appendChild(span);
+      });
+      if (isLive) el.classList.add("has-caret");
+      window.setTimeout(() => {
+        el.classList.remove("is-streaming");
+        if (!isLive) el.classList.remove("has-caret");
+      }, Math.min(600 + words.length * 26, 1400));
+      return;
+    }
+
+    if (next === prev) {
+      el.textContent = next;
+      el.classList.toggle("has-caret", isLive);
+      return;
+    }
+
+    // Growing / revised live utterance → soft restream
+    el.classList.add("is-streaming", "is-revising");
+    el.innerHTML = "";
+    const words = next.split(/(\s+)/).filter((w) => w.length);
+    const prevWords = prev.split(/(\s+)/).filter((w) => w.length);
+    words.forEach((w, i) => {
+      const span = document.createElement("span");
+      const shared = i < prevWords.length && prevWords[i] === w;
+      span.className = shared ? "stream-word is-stable" : "stream-word is-new";
+      span.textContent = w;
+      span.style.animationDelay = shared
+        ? "0ms"
+        : `${Math.min((i - Math.min(i, prevWords.length)) * 30 + 40, 560)}ms`;
+      el.appendChild(span);
+    });
+    el.classList.toggle("has-caret", isLive);
+    window.setTimeout(() => {
+      el.classList.remove("is-streaming", "is-revising");
+    }, 900);
+  }
+
+  speakerLabel(speakerId) {
+    return this.speakerMap[speakerId] || speakerId;
   }
 
   speakerColor(speakerId) {
@@ -676,92 +1020,71 @@ class DistillClient {
     return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
   }
 
-  upsertSegment(seg) {
-    this.segments.set(seg.id, seg);
-    this.renderTimeline();
+  async renameSpeaker(speakerId) {
+    if (!this.meetingId || !speakerId) return;
+    const current = this.speakerLabel(speakerId);
+    const name = window.prompt(`نام نمایشی برای ${speakerId}:`, current === speakerId ? "" : current);
+    if (name == null) return;
+    const trimmed = String(name).trim();
+    if (!trimmed) return;
+    try {
+      const res = await fetch(`/meetings/${this.meetingId}/speakers`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [speakerId]: trimmed }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const meeting = await res.json();
+      this.speakerMap = { ...(meeting.speaker_map || {}) };
+      this.renderTimeline();
+    } catch (err) {
+      console.error(err);
+      alert(`نام‌گذاری ناموفق: ${err.message}`);
+    }
   }
 
-  clearTimeline(resetData) {
-    if (resetData) this.segments.clear();
-    this.timeline.innerHTML = `
-      <div class="timeline-empty">
-        <div class="rec-ring">●</div>
-        <p>برای شروع ضبط، دکمه زرد را بزنید.</p>
-      </div>`;
-    this.updateInsightsAvailability();
+  async refreshDebug() {
+    if (!this.meetingId) return;
+    const res = await fetch(`/meetings/${this.meetingId}/debug`);
+    if (!res.ok) return;
+    this._lastDebug = await res.json();
+    this.renderDebug();
   }
 
-  renderTimeline() {
-    const list = Array.from(this.segments.values())
-      .filter((s) => (s.text || "").trim())
-      .sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms || String(a.speaker_id).localeCompare(String(b.speaker_id)));
+  renderDebug() {
+    if (!this.debugBody || !this._lastDebug) return;
+    const d = this._lastDebug;
+    const hit =
+      d.stt_cache_hit_rate == null
+        ? "—"
+        : `${Math.round(d.stt_cache_hit_rate * 100)}%`;
+    this.debugBody.innerHTML = `
+      <dl class="debug-grid">
+        <div><dt>chunks</dt><dd>${d.chunks_processed ?? 0}</dd></div>
+        <div><dt>retries</dt><dd>${d.stt_retries ?? 0}</dd></div>
+        <div><dt>dropped</dt><dd>${d.stt_dropped ?? 0}</dd></div>
+        <div><dt>STT calls</dt><dd>${d.stt_calls ?? 0}</dd></div>
+        <div><dt>STT time</dt><dd>${d.stt_total_ms ?? 0} ms</dd></div>
+        <div><dt>timings</dt><dd>${d.stt_with_timings ?? 0}</dd></div>
+        <div><dt>cache hit</dt><dd>${hit}</dd></div>
+        <div><dt>diarization</dt><dd>${this.escape(String(d.diarization_backend || "—"))}</dd></div>
+        <div><dt>speakers</dt><dd>${(d.speaker_ids || []).map((s) => this.escape(this.speakerLabel(s))).join(", ") || "—"}</dd></div>
+      </dl>
+    `;
+  }
 
-    if (!list.length) {
-      this.clearTimeline(false);
+  async openDebug() {
+    if (!this.debugPanel) return;
+    if (!this.meetingId) {
+      alert("ابتدا یک جلسه شروع یا باز کنید");
       return;
     }
+    await this.refreshDebug();
+    this.debugPanel.classList.remove("hidden");
+  }
 
-    // Group simultaneous-talk rows (same span + same text) into one visual card
-    const groups = [];
-    const used = new Set();
-    list.forEach((seg, idx) => {
-      if (used.has(idx)) return;
-      if (seg.is_overlap) {
-        const peers = list.filter((other, j) => {
-          if (j < idx) return false;
-          return (
-            other.is_overlap &&
-            other.start_ms === seg.start_ms &&
-            other.end_ms === seg.end_ms &&
-            other.text === seg.text
-          );
-        });
-        peers.forEach((p) => {
-          const j = list.indexOf(p);
-          if (j >= 0) used.add(j);
-        });
-        const speakers = [
-          ...new Set([
-            ...(seg.overlap_speakers || []),
-            ...peers.map((p) => p.speaker_id),
-          ]),
-        ];
-        groups.push({ type: "overlap", seg, speakers });
-      } else {
-        used.add(idx);
-        groups.push({ type: "single", seg, speakers: [seg.speaker_id] });
-      }
-    });
-
-    this.timeline.innerHTML = "";
-    groups.forEach((g) => {
-      const row = document.createElement("div");
-      row.className = g.type === "overlap" ? "segment segment-overlap" : "segment";
-      const provisional = g.seg.provisional
-        ? '<span class="badge badge-muted">موقت</span>'
-        : "";
-      const speakerHtml = g.speakers
-        .map((spk) => {
-          const color = this.speakerColor(spk);
-          return `<span class="speaker-chip"><span class="speaker-dot" style="background:${color}"></span><span class="speaker-name" style="color:${color}">${this.escape(spk)}</span></span>`;
-        })
-        .join("");
-      const badge =
-        g.type === "overlap"
-          ? '<span class="badge">هم‌صحبتی</span>'
-          : "";
-      row.innerHTML = `
-        <div class="segment-meta">
-          <div class="speaker-row">${speakerHtml}</div>
-          <span>${this.formatTs(g.seg.start_ms)} – ${this.formatTs(g.seg.end_ms)}</span>
-          ${badge}${provisional}
-        </div>
-        <div class="segment-text">${this.escape(g.seg.text)}</div>
-      `;
-      this.timeline.appendChild(row);
-    });
-    this.timeline.scrollTop = this.timeline.scrollHeight;
-    this.updateInsightsAvailability();
+  closeDebug() {
+    if (this.debugPanel) this.debugPanel.classList.add("hidden");
   }
 
   async refreshTranscript() {
@@ -769,9 +1092,7 @@ class DistillClient {
     const res = await fetch(`/meetings/${this.meetingId}/transcript`);
     if (!res.ok) return;
     const data = await res.json();
-    this.segments.clear();
-    (data.segments || []).forEach((s) => this.segments.set(s.id, s));
-    this.renderTimeline();
+    this.replaceTranscript(data.segments || []);
   }
 
   async uploadRecording() {
@@ -793,10 +1114,13 @@ class DistillClient {
       const meeting = await created.json();
       this.meetingId = meeting.id;
       this.meetingStatus = meeting.status || "stopped";
+      this.speakerMap = { ...(meeting.speaker_map || {}) };
       this._cachedInsights = null;
       this.setMeetingMeta();
       this.setSessionUrl(meeting.id);
       this.clearTimeline(true);
+
+      await this.connectWebSocket(meeting.id);
 
       const form = new FormData();
       form.append("file", file, file.name);
@@ -807,14 +1131,20 @@ class DistillClient {
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       this.meetingStatus = "stopped";
-      this.segments.clear();
-      (data.segments || []).forEach((s) => this.segments.set(s.id, s));
-      this.renderTimeline();
+      this.replaceTranscript(data.segments || []);
       this.setStatus("connected", "پیاده‌سازی فایل انجام شد");
+      await this.refreshDebug();
     } catch (err) {
       console.error(err);
       this.setStatus("disconnected", "خطا در آپلود");
       alert(`آپلود ناموفق: ${err.message}`);
+    } finally {
+      if (this.ws) {
+        try {
+          this.ws.close();
+        } catch (_) {}
+        this.ws = null;
+      }
     }
   }
 
