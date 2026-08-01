@@ -21,6 +21,66 @@ ReviewAction = Literal["keep", "fix", "drop"]
 _WORD_RE = re.compile(r"[\w\u0600-\u06FF]+", re.UNICODE)
 _PUNCT_ONLY = re.compile(r"^[\s\.\,\!\?\;\:\-\—\…\u06D4\u061F«»\"'()]+$")
 
+# Whisper / ASR non-speech event tags → Persian labels
+_NONSPEECH_FA: dict[str, str] = {
+    "cough": "سرفه",
+    "coughs": "سرفه",
+    "coughing": "سرفه",
+    "sigh": "آه",
+    "sighs": "آه",
+    "sighing": "آه",
+    "laugh": "خنده",
+    "laughs": "خنده",
+    "laughter": "خنده",
+    "laughing": "خنده",
+    "chuckle": "خنده",
+    "giggle": "خنده",
+    "sneeze": "عطسه",
+    "sneezing": "عطسه",
+    "sniff": "فین",
+    "sniffle": "فین",
+    "clears throat": "صاف کردن گلو",
+    "clearing throat": "صاف کردن گلو",
+    "breath": "تنفس",
+    "breathing": "تنفس",
+    "inhale": "دم",
+    "exhale": "بازدم",
+    "silence": "سکوت",
+    "pause": "مکث",
+    "music": "موسیقی",
+    "applause": "تشویق",
+    "clapping": "تشویق",
+    "inaudible": "نامفهوم",
+    "unintelligible": "نامفهوم",
+    "blank audio": "بی‌صدا",
+    "blank_audio": "بی‌صدا",
+    "noise": "سر و صدا",
+    "static": "نویز",
+    "hum": "زمزمه",
+    "humming": "زمزمه",
+    "whistle": "سوت",
+    "whistling": "سوت",
+    "cry": "گریه",
+    "crying": "گریه",
+    "sobbing": "گریه",
+    "yawn": "خمیازه",
+    "yawning": "خمیازه",
+}
+_NONSPEECH_RE = re.compile(r"[\(\[]\s*([a-zA-Z][a-zA-Z\s_]*)\s*[\)\]]")
+
+
+def localize_nonspeech_events(text: str) -> str:
+    """Translate English ASR event tags like (cough)/(Sigh) to Persian."""
+
+    def _repl(match: re.Match[str]) -> str:
+        raw = match.group(1).strip().lower()
+        key = re.sub(r"[\s_]+", " ", raw).strip()
+        fa = _NONSPEECH_FA.get(key) or _NONSPEECH_FA.get(key.replace(" ", "_"))
+        return f"({fa})" if fa else match.group(0)
+
+    return _NONSPEECH_RE.sub(_repl, text or "")
+
+
 REVIEW_SYSTEM_PROMPT = """You are Distill's ASR review agent for Persian (and mixed) meeting transcripts.
 You receive raw Whisper speech-to-text output. Your job:
 1) DROP hallucinated / nonsense / pure repetition / noise-only text
@@ -195,7 +255,7 @@ def gate_stt_text(
     if collapse_runs and run >= 3:
         collapsed = _collapse_consecutive(tokens, keep=1)
         # Rebuild with spaces (good enough for Persian ASR polish later)
-        fixed = " ".join(collapsed)
+        fixed = localize_nonspeech_events(" ".join(collapsed))
         return ReviewResult(
             action="fix",
             text=fixed,
@@ -206,7 +266,7 @@ def gate_stt_text(
 
     return ReviewResult(
         action="keep",
-        text=raw,
+        text=localize_nonspeech_events(raw),
         score=score,
         reasons=reasons,
         raw_text=raw,
@@ -269,7 +329,7 @@ class TranscriptReviewAgent:
             reason = str(data.get("reason") or "llm_review")
             return ReviewResult(
                 action=action,  # type: ignore[arg-type]
-                text=out_text if action != "drop" else "",
+                text=localize_nonspeech_events(out_text) if action != "drop" else "",
                 score=heuristic.score,
                 reasons=heuristic.reasons + [reason],
                 raw_text=heuristic.raw_text or text,
@@ -359,7 +419,9 @@ class TranscriptReviewAgent:
                     reviewed_map[original] = ""
                 else:
                     fixed = str(item.get("text") or original).strip()
-                    reviewed_map[original] = fixed or original
+                    reviewed_map[original] = localize_nonspeech_events(
+                        fixed or original
+                    )
         except Exception as exc:
             logger.warning("Batch LLM STT review failed: %s", exc)
             return gated

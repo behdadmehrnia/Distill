@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 
 router = APIRouter(tags=["pages"])
 
@@ -48,7 +48,7 @@ async def serve_assistant_session(request: Request, meeting_id: str) -> Response
     """Open assistant UI scoped to an existing meeting id."""
     meeting = request.app.state.manager.store.get_meeting(meeting_id)
     if not meeting:
-        raise HTTPException(status_code=404, detail="meeting not found")
+        return RedirectResponse(url="/assistant", status_code=302)
     return _web_file(request, "assistant.html")
 
 

@@ -16,7 +16,7 @@ from .chunker import OverlappingChunker
 from .diarization import SpeakerDiarizer
 from .ingest import AudioIngest
 from .models import MeetingRecord, MeetingStatus, TranscriptSegment
-from .review import TranscriptReviewAgent, gate_stt_text
+from .review import TranscriptReviewAgent, gate_stt_text, localize_nonspeech_events
 from .store import TranscriptStore
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ class MeetingSession:
             cleaned = (text or "").strip()
             if len(cleaned) < 2 or not any(ch.isalpha() for ch in cleaned):
                 return None
-            return cleaned
+            return localize_nonspeech_events(cleaned)
 
         if mode == "live" and self.review_agent is not None:
             result = await self.review_agent.review_text(

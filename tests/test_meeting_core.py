@@ -169,6 +169,19 @@ def test_stt_review_collapses_mild_repetition():
     assert result.text.count("خیلی") <= 2
 
 
+def test_localize_nonspeech_events_to_persian():
+    from api.meeting.review import localize_nonspeech_events
+
+    assert localize_nonspeech_events("(cough) .") == "(سرفه) ."
+    assert localize_nonspeech_events("(cough) . (Sigh) .") == "(سرفه) . (آه) ."
+    result = gate_stt_text("(cough) . (Sigh) .")
+    assert result.accepted
+    assert "(سرفه)" in result.text
+    assert "(آه)" in result.text
+    assert "cough" not in result.text.lower()
+    assert "sigh" not in result.text.lower()
+
+
 @pytest.mark.asyncio
 async def test_review_agent_finalize_without_llm():
     agent = TranscriptReviewAgent(llm=None, enabled=False)
