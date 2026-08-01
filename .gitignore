@@ -25,6 +25,7 @@ tts_cache/
 stt_cache/
 cache_metadata.json
 
+*.DS_Store
 .DS_Store
 
 *.mp3

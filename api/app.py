@@ -41,6 +41,11 @@ def _build_services(settings: Settings) -> Dict[str, Any]:
     if settings.stt_model:
         stt_kwargs["model"] = settings.stt_model
 
+    if not settings.stt_api_key:
+        logger.warning(
+            "STT_API_KEY is not set; GapGPT STT will return 401 (no token provided)"
+        )
+
     stt = OpenAICompatibleSTT(**stt_kwargs)
     llm = OpenAICompatibleLLM(
         endpoint=settings.llm_endpoint,
