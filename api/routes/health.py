@@ -7,17 +7,15 @@ router = APIRouter(tags=["system"])
 
 @router.get("/health")
 async def health_check(request: Request) -> dict:
-    """Liveness/readiness: returns as soon as the HTTP server is up.
-
-    Diarization may still be loading in the background; that must not block probes.
-    """
-    diarizer = getattr(request.app.state.manager, "diarizer", None)
-    backend = getattr(diarizer, "backend", "unknown") if diarizer else "unknown"
+    """Liveness/readiness — must stay cheap and never touch torch/pyannote."""
+    manager = getattr(request.app.state, "manager", None)
+    diarizer = getattr(manager, "diarizer", None) if manager else None
     ready = bool(getattr(diarizer, "ready", False)) if diarizer else False
+    backend = getattr(diarizer, "backend", "unknown") if diarizer else "unknown"
     return {
         "status": "ok",
         "service": "distill",
-        "diarization_backend": backend if ready else "loading",
+        "diarization_backend": backend if ready else "unloaded",
         "diarization_ready": ready,
         "diarization_quality": (
             "high" if ready and backend == "pyannote" else "fallback"

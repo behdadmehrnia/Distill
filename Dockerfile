@@ -11,7 +11,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     CUDA_VISIBLE_DEVICES="" \
     HF_HOME=/app/data/hf_cache \
     TORCH_HOME=/app/data/torch_cache \
-    XDG_CACHE_HOME=/app/data/cache
+    XDG_CACHE_HOME=/app/data/cache \
+    # Keep native thread pools small (matters when pyannote/torch eventually loads)
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    TORCH_NUM_THREADS=1
 
 WORKDIR /app
 
@@ -22,6 +27,7 @@ RUN apt-get update \
         ca-certificates \
         libsndfile1 \
         libgomp1 \
+        curl \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -56,5 +62,12 @@ RUN mkdir -p \
 VOLUME ["/app/data"]
 
 EXPOSE 8000
+
+# Process must listen ASAP; do not load pyannote at boot (OOM → CrashLoop).
+# K8s: readiness/liveness GET /health on port 8000.
+# Low-RAM pods: set DISTILL_ENABLE_PYANNOTE=0 (fallback diarization only).
+# Pyannote quality needs roughly ≥2Gi memory and HF_TOKEN.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8000/health || exit 1
 
 CMD ["python", "-m", "api"]

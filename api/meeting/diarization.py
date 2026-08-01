@@ -20,8 +20,8 @@ class SpeakerDiarizer:
     Tries pyannote.audio when available (HF token via HF_TOKEN / HUGGINGFACE_TOKEN).
     Falls back to energy/spectral change clustering so the meeting pipeline still works offline.
 
-    Pyannote/torch loading is deferred (lazy / background) so the HTTP server can bind
-    and pass readiness probes before the heavy model download finishes.
+    Pyannote/torch loading is deferred until the first diarize() call so the
+    HTTP server can bind and pass readiness probes without OOM risk.
     """
 
     def __init__(
@@ -92,17 +92,44 @@ class SpeakerDiarizer:
 
     def ensure_loaded(self) -> str:
         """
-        Load pyannote once (thread-safe). Safe to call from a background task
-        after the HTTP server is already listening.
+        Load pyannote once (thread-safe). Called on first diarize — never at HTTP startup.
         """
         with self._load_lock:
             if self._load["done"]:
                 return str(self._load["backend"])
-            self._try_load_pyannote()
+            try:
+                self._try_load_pyannote()
+            except MemoryError:
+                logger.error(
+                    "Out of memory loading pyannote; staying on fallback diarization. "
+                    "Raise the pod memory limit (≈2Gi+) or set DISTILL_ENABLE_PYANNOTE=0."
+                )
+                self._load["pipeline"] = None
+                self._load["backend"] = "fallback"
             self._load["done"] = True
             return str(self._load["backend"])
 
+    @property
+    def pyannote_enabled(self) -> bool:
+        """Whether we will attempt to import/load pyannote when needed."""
+        flag = (os.getenv("DISTILL_ENABLE_PYANNOTE") or "auto").strip().lower()
+        if flag in {"0", "false", "no", "off"}:
+            return False
+        if flag in {"1", "true", "yes", "on"}:
+            return True
+        # auto: only when a HF token is present
+        return bool(self.hf_token)
+
     def _try_load_pyannote(self) -> None:
+        if not self.pyannote_enabled:
+            logger.info(
+                "Pyannote disabled (DISTILL_ENABLE_PYANNOTE / no HF_TOKEN); "
+                "using fallback diarization"
+            )
+            self._load["pipeline"] = None
+            self._load["backend"] = "fallback"
+            return
+
         try:
             from pyannote.audio import Pipeline  # type: ignore
         except Exception as exc:
@@ -141,6 +168,8 @@ class SpeakerDiarizer:
             self._load["pipeline"] = pipeline
             self._load["backend"] = "pyannote"
             logger.info("Loaded pyannote speaker-diarization-3.1")
+        except MemoryError:
+            raise
         except Exception as exc:
             logger.warning(
                 "Failed to load pyannote pipeline (%s); using fallback diarization",
