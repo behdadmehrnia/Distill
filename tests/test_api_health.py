@@ -82,3 +82,51 @@ def test_speaker_map_patch(tmp_path):
         assert resp.json()["speaker_map"]["SPEAKER_00"] == "علی"
         again = client.get(f"/meetings/{meeting_id}")
         assert again.json()["speaker_map"]["SPEAKER_00"] == "علی"
+
+
+def test_recording_endpoint_and_restart(tmp_path):
+    with _make_client(tmp_path) as client:
+        created = client.post("/meetings", json={"title": "ضبط", "start": False})
+        meeting_id = created.json()["id"]
+
+        missing = client.get(f"/meetings/{meeting_id}/recording")
+        assert missing.status_code == 404
+
+        meta = client.get(f"/meetings/{meeting_id}")
+        assert meta.json()["has_recording"] is False
+
+        audio_dir = tmp_path / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        wav_path = audio_dir / f"{meeting_id}.wav"
+        wav_path.write_bytes(
+            b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00"
+            b"\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00"
+            b"\x02\x00\x10\x00data\x00\x00\x00\x00"
+        )
+
+        meeting = client.app.state.manager.store.get_meeting(meeting_id)
+        meeting.audio_path = str(wav_path)
+        client.app.state.manager.store.save_meeting(meeting)
+
+        again = client.get(f"/meetings/{meeting_id}")
+        assert again.json()["has_recording"] is True
+
+        recording = client.get(f"/meetings/{meeting_id}/recording")
+        assert recording.status_code == 200
+        assert recording.headers["content-type"].startswith("audio/")
+
+        blocked = client.post(f"/meetings/{meeting_id}/start", json={})
+        assert blocked.status_code == 409
+
+        started = client.post(
+            f"/meetings/{meeting_id}/start", json={"reset": True}
+        )
+        assert started.status_code == 200
+        body = started.json()
+        assert body["status"] == "recording"
+        assert body["has_recording"] is False
+        assert not wav_path.exists()
+
+        stopped = client.post(f"/meetings/{meeting_id}/stop")
+        assert stopped.status_code == 200
+

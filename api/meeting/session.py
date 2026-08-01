@@ -220,9 +220,62 @@ class MeetingSession:
             except Exception as exc:
                 logger.warning("Event callback failed: %s", exc)
 
-    async def start(self) -> None:
+    def recording_file_path(self) -> Optional[str]:
+        """Return filesystem path of a saved recording if the file exists."""
+        candidates = []
+        if self.record.audio_path:
+            candidates.append(self.record.audio_path)
+        if self.ingest.audio_path and self.ingest.audio_path not in candidates:
+            candidates.append(self.ingest.audio_path)
+        for path in candidates:
+            if path and os.path.isfile(path) and os.path.getsize(path) > 0:
+                return path
+        return None
+
+    def clear_for_rerecord(self) -> None:
+        """Wipe audio buffer, transcript, and insights before a fresh capture."""
+        if self._running:
+            raise RuntimeError("cannot clear while recording")
+        paths = set()
+        if self.record.audio_path:
+            paths.add(self.record.audio_path)
+        if self.ingest.audio_path:
+            paths.add(self.ingest.audio_path)
+        for path in paths:
+            try:
+                if path and os.path.isfile(path):
+                    os.remove(path)
+            except OSError as exc:
+                logger.warning("Could not remove recording %s: %s", path, exc)
+
+        self.ingest.clear()
+        self.chunker.reset()
+        self._pending_stt = []
+        self._speaker_intervals = []
+        self._last_diarize_ms = 0
+        self._stopping = False
+        self._stt_calls = 0
+        self._stt_retries = 0
+        self._stt_dropped = 0
+        self._stt_total_ms = 0.0
+        self._chunks_processed = 0
+        self._stt_with_timings = 0
+        self._cache_hits_at_start = getattr(self.stt, "cache_hits", 0)
+        self._cache_misses_at_start = getattr(self.stt, "cache_misses", 0)
+
+        self.store.replace_meeting_segments(self.meeting_id, [])
+        self.store.delete_insights(self.meeting_id)
+        self.record.audio_path = self.ingest.audio_path
+        self.record.started_at = None
+        self.record.stopped_at = None
+        self.record.status = MeetingStatus.CREATED
+        self.store.save_meeting(self.record)
+
+    async def start(self, *, reset: bool = False) -> None:
         if self._running:
             return
+        if reset:
+            self.clear_for_rerecord()
         self._running = True
         self._active_tuning = dict(self.tuning)
         self.record.status = MeetingStatus.RECORDING

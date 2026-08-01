@@ -97,6 +97,12 @@ class AudioIngest:
         self._cached = audio
         self.audio_path = path
 
+    def clear(self) -> None:
+        """Drop in-memory PCM; leave audio_path unchanged for reuse on save."""
+        self._chunks = []
+        self._total_samples = 0
+        self._cached = None
+
     def to_wav_bytes(self) -> bytes:
         buf = self.get_buffer()
         pcm = np.clip(buf * 32768.0, -32768, 32767).astype(np.int16)

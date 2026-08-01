@@ -230,6 +230,30 @@
       padding: 0.15rem 0 0;
     }
 
+    .recording-player {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      padding: 0.65rem 0.7rem;
+      border: 1px solid #333;
+      border-radius: 10px;
+      background: #171717;
+    }
+
+    .recording-player.hidden { display: none !important; }
+
+    .recording-player-label {
+      font-size: 0.78rem;
+      color: #aaa;
+      font-weight: 600;
+    }
+
+    .recording-player audio {
+      width: 100%;
+      height: 36px;
+    }
+
     .level-meter {
       display: flex;
       align-items: flex-end;
@@ -464,8 +488,26 @@
     }
 
     .segment-live {
-      border-color: rgba(249, 212, 35, 0.28);
-      background: linear-gradient(180deg, rgba(249, 212, 35, 0.05), #1a1a1a 60%);
+      border-color: #2e2e2e;
+    }
+
+    .segment-listening {
+      position: relative;
+      border-color: transparent;
+      background:
+        linear-gradient(#1a1a1a, #1a1a1a) padding-box,
+        linear-gradient(
+          90deg,
+          rgba(249, 212, 35, 0.22),
+          rgba(249, 212, 35, 0.48),
+          rgba(249, 212, 35, 0.2),
+          rgba(249, 212, 35, 0.42),
+          rgba(249, 212, 35, 0.22)
+        ) border-box;
+      background-size: 100% 100%, 200% 100%;
+      border: 1px solid transparent;
+      animation: listen-wave-border 2.8s ease-in-out infinite;
+      box-shadow: none;
     }
 
     .segment-polish {
@@ -475,6 +517,20 @@
     .segment-overlap {
       border-color: rgba(249, 212, 35, 0.45);
       background: linear-gradient(180deg, rgba(249, 212, 35, 0.06), #1a1a1a 55%);
+    }
+
+    .segment-overlap.segment-listening {
+      background:
+        linear-gradient(#1a1a1a, #1a1a1a) padding-box,
+        linear-gradient(
+          90deg,
+          rgba(249, 212, 35, 0.28),
+          rgba(249, 212, 35, 0.52),
+          rgba(249, 212, 35, 0.26),
+          rgba(249, 212, 35, 0.46),
+          rgba(249, 212, 35, 0.28)
+        ) border-box;
+      background-size: 100% 100%, 200% 100%;
     }
 
     .timeline-is-merging .segment-merge-out {
@@ -490,21 +546,20 @@
       }
     }
 
+    @keyframes listen-wave-border {
+      0%, 100% {
+        background-position: 0 0, 0% 50%;
+        border-color: transparent;
+      }
+      50% {
+        background-position: 0 0, 100% 50%;
+      }
+    }
+
     .segment-text {
       color: #e0e0e0;
       line-height: 1.85;
       font-size: 0.95rem;
-    }
-
-    .segment-text.has-caret::after {
-      content: "";
-      display: inline-block;
-      width: 2px;
-      height: 1.05em;
-      margin-inline-start: 3px;
-      background: #f9d423;
-      vertical-align: -0.15em;
-      animation: caret-blink 0.95s step-end infinite;
     }
 
     .stream-word,
@@ -529,21 +584,6 @@
 
     .segment-text.is-polishing .polish-word {
       animation-name: polish-word-in;
-    }
-
-    .badge-live {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-    }
-
-    .live-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: #f9d423;
-      box-shadow: 0 0 0 0 rgba(249, 212, 35, 0.55);
-      animation: live-pulse 1.4s ease infinite;
     }
 
     .badge-polish {
@@ -573,16 +613,6 @@
       }
     }
 
-    @keyframes caret-blink {
-      50% { opacity: 0; }
-    }
-
-    @keyframes live-pulse {
-      0% { box-shadow: 0 0 0 0 rgba(249, 212, 35, 0.5); }
-      70% { box-shadow: 0 0 0 7px rgba(249, 212, 35, 0); }
-      100% { box-shadow: 0 0 0 0 rgba(249, 212, 35, 0); }
-    }
-
     @keyframes polish-card {
       0% {
         transform: scale(0.985);
@@ -602,11 +632,14 @@
     @media (prefers-reduced-motion: reduce) {
       .segment-polish,
       .timeline-is-merging .segment,
+      .segment-listening,
       .stream-word,
-      .polish-word,
-      .live-dot,
-      .segment-text.has-caret::after {
+      .polish-word {
         animation: none !important;
+      }
+      .segment-listening {
+        border-color: rgba(249, 212, 35, 0.32);
+        background: #1a1a1a;
       }
       .stream-word,
       .polish-word {
@@ -755,6 +788,43 @@
     }
 
     .tuning-overlay.hidden { display: none !important; }
+
+    .confirm-panel {
+      width: min(420px, 100%);
+      margin: 18vh auto 1.5rem;
+      background: #1f1f1f;
+      border: 1px solid #3a3a3a;
+      border-radius: 12px;
+      padding: 1.15rem 1.2rem 1.2rem;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .confirm-panel h3 {
+      margin: 0;
+      color: #f9d423;
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+
+    .confirm-message {
+      margin: 0;
+      color: #d4d4d4;
+      line-height: 1.75;
+      font-size: 0.92rem;
+    }
+
+    .confirm-actions {
+      display: flex;
+      gap: 0.55rem;
+      margin-top: 0.25rem;
+    }
+
+    .confirm-actions .btn {
+      flex: 1;
+    }
 
     .tuning-panel {
       width: min(520px, 100%);
@@ -925,6 +995,10 @@
         </div>
 
         <div class="record-block">
+          <div id="recordingPlayer" class="recording-player hidden">
+            <span class="recording-player-label">پخش ضبط قبلی</span>
+            <audio id="recordingAudio" controls preload="metadata"></audio>
+          </div>
           <div id="levelMeter" class="level-meter" aria-hidden="true">
             <span></span><span></span><span></span><span></span><span></span>
             <span></span><span></span><span></span><span></span><span></span>
@@ -1022,6 +1096,17 @@
       <div class="tuning-actions">
         <button id="resetTuningBtn" class="btn btn-ghost" type="button">بازنشانی</button>
         <button id="saveTuningBtn" class="btn btn-primary" type="button">اعمال</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirmPanel" class="tuning-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="confirm-panel">
+      <h3 id="confirmTitle">تأیید</h3>
+      <p id="confirmMessage" class="confirm-message"></p>
+      <div class="confirm-actions">
+        <button id="confirmCancelBtn" class="btn btn-ghost" type="button">انصراف</button>
+        <button id="confirmOkBtn" class="btn btn-danger" type="button">تأیید</button>
       </div>
     </div>
   </div>

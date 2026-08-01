@@ -312,6 +312,15 @@ class TranscriptStore:
             finally:
                 conn.close()
 
+    def delete_insights(self, meeting_id: str) -> None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("DELETE FROM insights WHERE meeting_id = ?", (meeting_id,))
+                conn.commit()
+            finally:
+                conn.close()
+
     @staticmethod
     def _row_to_meeting(row: sqlite3.Row) -> MeetingRecord:
         return MeetingRecord(

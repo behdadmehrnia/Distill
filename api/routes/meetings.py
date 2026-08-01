@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 import numpy as np
 from fastapi import (
@@ -15,6 +16,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.responses import FileResponse
 
 from api.realtime import broadcast
 
@@ -23,10 +25,58 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["meetings"])
 
 
+def _resolve_recording_path(
+    meeting_id: str,
+    audio_path: Optional[str],
+    *,
+    audio_dir: Path,
+    upload_dir: Path,
+) -> Optional[str]:
+    """Return a readable recording path confined to known data dirs."""
+    allowed_roots = [
+        audio_dir.resolve(),
+        upload_dir.resolve(),
+    ]
+    candidates = []
+    if audio_path:
+        candidates.append(Path(audio_path))
+    candidates.append(audio_dir / f"{meeting_id}.wav")
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if not any(
+            resolved == root or root in resolved.parents for root in allowed_roots
+        ):
+            continue
+        if resolved.is_file() and resolved.stat().st_size > 0:
+            return str(resolved)
+    return None
+
+
+def _meeting_payload(meeting, *, has_recording: Optional[bool] = None) -> Dict[str, Any]:
+    data = meeting.to_dict()
+    if has_recording is not None:
+        data["has_recording"] = has_recording
+    return data
+
+
 @router.get("/meetings")
 async def list_meetings(request: Request) -> Dict[str, Any]:
     meetings = request.app.state.manager.store.list_meetings()
-    return {"meetings": [m.to_dict() for m in meetings]}
+    settings = request.app.state.settings
+    out = []
+    for m in meetings:
+        path = _resolve_recording_path(
+            m.id,
+            m.audio_path,
+            audio_dir=settings.audio_dir,
+            upload_dir=settings.upload_dir,
+        )
+        out.append(_meeting_payload(m, has_recording=path is not None))
+    return {"meetings": out}
 
 
 @router.post("/meetings", status_code=201)
@@ -54,7 +104,7 @@ async def create_meeting(request: Request) -> Dict[str, Any]:
     )
     if start:
         await session.start()
-    return session.record.to_dict()
+    return _meeting_payload(session.record, has_recording=False)
 
 
 @router.get("/meetings/{meeting_id}")
@@ -62,7 +112,82 @@ async def get_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
     meeting = request.app.state.manager.store.get_meeting(meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="meeting not found")
-    return meeting.to_dict()
+    settings = request.app.state.settings
+    path = _resolve_recording_path(
+        meeting.id,
+        meeting.audio_path,
+        audio_dir=settings.audio_dir,
+        upload_dir=settings.upload_dir,
+    )
+    return _meeting_payload(meeting, has_recording=path is not None)
+
+
+@router.get("/meetings/{meeting_id}/recording")
+async def get_recording(request: Request, meeting_id: str):
+    meeting = request.app.state.manager.store.get_meeting(meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="meeting not found")
+    settings = request.app.state.settings
+    path = _resolve_recording_path(
+        meeting.id,
+        meeting.audio_path,
+        audio_dir=settings.audio_dir,
+        upload_dir=settings.upload_dir,
+    )
+    if not path:
+        raise HTTPException(status_code=404, detail="recording not found")
+    media = "audio/wav" if path.lower().endswith(".wav") else "application/octet-stream"
+    return FileResponse(
+        path,
+        media_type=media,
+        filename=os.path.basename(path),
+        content_disposition_type="inline",
+    )
+
+
+@router.post("/meetings/{meeting_id}/start")
+async def start_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
+    """Start (or restart) capture on an existing meeting."""
+    try:
+        raw = await request.json()
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    reset = bool(raw.get("reset", False))
+
+    app = request.app
+
+    async def on_event(event: Dict[str, Any]) -> None:
+        mid = event.get("meeting_id") or meeting_id
+        await broadcast(app, mid, event)
+
+    session = app.state.manager.get_or_restore(meeting_id, on_event=on_event)
+    if not session:
+        raise HTTPException(status_code=404, detail="meeting not found")
+    if session.record.status.value == "recording":
+        raise HTTPException(status_code=409, detail="already recording")
+    if session.record.status.value == "processing":
+        raise HTTPException(status_code=409, detail="meeting is still processing")
+
+    settings = app.state.settings
+    has_file = (
+        _resolve_recording_path(
+            meeting_id,
+            session.record.audio_path,
+            audio_dir=settings.audio_dir,
+            upload_dir=settings.upload_dir,
+        )
+        is not None
+    )
+    if has_file and not reset:
+        raise HTTPException(
+            status_code=409,
+            detail="recording exists; pass reset=true to overwrite",
+        )
+
+    await session.start(reset=reset or has_file)
+    return _meeting_payload(session.record, has_recording=False)
 
 
 @router.patch("/meetings/{meeting_id}/speakers")
@@ -95,7 +220,14 @@ async def stop_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
     if not session:
         raise HTTPException(status_code=404, detail="meeting not found")
     record = await session.stop()
-    return record.to_dict()
+    settings = request.app.state.settings
+    path = _resolve_recording_path(
+        meeting_id,
+        record.audio_path,
+        audio_dir=settings.audio_dir,
+        upload_dir=settings.upload_dir,
+    )
+    return _meeting_payload(record, has_recording=path is not None)
 
 
 @router.get("/meetings/{meeting_id}/transcript")

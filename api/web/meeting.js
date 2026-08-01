@@ -59,6 +59,15 @@ class DistillClient {
     this._tuningSchema = [];
     this._tuningValues = {};
     this._tuningDefaults = {};
+    this.hasRecording = false;
+    this.recordingPlayer = document.getElementById("recordingPlayer");
+    this.recordingAudio = document.getElementById("recordingAudio");
+    this.confirmPanel = document.getElementById("confirmPanel");
+    this.confirmTitle = document.getElementById("confirmTitle");
+    this.confirmMessage = document.getElementById("confirmMessage");
+    this.confirmOkBtn = document.getElementById("confirmOkBtn");
+    this.confirmCancelBtn = document.getElementById("confirmCancelBtn");
+    this._confirmResolver = null;
 
     this.bindEvents();
     this.loadAudioDevices();
@@ -112,6 +121,7 @@ class DistillClient {
     this.meetingStatus = meeting.status || "stopped";
     this.speakerMap = { ...(meeting.speaker_map || {}) };
     this._cachedInsights = null;
+    this.setHasRecording(!!meeting.has_recording);
     if (this.meetingTitle) {
       this.meetingTitle.value = meeting.title || "";
       this.meetingTitle.classList.remove("field-invalid");
@@ -148,6 +158,22 @@ class DistillClient {
     this.uploadBtn.addEventListener("click", () => this.uploadRecording());
     this.insightsBtn.addEventListener("click", () => this.generateInsights());
     this.clearBtn.addEventListener("click", () => this.clearTimeline(true));
+    if (this.confirmCancelBtn) {
+      this.confirmCancelBtn.addEventListener("click", () => this.resolveConfirm(false));
+    }
+    if (this.confirmOkBtn) {
+      this.confirmOkBtn.addEventListener("click", () => this.resolveConfirm(true));
+    }
+    if (this.confirmPanel) {
+      this.confirmPanel.addEventListener("click", (ev) => {
+        if (ev.target === this.confirmPanel) this.resolveConfirm(false);
+      });
+    }
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && this.confirmPanel && !this.confirmPanel.classList.contains("hidden")) {
+        this.resolveConfirm(false);
+      }
+    });
     const debugBtn = document.getElementById("debugBtn");
     if (debugBtn) debugBtn.addEventListener("click", () => this.openDebug());
     const closeDebug = document.getElementById("closeDebugBtn");
@@ -338,6 +364,7 @@ class DistillClient {
 
   async loadAudioDevices() {
     try {
+      if (!navigator.mediaDevices?.enumerateDevices) return;
       const devices = await navigator.mediaDevices.enumerateDevices();
       const inputs = devices.filter((d) => d.kind === "audioinput");
       this.audioInput.innerHTML = '<option value="">میکروفون پیش‌فرض</option>';
@@ -350,6 +377,38 @@ class DistillClient {
     } catch (err) {
       console.error(err);
     }
+  }
+
+  micUnavailableReason() {
+    const host = window.location.hostname || "";
+    const insecure = window.isSecureContext === false;
+    const noApi = !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia;
+
+    if (!noApi && !insecure) return null;
+
+    if (host === "0.0.0.0") {
+      return (
+        "مرورگر روی آدرس 0.0.0.0 به میکروفون دسترسی نمی‌دهد.\n\n" +
+        "همین سرویس را با http://localhost:8000 یا http://127.0.0.1:8000 باز کنید."
+      );
+    }
+    if (insecure || noApi) {
+      return (
+        "دسترسی به میکروفون فقط روی localhost یا HTTPS فعال است.\n\n" +
+        `آدرس فعلی: ${window.location.origin}\n` +
+        "لطفاً با http://localhost:8000 باز کنید."
+      );
+    }
+    return null;
+  }
+
+  async ensureMicAvailable() {
+    const reason = this.micUnavailableReason();
+    if (reason) {
+      alert(reason);
+      return false;
+    }
+    return true;
   }
 
   setStatus(kind, text) {
@@ -402,6 +461,53 @@ class DistillClient {
     this.meetingMeta.innerHTML =
       `شناسه جلسه: <button type="button" class="session-link" data-copy-session title="کلیک برای کپی لینک جلسه">${this.escape(this.meetingId)}</button>`;
     this.updateInsightsAvailability();
+  }
+
+  setHasRecording(has) {
+    this.hasRecording = !!has;
+    if (!this.recordingPlayer || !this.recordingAudio) return;
+    if (this.hasRecording && this.meetingId) {
+      const url = `/meetings/${this.meetingId}/recording?t=${Date.now()}`;
+      if (this.recordingAudio.getAttribute("src") !== url) {
+        this.recordingAudio.src = url;
+      }
+      this.recordingPlayer.classList.remove("hidden");
+    } else {
+      this.pauseRecordingPlayback();
+      this.recordingAudio.removeAttribute("src");
+      this.recordingAudio.load();
+      this.recordingPlayer.classList.add("hidden");
+    }
+  }
+
+  pauseRecordingPlayback() {
+    if (!this.recordingAudio) return;
+    try {
+      this.recordingAudio.pause();
+    } catch (_) {}
+  }
+
+  askConfirm({ title, message, confirmLabel = "تأیید" }) {
+    return new Promise((resolve) => {
+      if (!this.confirmPanel) {
+        resolve(window.confirm(message));
+        return;
+      }
+      this._confirmResolver = resolve;
+      if (this.confirmTitle) this.confirmTitle.textContent = title || "تأیید";
+      if (this.confirmMessage) this.confirmMessage.textContent = message || "";
+      if (this.confirmOkBtn) this.confirmOkBtn.textContent = confirmLabel;
+      this.confirmPanel.classList.remove("hidden");
+      if (this.confirmOkBtn) this.confirmOkBtn.focus();
+    });
+  }
+
+  resolveConfirm(ok) {
+    if (!this._confirmResolver) return;
+    const resolve = this._confirmResolver;
+    this._confirmResolver = null;
+    if (this.confirmPanel) this.confirmPanel.classList.add("hidden");
+    resolve(!!ok);
   }
 
   sessionLink() {
@@ -489,20 +595,53 @@ class DistillClient {
   }
 
   async startLive() {
+    let startedOnServer = false;
     try {
       const title = this.requireMeetingTitle();
       if (!title) return;
-      const res = await fetch("/meetings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, start: true }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const meeting = await res.json();
+
+      if (!(await this.ensureMicAvailable())) {
+        this.setStatus("disconnected", "میکروفون در دسترس نیست");
+        return;
+      }
+
+      if (this.hasRecording) {
+        const ok = await this.askConfirm({
+          title: "پاک شدن ضبط قبلی",
+          message:
+            "این جلسه یک فایل ضبط‌شده دارد. شروع ضبط جدید، فایل صدا و متن فعلی را پاک می‌کند. مطمئن هستید؟",
+          confirmLabel: "پاک کردن و شروع",
+        });
+        if (!ok) return;
+      }
+
+      this.pauseRecordingPlayback();
+
+      let meeting;
+      if (this.meetingId) {
+        const res = await fetch(`/meetings/${this.meetingId}/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reset: !!this.hasRecording }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        meeting = await res.json();
+      } else {
+        const res = await fetch("/meetings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, start: true }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        meeting = await res.json();
+      }
+      startedOnServer = true;
+
       this.meetingId = meeting.id;
       this.meetingStatus = "recording";
       this.speakerMap = { ...(meeting.speaker_map || {}) };
       this._cachedInsights = null;
+      this.setHasRecording(false);
       this.setMeetingMeta();
       this.setSessionUrl(meeting.id);
       this.clearTimeline(true);
@@ -519,8 +658,29 @@ class DistillClient {
       this.updateInsightsAvailability();
     } catch (err) {
       console.error(err);
+      this.isRecording = false;
+      this.stopMic();
+      if (this.ws) {
+        try { this.ws.close(); } catch (_) {}
+        this.ws = null;
+      }
+      if (startedOnServer && this.meetingId) {
+        try {
+          await fetch(`/meetings/${this.meetingId}/stop`, { method: "POST" });
+        } catch (_) {}
+        this.meetingStatus = "stopped";
+      }
+      this.startBtn.classList.remove("hidden");
+      this.stopBtn.classList.add("hidden");
+      this.audioLevel.classList.add("hidden");
+      this.stopTimer(false);
+      if (this.levelMeter) this.levelMeter.classList.remove("active");
+      this.updateInsightsAvailability();
+
+      const micHint = this.micUnavailableReason();
+      const message = micHint || err.message || String(err);
       this.setStatus("disconnected", "خطا در شروع");
-      alert(`شروع جلسه ناموفق بود: ${err.message}`);
+      alert(`شروع جلسه ناموفق بود:\n${message}`);
     }
   }
 
@@ -532,8 +692,15 @@ class DistillClient {
       // Only stop via HTTP — avoid double-stop race with WS "stop"
       if (this.meetingId) {
         this.setStatus("processing", "در حال پردازش…");
-        await fetch(`/meetings/${this.meetingId}/stop`, { method: "POST" });
+        const stopRes = await fetch(`/meetings/${this.meetingId}/stop`, { method: "POST" });
+        let stopped = null;
+        if (stopRes.ok) {
+          try {
+            stopped = await stopRes.json();
+          } catch (_) {}
+        }
         this.meetingStatus = "stopped";
+        this.setHasRecording(!!(stopped && stopped.has_recording));
         await this.refreshTranscript();
         await this.refreshDebug();
         const hasText = this.hasTranscriptContext();
@@ -581,6 +748,9 @@ class DistillClient {
   }
 
   async startMic() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error(this.micUnavailableReason() || "getUserMedia unavailable");
+    }
     const constraints = {
       audio: {
         deviceId: this.audioInput.value ? { exact: this.audioInput.value } : undefined,
@@ -872,18 +1042,42 @@ class DistillClient {
 
     this.timeline.classList.remove("timeline-is-merging");
     this.timeline.innerHTML = "";
+
+    // Prefer the last provisional row, or the one whose text just changed
+    let activeKey = null;
+    for (let i = listGroups.length - 1; i >= 0; i--) {
+      const g = listGroups[i];
+      if (!g.seg.provisional) continue;
+      const key = this.groupKey(g);
+      const prev = prevByKey.get(key);
+      if (!prev || prev.text !== (g.seg.text || "")) {
+        activeKey = key;
+        break;
+      }
+    }
+    if (!activeKey) {
+      for (let i = listGroups.length - 1; i >= 0; i--) {
+        if (listGroups[i].seg.provisional) {
+          activeKey = this.groupKey(listGroups[i]);
+          break;
+        }
+      }
+    }
+
     listGroups.forEach((g) => {
       const key = this.groupKey(g);
       const prev = prevByKey.get(key);
       const row = document.createElement("div");
       const isLive = !!g.seg.provisional;
+      const isActive = key === activeKey;
       row.className = g.type === "overlap" ? "segment segment-overlap" : "segment";
       if (isLive) row.classList.add("segment-live");
+      if (isActive) row.classList.add("segment-listening");
       if (polishKeys.has(key)) row.classList.add("segment-polish");
       row.dataset.groupKey = key;
 
       const provisional = isLive
-        ? '<span class="badge badge-muted badge-live"><span class="live-dot"></span>موقت</span>'
+        ? '<span class="badge badge-muted">موقت</span>'
         : polishKeys.has(key)
           ? '<span class="badge badge-polish">پالیش‌شده</span>'
           : "";
@@ -916,7 +1110,6 @@ class DistillClient {
         textEl,
         g.seg.text || "",
         prev ? prev.text : "",
-        isLive,
         polishKeys.has(key)
       );
 
@@ -932,7 +1125,7 @@ class DistillClient {
     this.updateInsightsAvailability();
   }
 
-  applyStreamingText(el, newText, oldText, isLive, isPolish) {
+  applyStreamingText(el, newText, oldText, isPolish) {
     if (!el) return;
     const next = newText || "";
     const prev = oldText || "";
@@ -968,17 +1161,14 @@ class DistillClient {
         span.style.animationDelay = `${Math.min(i * 26, 520)}ms`;
         el.appendChild(span);
       });
-      if (isLive) el.classList.add("has-caret");
       window.setTimeout(() => {
         el.classList.remove("is-streaming");
-        if (!isLive) el.classList.remove("has-caret");
       }, Math.min(600 + words.length * 26, 1400));
       return;
     }
 
     if (next === prev) {
       el.textContent = next;
-      el.classList.toggle("has-caret", isLive);
       return;
     }
 
@@ -997,7 +1187,6 @@ class DistillClient {
         : `${Math.min((i - Math.min(i, prevWords.length)) * 30 + 40, 560)}ms`;
       el.appendChild(span);
     });
-    el.classList.toggle("has-caret", isLive);
     window.setTimeout(() => {
       el.classList.remove("is-streaming", "is-revising");
     }, 900);
@@ -1131,6 +1320,7 @@ class DistillClient {
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       this.meetingStatus = "stopped";
+      this.setHasRecording(true);
       this.replaceTranscript(data.segments || []);
       this.setStatus("connected", "پیاده‌سازی فایل انجام شد");
       await this.refreshDebug();
