@@ -76,6 +76,8 @@ docker compose up -d --build
 
 سرویس روی `http://localhost:8000` در دسترس است.
 
+**Kubernetes / Hamdocker:** readiness باید `GET /health` روی پورت `8000` باشد. اپ بلافاصله bind می‌کند؛ بارگذاری مدل pyannote بعد از بالا آمدن HTTP در پس‌زمینه انجام می‌شود (قبلاً این کار قبل از bind بود و باعث `connection refused` روی probe می‌شد). مطمئن شوید `MEETING_PORT`/`PORT` روی `8000` بماند تا با probe هم‌خوان باشد.
+
 فقط با Docker (بدون compose):
 
 ```bash

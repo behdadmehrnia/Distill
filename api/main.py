@@ -19,7 +19,11 @@ def main() -> None:
     from api.config import Settings
 
     settings = Settings.from_env()
-    logger.info("Distill listening on http://%s:%s", settings.host, settings.port)
+    logger.info(
+        "Starting Distill on http://%s:%s",
+        settings.host,
+        settings.port,
+    )
     uvicorn.run(
         "api.app:app",
         host=settings.host,

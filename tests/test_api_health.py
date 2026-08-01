@@ -25,7 +25,10 @@ def test_health(tmp_path):
         assert resp.status_code == 200
         data = resp.json()
         assert data["service"] == "distill"
+        assert data["status"] == "ok"
         assert "diarization_backend" in data
+        assert data["diarization_backend"] in {"loading", "fallback", "pyannote"}
+        assert "diarization_ready" in data
         assert data["diarization_quality"] in {"high", "fallback"}
 
 

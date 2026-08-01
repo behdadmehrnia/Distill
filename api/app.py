@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, Optional
@@ -53,6 +54,7 @@ def _build_services(settings: Settings) -> Dict[str, Any]:
         model=settings.llm_model,
     )
     store = TranscriptStore(db_path=str(settings.db_path))
+    # Do not load pyannote here — it blocks uvicorn from binding and fails K8s probes.
     diarizer = SpeakerDiarizer(
         sample_rate=settings.sample_rate,
         hf_token=settings.hf_token,
@@ -92,21 +94,36 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        backend = (
-            app.state.manager.diarizer.backend
-            if hasattr(app.state.manager, "diarizer")
-            else "n/a"
-        )
-        if backend != "pyannote":
-            logger.warning(
-                "Distill ready with FALLBACK diarization (backend=%s). "
-                "Speaker labels will be weak. Install requirements.optional.txt "
-                "and set HF_TOKEN for pyannote quality.",
-                backend,
-            )
-        else:
-            logger.info("Distill app ready (diarization=%s)", backend)
-        yield
+        diarizer = getattr(app.state.manager, "diarizer", None)
+        warm_task: Optional[asyncio.Task[None]] = None
+
+        async def _warm_diarizer() -> None:
+            if diarizer is None:
+                return
+            logger.info("Warming diarization model in background…")
+            backend = await asyncio.to_thread(diarizer.ensure_loaded)
+            if backend != "pyannote":
+                logger.warning(
+                    "Distill ready with FALLBACK diarization (backend=%s). "
+                    "Speaker labels will be weak. Install requirements.optional.txt "
+                    "and set HF_TOKEN for pyannote quality.",
+                    backend,
+                )
+            else:
+                logger.info("Distill diarization ready (backend=%s)", backend)
+
+        # Schedule before yield so warm-up runs once the event loop accepts traffic.
+        warm_task = asyncio.create_task(_warm_diarizer())
+        logger.info("Distill HTTP ready (diarization loading in background)")
+        try:
+            yield
+        finally:
+            if warm_task is not None and not warm_task.done():
+                warm_task.cancel()
+                try:
+                    await warm_task
+                except asyncio.CancelledError:
+                    pass
 
     app = FastAPI(
         title="Distill API",
@@ -121,13 +138,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.state.ws_by_meeting = services["ws_by_meeting"]
 
     setup_routes(app)
-    backend = services["diarizer"].backend
-    if backend != "pyannote":
-        logger.warning(
-            "Distill created with fallback diarization (backend=%s)", backend
-        )
-    else:
-        logger.info("Distill app created (diarization=%s)", backend)
+    logger.info("Distill app created (diarization deferred until after bind)")
     return app
 
 

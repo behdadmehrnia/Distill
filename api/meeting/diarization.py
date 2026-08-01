@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -18,6 +19,9 @@ class SpeakerDiarizer:
 
     Tries pyannote.audio when available (HF token via HF_TOKEN / HUGGINGFACE_TOKEN).
     Falls back to energy/spectral change clustering so the meeting pipeline still works offline.
+
+    Pyannote/torch loading is deferred (lazy / background) so the HTTP server can bind
+    and pass readiness probes before the heavy model download finishes.
     """
 
     def __init__(
@@ -40,12 +44,16 @@ class SpeakerDiarizer:
             or os.getenv("HUGGINGFACE_TOKEN")
             or os.getenv("HUGGING_FACE_HUB_TOKEN")
         )
-        self._pipeline = None
-        self._backend = "fallback"
+        # Shared across fork() children so a late load is visible to all sessions.
+        self._load: Dict[str, Any] = {
+            "pipeline": None,
+            "backend": "fallback",
+            "done": False,
+        }
+        self._load_lock = threading.Lock()
         self._label_map: Dict[int, str] = {}
         self._speaker_centroids: Dict[str, np.ndarray] = {}
         self._prev_intervals: List[SpeakerInterval] = []
-        self._try_load_pyannote()
 
     def apply_tuning(self, tuning: Dict[str, Any]) -> None:
         if "min_speakers" in tuning:
@@ -75,12 +83,24 @@ class SpeakerDiarizer:
         child.energy_threshold = self.energy_threshold
         child.merge_short_ms = self.merge_short_ms
         child.hf_token = self.hf_token
-        child._pipeline = self._pipeline
-        child._backend = self._backend
+        child._load = self._load
+        child._load_lock = self._load_lock
         child._label_map = {}
         child._speaker_centroids = {}
         child._prev_intervals = []
         return child
+
+    def ensure_loaded(self) -> str:
+        """
+        Load pyannote once (thread-safe). Safe to call from a background task
+        after the HTTP server is already listening.
+        """
+        with self._load_lock:
+            if self._load["done"]:
+                return str(self._load["backend"])
+            self._try_load_pyannote()
+            self._load["done"] = True
+            return str(self._load["backend"])
 
     def _try_load_pyannote(self) -> None:
         try:
@@ -92,6 +112,8 @@ class SpeakerDiarizer:
                 "Install requirements.optional.txt + set HF_TOKEN for production quality.",
                 exc,
             )
+            self._load["pipeline"] = None
+            self._load["backend"] = "fallback"
             return
 
         if not self.hf_token:
@@ -99,36 +121,48 @@ class SpeakerDiarizer:
                 "HF_TOKEN not set; pyannote available but unused — falling back to "
                 "heuristic diarization. Set HF_TOKEN to enable speaker-diarization-3.1."
             )
+            self._load["pipeline"] = None
+            self._load["backend"] = "fallback"
             return
 
         try:
             # pyannote.audio 4.x / huggingface_hub use `token=`;
             # older releases still accept `use_auth_token=`.
             try:
-                self._pipeline = Pipeline.from_pretrained(
+                pipeline = Pipeline.from_pretrained(
                     "pyannote/speaker-diarization-3.1",
                     token=self.hf_token,
                 )
             except TypeError:
-                self._pipeline = Pipeline.from_pretrained(
+                pipeline = Pipeline.from_pretrained(
                     "pyannote/speaker-diarization-3.1",
                     use_auth_token=self.hf_token,
                 )
-            self._backend = "pyannote"
+            self._load["pipeline"] = pipeline
+            self._load["backend"] = "pyannote"
             logger.info("Loaded pyannote speaker-diarization-3.1")
         except Exception as exc:
             logger.warning(
                 "Failed to load pyannote pipeline (%s); using fallback diarization",
                 exc,
             )
-            self._pipeline = None
-            self._backend = "fallback"
+            self._load["pipeline"] = None
+            self._load["backend"] = "fallback"
+
+    @property
+    def _pipeline(self) -> Any:
+        return self._load["pipeline"]
 
     @property
     def backend(self) -> str:
-        return self._backend
+        return str(self._load["backend"])
+
+    @property
+    def ready(self) -> bool:
+        return bool(self._load["done"])
 
     def diarize(self, audio: np.ndarray, sample_rate: Optional[int] = None) -> List[SpeakerInterval]:
+        self.ensure_loaded()
         sr = sample_rate or self.sample_rate
         if audio is None or len(audio) == 0:
             return []
