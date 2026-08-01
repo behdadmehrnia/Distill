@@ -322,6 +322,30 @@
       text-align: center;
     }
 
+    .session-link {
+      background: none;
+      border: 0;
+      padding: 0;
+      margin: 0;
+      font: inherit;
+      color: #a3a3a3;
+      text-decoration: underline;
+      text-underline-offset: 0.18em;
+      text-decoration-color: rgba(163, 163, 163, 0.45);
+      cursor: pointer;
+      word-break: break-all;
+    }
+
+    .session-link:hover {
+      color: #f9d423;
+      text-decoration-color: rgba(249, 212, 35, 0.55);
+    }
+
+    .session-link.copied {
+      color: #f9d423;
+      text-decoration: none;
+    }
+
     .controls-bottom {
       margin-top: auto;
       display: flex;
@@ -702,7 +726,7 @@
       </div>
 
       <div class="controls-bottom">
-        <button id="insightsBtn" class="btn btn-accent" type="button" disabled>
+        <button id="insightsBtn" class="btn btn-accent hidden" type="button" disabled>
           تولید خلاصه و تصمیمات
         </button>
         <p id="meetingMeta" class="meta">جلسه‌ای انتخاب نشده</p>

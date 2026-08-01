@@ -147,6 +147,32 @@ def test_insights_json_parse_and_format():
     assert "سلام" in text
 
 
+def test_insights_meaningful_speech_gate():
+    from api.meeting.insights import has_meaningful_speech
+
+    noise = [
+        TranscriptSegment.create("m1", "SPEAKER_00", 0, 1000, ".\n(سرفه) .\n(Sound of a car)"),
+    ]
+    speech = [
+        TranscriptSegment.create("m1", "SPEAKER_00", 0, 1000, "(سرفه) سلام، جلسه را شروع کنیم"),
+    ]
+    assert not has_meaningful_speech(noise)
+    assert has_meaningful_speech(speech)
+
+
+def test_llm_endpoint_normalization():
+    from api.providers.llm import normalize_chat_completions_url
+
+    assert (
+        normalize_chat_completions_url("http://host/api/v1")
+        == "http://host/api/v1/chat/completions"
+    )
+    assert (
+        normalize_chat_completions_url("http://host/api/v1/chat/completions")
+        == "http://host/api/v1/chat/completions"
+    )
+
+
 def test_stt_review_drops_whisper_hallucination_loop():
     junk = " ".join(["خیلی"] * 40)
     result = gate_stt_text(junk)

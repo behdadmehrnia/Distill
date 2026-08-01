@@ -3,12 +3,27 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import aiohttp
 
 from api.providers.http_util import client_session
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_chat_completions_url(endpoint: str) -> str:
+    """Accept either a full chat/completions URL or an OpenAI-style base URL."""
+    url = (endpoint or "").strip().rstrip("/")
+    if not url:
+        return "http://localhost:8000/v1/chat/completions"
+    path = (urlparse(url).path or "").rstrip("/")
+    if path.endswith("/chat/completions"):
+        return url
+    # Common bases: /v1, /api/v1, /openai/v1, or bare host
+    if path.endswith("/v1") or path == "" or path.endswith("/openai"):
+        return f"{url}/chat/completions"
+    return f"{url}/chat/completions"
 
 
 class OpenAICompatibleLLM:
@@ -21,11 +36,12 @@ class OpenAICompatibleLLM:
         model: Optional[str] = None,
         timeout: float = 120.0,
     ):
-        self.endpoint = (
+        raw = (
             endpoint
             or os.getenv("LLM_ENDPOINT")
             or "http://localhost:8000/v1/chat/completions"
         )
+        self.endpoint = normalize_chat_completions_url(raw)
         self.api_key = api_key or os.getenv("LLM_API_KEY") or ""
         self.model = (
             model

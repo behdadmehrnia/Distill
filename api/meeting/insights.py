@@ -23,6 +23,14 @@ If a field has nothing, use an empty array (or empty string for summary).
 Do not invent facts that are not supported by the transcript.
 """
 
+_EMPTY_SUMMARY = "متن پیاده‌شده‌ای برای تحلیل وجود ندارد."
+_NOISE_ONLY_SUMMARY = (
+    "متن معناداری برای تحلیل وجود ندارد "
+    "(فقط نشانه‌های غیرکلامی یا صدای محیط ثبت شده است)."
+)
+_PAREN_TAG_RE = re.compile(r"[\(\[][^\)\]]*[\)\]]")
+_WORD_RE = re.compile(r"[\w\u0600-\u06FF]+", re.UNICODE)
+
 
 def format_transcript_for_llm(
     segments: List[TranscriptSegment],
@@ -56,6 +64,32 @@ def _fmt_ts(ms: int) -> str:
     return f"{m:02d}:{sec:02d}"
 
 
+def speech_text(text: str) -> str:
+    """Strip ASR event tags / punctuation; leftover words are real speech."""
+    cleaned = _PAREN_TAG_RE.sub(" ", text or "")
+    # Drop common English sound captions left outside parentheses
+    cleaned = re.sub(
+        r"\b(sound of a \w+|background noise|music playing)\b",
+        " ",
+        cleaned,
+        flags=re.I,
+    )
+    words = _WORD_RE.findall(cleaned)
+    return " ".join(words).strip()
+
+
+def has_meaningful_speech(segments: List[TranscriptSegment]) -> bool:
+    """True when at least one segment has real spoken words (not just cough/noise)."""
+    total = []
+    for seg in segments:
+        piece = speech_text(seg.text or "")
+        if piece:
+            total.append(piece)
+    joined = " ".join(total).strip()
+    # Require a bit more than a single stray token like "." leftovers
+    return len(joined) >= 2 and len(_WORD_RE.findall(joined)) >= 1
+
+
 class MeetingInsightsGenerator:
     def __init__(self, llm):
         self.llm = llm
@@ -70,7 +104,15 @@ class MeetingInsightsGenerator:
         if not transcript.strip():
             return MeetingInsights(
                 meeting_id=meeting_id,
-                summary="متن پیاده‌شده‌ای برای تحلیل وجود ندارد.",
+                summary=_EMPTY_SUMMARY,
+                highlights=[],
+                decisions=[],
+                action_items=[],
+            )
+        if not has_meaningful_speech(segments):
+            return MeetingInsights(
+                meeting_id=meeting_id,
+                summary=_NOISE_ONLY_SUMMARY,
                 highlights=[],
                 decisions=[],
                 action_items=[],
@@ -88,12 +130,21 @@ class MeetingInsightsGenerator:
         ]
         raw = await self.llm.complete(messages, temperature=0.2, max_tokens=2048)
         data = _parse_json_response(raw)
+        summary = str(data.get("summary") or "").strip()
+        highlights = _as_str_list(data.get("highlights"))
+        decisions = _as_str_list(data.get("decisions"))
+        action_items = _as_str_list(data.get("action_items"))
+        if not summary and not highlights and not decisions and not action_items:
+            summary = (
+                "تحلیل محتوایی از متن جلسه استخراج نشد. "
+                "در صورت کافی نبودن متن، جلسه را دوباره ضبط یا آپلود کنید."
+            )
         insights = MeetingInsights(
             meeting_id=meeting_id,
-            summary=str(data.get("summary") or "").strip(),
-            highlights=_as_str_list(data.get("highlights")),
-            decisions=_as_str_list(data.get("decisions")),
-            action_items=_as_str_list(data.get("action_items")),
+            summary=summary,
+            highlights=highlights,
+            decisions=decisions,
+            action_items=action_items,
             raw_json=data,
         )
         return insights

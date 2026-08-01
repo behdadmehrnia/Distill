@@ -129,9 +129,12 @@ async def generate_insights(request: Request, meeting_id: str) -> Dict[str, Any]
         raise HTTPException(status_code=404, detail="meeting not found")
     segments = store.get_segments(meeting_id)
     final = [s for s in segments if not s.provisional] or segments
-    result = await request.app.state.insights.generate(
-        meeting_id, final, speaker_map=meeting.speaker_map
-    )
+    try:
+        result = await request.app.state.insights.generate(
+            meeting_id, final, speaker_map=meeting.speaker_map
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     store.save_insights(result)
     await broadcast(
         request.app, meeting_id, {"type": "insights", "insights": result.to_dict()}

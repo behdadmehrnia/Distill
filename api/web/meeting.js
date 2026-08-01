@@ -9,7 +9,10 @@ class DistillClient {
     this.isRecording = false;
     this.isConnected = false;
     this.meetingId = null;
+    this.meetingStatus = null;
     this.segments = new Map();
+    this._insightsBusy = false;
+    this._cachedInsights = null;
 
     // Yellow/gray family accents for speakers
     this.speakerColors = [
@@ -92,10 +95,13 @@ class DistillClient {
       if (this.meetingMeta) {
         this.meetingMeta.textContent = `جلسه یافت نشد: ${meetingId}`;
       }
+      this.updateInsightsAvailability();
       return;
     }
     const meeting = await res.json();
     this.meetingId = meeting.id;
+    this.meetingStatus = meeting.status || "stopped";
+    this._cachedInsights = null;
     if (this.meetingTitle) {
       this.meetingTitle.value = meeting.title || "";
       this.meetingTitle.classList.remove("field-invalid");
@@ -115,6 +121,7 @@ class DistillClient {
     } catch (_) {}
 
     const status = meeting.status || "stopped";
+    this.meetingStatus = status;
     if (status === "recording") {
       this.setStatus("recording", "جلسه در حال ضبط (تاریخچه بارگذاری شد)");
     } else if (status === "processing") {
@@ -122,7 +129,7 @@ class DistillClient {
     } else {
       this.setStatus("connected", "تاریخچه جلسه بارگذاری شد");
     }
-    if (this.insightsBtn) this.insightsBtn.disabled = false;
+    this.updateInsightsAvailability();
   }
 
   bindEvents() {
@@ -131,6 +138,13 @@ class DistillClient {
     this.uploadBtn.addEventListener("click", () => this.uploadRecording());
     this.insightsBtn.addEventListener("click", () => this.generateInsights());
     this.clearBtn.addEventListener("click", () => this.clearTimeline(true));
+    if (this.meetingMeta) {
+      this.meetingMeta.addEventListener("click", (ev) => {
+        if (ev.target.closest("[data-copy-session]")) {
+          this.copySessionLink();
+        }
+      });
+    }
 
     this.liveSource = document.getElementById("liveSource");
     this.uploadSource = document.getElementById("uploadSource");
@@ -343,13 +357,81 @@ class DistillClient {
   }
 
   setMeetingMeta() {
+    if (!this.meetingMeta) return;
     if (!this.meetingId) {
       this.meetingMeta.textContent = "جلسه‌ای انتخاب نشده";
-      this.insightsBtn.disabled = true;
+      this.updateInsightsAvailability();
       return;
     }
-    this.meetingMeta.textContent = `شناسه جلسه: ${this.meetingId}`;
-    this.insightsBtn.disabled = false;
+    this.meetingMeta.innerHTML =
+      `شناسه جلسه: <button type="button" class="session-link" data-copy-session title="کلیک برای کپی لینک جلسه">${this.escape(this.meetingId)}</button>`;
+    this.updateInsightsAvailability();
+  }
+
+  sessionLink() {
+    if (!this.meetingId) return "";
+    return `${window.location.origin}/assistant/${this.meetingId}`;
+  }
+
+  async copySessionLink() {
+    const url = this.sessionLink();
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch (_) {
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } finally {
+        document.body.removeChild(ta);
+      }
+    }
+    const btn = this.meetingMeta?.querySelector("[data-copy-session]");
+    if (!btn) return;
+    const prev = btn.textContent;
+    btn.textContent = "لینک کپی شد";
+    btn.classList.add("copied");
+    clearTimeout(this._copyFlashTimer);
+    this._copyFlashTimer = setTimeout(() => {
+      if (!btn.isConnected) return;
+      btn.textContent = prev;
+      btn.classList.remove("copied");
+    }, 1600);
+  }
+
+  hasTranscriptContext() {
+    return Array.from(this.segments.values()).some((s) => this.isMeaningfulSpeech(s.text));
+  }
+
+  isMeaningfulSpeech(text) {
+    if (!text) return false;
+    // Drop ASR event tags like (سرفه) / (Sound of a car) and keep real words
+    const cleaned = String(text)
+      .replace(/[\(\[][^\)\]]*[\)\]]/g, " ")
+      .replace(/\b(sound of a \w+|background noise|music playing)\b/gi, " ")
+      .trim();
+    const words = cleaned.match(/[\w\u0600-\u06FF]+/g) || [];
+    return words.length >= 1 && words.join("").length >= 2;
+  }
+
+  canShowInsights() {
+    if (!this.meetingId) return false;
+    if (this.isRecording || this.meetingStatus === "recording") return false;
+    return this.hasTranscriptContext();
+  }
+
+  updateInsightsAvailability() {
+    if (!this.insightsBtn) return;
+    const canShow = this.canShowInsights();
+    const visible = canShow || this._insightsBusy;
+    this.insightsBtn.classList.toggle("hidden", !visible);
+    this.insightsBtn.disabled = !canShow || this._insightsBusy;
   }
 
   requireMeetingTitle() {
@@ -380,6 +462,8 @@ class DistillClient {
       if (!res.ok) throw new Error(await res.text());
       const meeting = await res.json();
       this.meetingId = meeting.id;
+      this.meetingStatus = "recording";
+      this._cachedInsights = null;
       this.setMeetingMeta();
       this.setSessionUrl(meeting.id);
       this.clearTimeline(true);
@@ -393,6 +477,7 @@ class DistillClient {
       this.audioLevel.classList.remove("hidden");
       this.startTimer();
       if (this.levelMeter) this.levelMeter.classList.add("active");
+      this.updateInsightsAvailability();
     } catch (err) {
       console.error(err);
       this.setStatus("disconnected", "خطا در شروع");
@@ -403,13 +488,15 @@ class DistillClient {
   async stopLive() {
     try {
       this.isRecording = false;
+      this.meetingStatus = "processing";
       this.stopMic();
       // Only stop via HTTP — avoid double-stop race with WS "stop"
       if (this.meetingId) {
         this.setStatus("processing", "در حال پردازش…");
         await fetch(`/meetings/${this.meetingId}/stop`, { method: "POST" });
+        this.meetingStatus = "stopped";
         await this.refreshTranscript();
-        const hasText = Array.from(this.segments.values()).some((s) => (s.text || "").trim());
+        const hasText = this.hasTranscriptContext();
         if (!hasText) {
           this.setStatus("connected", "متوقف شد — متنی دریافت نشد (STT)");
         } else {
@@ -429,7 +516,7 @@ class DistillClient {
       this.audioLevel.classList.add("hidden");
       this.stopTimer(false);
       if (this.levelMeter) this.levelMeter.classList.remove("active");
-      if (this.insightsBtn && this.meetingId) this.insightsBtn.disabled = false;
+      this.updateInsightsAvailability();
     }
   }
 
@@ -529,14 +616,15 @@ class DistillClient {
       } else if (msg.type === "segment" && msg.segment) {
         this.upsertSegment(msg.segment);
       } else if (msg.type === "status") {
+        if (msg.status) this.meetingStatus = msg.status;
         if (msg.status === "processing") this.setStatus("processing", "در حال پردازش");
         if (msg.status === "stopped") {
           this.setStatus("connected", "متوقف شد – آماده تحلیل");
           this.stopTimer(false);
-          if (this.insightsBtn) this.insightsBtn.disabled = false;
           this.refreshTranscript().catch(() => {});
         }
         if (msg.status === "recording") this.setStatus("recording", "در حال ضبط");
+        this.updateInsightsAvailability();
       } else if (msg.type === "speaker_update") {
         this.refreshTranscript().catch(() => {});
       } else if (msg.type === "insights") {
@@ -581,6 +669,7 @@ class DistillClient {
         <div class="rec-ring">●</div>
         <p>برای شروع ضبط، دکمه زرد را بزنید.</p>
       </div>`;
+    this.updateInsightsAvailability();
   }
 
   renderTimeline() {
@@ -653,6 +742,7 @@ class DistillClient {
       this.timeline.appendChild(row);
     });
     this.timeline.scrollTop = this.timeline.scrollHeight;
+    this.updateInsightsAvailability();
   }
 
   async refreshTranscript() {
@@ -683,6 +773,8 @@ class DistillClient {
       if (!created.ok) throw new Error(await created.text());
       const meeting = await created.json();
       this.meetingId = meeting.id;
+      this.meetingStatus = meeting.status || "stopped";
+      this._cachedInsights = null;
       this.setMeetingMeta();
       this.setSessionUrl(meeting.id);
       this.clearTimeline(true);
@@ -695,6 +787,7 @@ class DistillClient {
       });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
+      this.meetingStatus = "stopped";
       this.segments.clear();
       (data.segments || []).forEach((s) => this.segments.set(s.id, s));
       this.renderTimeline();
@@ -707,9 +800,10 @@ class DistillClient {
   }
 
   async generateInsights() {
-    if (!this.meetingId) return;
+    if (!this.canShowInsights()) return;
     try {
-      this.insightsBtn.disabled = true;
+      this._insightsBusy = true;
+      this.updateInsightsAvailability();
       this.insightsBtn.textContent = "در حال تولید…";
 
       // Show existing insights first if already saved for this session
@@ -733,14 +827,18 @@ class DistillClient {
         alert(`تولید تحلیل ناموفق: ${err.message}`);
       }
     } finally {
-      this.insightsBtn.disabled = false;
+      this._insightsBusy = false;
       this.insightsBtn.textContent = "تولید خلاصه و تصمیمات";
+      this.updateInsightsAvailability();
     }
   }
 
   renderInsights(data) {
     this.insightsPanel.classList.remove("hidden");
-    document.getElementById("insightSummary").textContent = data.summary || "—";
+    const summary = (data.summary || "").trim();
+    const summaryEl = document.getElementById("insightSummary");
+    summaryEl.textContent = summary || "خلاصه‌ای تولید نشد.";
+    summaryEl.style.color = summary ? "" : "var(--muted, #888)";
     this.fillList("insightHighlights", data.highlights || []);
     this.fillList("insightDecisions", data.decisions || []);
     this.fillList("insightActions", data.action_items || []);
