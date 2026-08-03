@@ -161,6 +161,63 @@ def test_pick_hop_text_never_concatenates():
     assert "عجیبه" in out or out == a
 
 
+def test_monologue_hops_stitch_into_one_continuous_row():
+    """TDD-style continuous reading must not become many overlapping cards."""
+    intervals = [SpeakerInterval("SPEAKER_00", 0, 60000, False)]
+    segments = align_stt_with_diarization(
+        "m1",
+        [
+            (
+                0,
+                8000,
+                "توسعه مبتنی بر تست یا همان تستینگ و دیزاین رویکردی در مهندسی نرم‌افزار است که در آن ابتدا یک تست واحد یا همان یونیت تست",
+            ),
+            (
+                6000,
+                14000,
+                "برای عبور از آن تست پیاده سازی شده و در نهایت فرآیند رفاکتورینگ انجام میگیرد تا ساختار کد بدون تغییر رفتار آن بهبود یابد",
+            ),
+            (
+                12000,
+                20000,
+                "این چرخه با نام Red-Green-Refactor شناخته میشود علاوه بر افزایش قابلیت اطمینان نرم‌افزار باعث کاهش تکنیکال دپت",
+            ),
+            (
+                18000,
+                26000,
+                "بهبود دیزاین API و افزایش maintainability میشود در پروژه‌های مدرن TDD معمولاً در کنار ابزارهایی مانند JUnit Pytest",
+            ),
+            (
+                24000,
+                32000,
+                "تی دی دی معمولاً در کنار ابزارهایی مانند جی یونیت پایتست و پایپلاینهای سی آی سی دی اجرا میشود تا هر کامیت به سرعت",
+            ),
+            (
+                30000,
+                38000,
+                "استفاده از ماک و استاب نیز در این فرآیند اهمیت بالایی دارد زیرا امکان تست مستقل اجزای سیستم را فراهم میکند",
+            ),
+        ],
+        intervals,
+    )
+    texts = " ".join(s.text for s in segments)
+    assert "یونیت تست" in texts or "تست واحد" in texts
+    assert "رفاکتورینگ" in texts or "Refactor" in texts.lower() or "بهبود" in texts
+    assert "ماک" in texts or "استاب" in texts or "مستقل" in texts
+    # Should coalesce overlapping hops, not leave ~6 near-duplicate cards
+    assert len(segments) <= 3
+
+
+def test_stitch_keeps_prefix_and_suffix():
+    from api.meeting.aligner import _stitch_hop_texts
+
+    a = "توسعه مبتنی بر تست رویکردی در مهندسی نرم‌افزار است که در آن ابتدا یک تست واحد"
+    b = "ابتدا یک تست واحد نوشته میشود سپس حداقل کد لازم برای عبور از آن تست"
+    out = _stitch_hop_texts(a, b)
+    assert "توسعه مبتنی بر تست" in out
+    assert "عبور از آن تست" in out
+
+
 def test_align_skips_false_overlap_from_frame_edge_flicker():
     """Abutting turns + tiny 40ms overlaps must not become هم‌صحبتی."""
     intervals = [
@@ -271,6 +328,30 @@ def test_stt_review_keeps_normal_persian():
     assert "خبر" in result.text
 
 
+def test_stt_review_drops_latin_language_drift():
+    """gpt-4o-mini-transcribe sometimes hops into Polish/Hungarian gibberish."""
+    for junk in (
+        "penavava a",
+        ".Byliśmy nauczeni",
+        ".Hov, pasmodovoy",
+        ".Hú, azóta egy sűrűj",
+        ".Hová az matematikai sérítsem",
+    ):
+        result = gate_stt_text(junk, language="fa")
+        assert not result.accepted, junk
+        assert "wrong_script" in result.reasons or "no_persian" in result.reasons
+
+
+def test_stt_review_keeps_mixed_persian_with_light_latin():
+    result = gate_stt_text("سلام OK بود", language="fa")
+    assert result.accepted
+
+
+def test_stt_review_allows_latin_when_language_en():
+    result = gate_stt_text("We were taught mathematics", language="en")
+    assert result.accepted
+
+
 def test_stt_review_collapses_mild_repetition():
     result = gate_stt_text("خیلی خیلی خیلی خوب بود جلسه")
     assert result.accepted
@@ -289,6 +370,38 @@ def test_localize_nonspeech_events_to_persian():
     assert "(آه)" in result.text
     assert "cough" not in result.text.lower()
     assert "sigh" not in result.text.lower()
+
+
+def test_polish_prompt_file_loads():
+    from api.meeting.review import _PROMPT_FILE, _load_polish_prompts
+
+    assert _PROMPT_FILE.is_file(), _PROMPT_FILE
+    single, batch = _load_polish_prompts()
+    assert "keep" in single.lower()
+    assert "drop" in single.lower()
+    assert "items" in batch.lower()
+    assert "خلاصه" in single or "summar" in single.lower()
+
+
+def test_faithful_edit_rejects_summaries():
+    from api.meeting.review import _is_faithful_edit
+
+    full = "خب سلام الان میتونی متوجه شی من دارم چی میگم یا نمیتونی متوجه شی"
+    summary = "سلام، آیا متوجه می‌شوی؟"
+    assert not _is_faithful_edit(full, summary)
+    assert _is_faithful_edit(full, full)
+    # Light typo-style fix should pass
+    light = "خب سلام، الان می‌تونی متوجه شی من دارم چی میگم یا نمی‌تونی متوجه شی"
+    assert _is_faithful_edit(full, light)
+
+
+def test_apply_llm_edit_keeps_original_on_summary():
+    from api.meeting.review import _apply_llm_edit
+
+    full = "خب سلام الان میتونی متوجه شی من دارم چی میگم یا نمیتونی متوجه شی من دارم چی میگم"
+    text, action = _apply_llm_edit(full, "fix", "سلام، متوجه می‌شوی؟")
+    assert action == "keep"
+    assert text == full or "متوجه شی" in text
 
 
 @pytest.mark.asyncio

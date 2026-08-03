@@ -10,7 +10,8 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Sequence
+from pathlib import Path
+from typing import Any, List, Literal, Optional, Sequence
 
 from .models import TranscriptSegment
 
@@ -20,6 +21,10 @@ ReviewAction = Literal["keep", "fix", "drop"]
 
 _WORD_RE = re.compile(r"[\w\u0600-\u06FF]+", re.UNICODE)
 _PUNCT_ONLY = re.compile(r"^[\s\.\,\!\?\;\:\-\—\…\u06D4\u061F«»\"'()]+$")
+# Arabic/Persian letters (incl. common Arabic variants Whisper may emit)
+_PERSIAN_LETTERS = set("ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهیئآأإؤةىيۀك‌")
+_LATIN_LETTERS = set("abcdefghijklmnopqrstuvwxyz")
+_PERSIAN_LANGS = frozenset({"fa", "fas", "per", "persian", "farsi"})
 
 # Whisper / ASR non-speech event tags → Persian labels
 _NONSPEECH_FA: dict[str, str] = {
@@ -81,26 +86,81 @@ def localize_nonspeech_events(text: str) -> str:
     return _NONSPEECH_RE.sub(_repl, text or "")
 
 
-REVIEW_SYSTEM_PROMPT = """You are Distill's ASR review agent for Persian (and mixed) meeting transcripts.
-You receive raw Whisper speech-to-text output. Your job:
-1) DROP hallucinated / nonsense / pure repetition / noise-only text
-2) FIX minor grammar, punctuation, and obvious ASR typos while keeping meaning
-3) KEEP good text unchanged
+REVIEW_SYSTEM_PROMPT = """You are Distill's ASR cleanup agent for Persian (and mixed) meeting transcripts.
+You receive raw speech-to-text output. Choose ONE action:
+1) drop — hallucinated / nonsense / wrong-language / pure repetition / noise-only
+2) fix — ONLY tiny ASR typos, punctuation, or collapsing obvious word loops
+3) keep — text is already fine (preferred)
 
-Never invent meeting content that was not in the input.
+STRICT RULES:
+- Do NOT summarize, paraphrase, condense, shorten, or rewrite for style.
+- Do NOT invent meeting content that was not in the input.
+- Do NOT guess/replace words with unrelated meanings.
+- Fixed text must stay close to the original wording and length (almost the same words).
+- Prefer keep over fix.
+
 Respond ONLY with valid JSON:
 {"action":"keep"|"fix"|"drop","text":"final text or empty if drop","reason":"short reason"}
 For drop, set text to "".
 For keep, set text to the original (or lightly cleaned whitespace).
-For fix, set text to the corrected Persian transcript.
+For fix, set text to a near-literal correction of the original — not a summary.
 """
 
-BATCH_REVIEW_SYSTEM_PROMPT = """You are Distill's ASR review agent for Persian meeting transcripts.
-Review each Whisper segment. DROP hallucinations/repetitions/noise, FIX light ASR errors, or KEEP.
-Never invent content. Respond ONLY with valid JSON:
-{"items":[{"id":"seg-id","action":"keep"|"fix"|"drop","text":"...","reason":"..."}]}
+BATCH_REVIEW_SYSTEM_PROMPT = """You are Distill's ASR cleanup agent for Persian meeting transcripts.
+For each Whisper segment, choose ONE action:
+- drop: hallucinated / nonsense / wrong-language / pure repetition / noise-only
+- fix: ONLY tiny ASR typos, punctuation, or collapsing obvious word loops
+- keep: text is already fine (preferred)
+
+STRICT RULES:
+- Do NOT summarize, paraphrase, condense, shorten, merge, or rewrite for style.
+- Do NOT invent content. Keep nearly all original words and length.
+- Do NOT guess/replace words with unrelated meanings.
+- Prefer keep over fix. For keep, copy the original text unchanged.
+
+Respond ONLY with valid JSON:
+{"items":[{"id":"seg-id","action":"keep"|"fix"|"drop","text":"...","reason":"short reason"}]}
 Include every id. For drop use text "".
 """
+
+_PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "polish_agent.md"
+_PROMPT_CACHE: dict[str, Any] = {"mtime": None, "single": None, "batch": None}
+
+
+def _extract_prompt_section(md: str, name: str) -> str:
+    begin = f"<!-- BEGIN:{name} -->"
+    end = f"<!-- END:{name} -->"
+    start = md.find(begin)
+    stop = md.find(end)
+    if start < 0 or stop < 0 or stop <= start:
+        return ""
+    return md[start + len(begin) : stop].strip()
+
+
+def _load_polish_prompts() -> tuple[str, str]:
+    """Load single/batch prompts from polish_agent.md (hot-reload on mtime change)."""
+    single = REVIEW_SYSTEM_PROMPT
+    batch = BATCH_REVIEW_SYSTEM_PROMPT
+    try:
+        mtime = _PROMPT_FILE.stat().st_mtime
+    except OSError:
+        return single, batch
+
+    if _PROMPT_CACHE["mtime"] == mtime and _PROMPT_CACHE["single"] and _PROMPT_CACHE["batch"]:
+        return str(_PROMPT_CACHE["single"]), str(_PROMPT_CACHE["batch"])
+
+    try:
+        md = _PROMPT_FILE.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not read polish prompt file %s: %s", _PROMPT_FILE, exc)
+        return single, batch
+
+    loaded_single = _extract_prompt_section(md, "single") or single
+    loaded_batch = _extract_prompt_section(md, "batch") or batch
+    _PROMPT_CACHE["mtime"] = mtime
+    _PROMPT_CACHE["single"] = loaded_single
+    _PROMPT_CACHE["batch"] = loaded_batch
+    return loaded_single, loaded_batch
 
 
 @dataclass
@@ -118,6 +178,67 @@ class ReviewResult:
 
 def tokenize(text: str) -> List[str]:
     return [m.group(0).lower() for m in _WORD_RE.finditer(text or "")]
+
+
+def _is_faithful_edit(original: str, edited: str) -> bool:
+    """Reject LLM rewrites that summarize or replace the utterance."""
+    orig = (original or "").strip()
+    edit = (edited or "").strip()
+    if not edit:
+        return False
+    if edit == orig:
+        return True
+
+    ot = tokenize(orig)
+    et = tokenize(edit)
+    if not ot:
+        return True
+
+    # Aggressive shortening → summarization
+    if len(et) < max(3, int(len(ot) * 0.65)):
+        return False
+    if len(edit) < max(8, int(len(orig) * 0.55)):
+        return False
+
+    # Enough original tokens must survive (typo fixes still pass)
+    et_set = set(et)
+    retained = sum(1 for t in ot if t in et_set)
+    if retained / len(ot) < 0.5:
+        return False
+    return True
+
+
+def _apply_llm_edit(original: str, action: str, edited: str) -> tuple[str, str]:
+    """
+    Apply an LLM keep/fix/drop with a faithfulness guard.
+    Returns (text, effective_action). Empty text means drop.
+    """
+    action = (action or "keep").lower()
+    if action not in {"keep", "fix", "drop"}:
+        action = "keep"
+    if action == "drop":
+        return "", "drop"
+
+    candidate = str(edited or "").strip() if action == "fix" else str(edited or original).strip()
+    if action == "keep":
+        # Model sometimes "keeps" but returns a rewritten/summarized string
+        if candidate and _is_faithful_edit(original, candidate):
+            return localize_nonspeech_events(candidate), "keep"
+        return localize_nonspeech_events(original), "keep"
+
+    # fix
+    if not candidate:
+        return localize_nonspeech_events(original), "keep"
+    if not _is_faithful_edit(original, candidate):
+        logger.info(
+            "Rejected unfaithful LLM polish (%d→%d chars): %r → %r",
+            len(original),
+            len(candidate),
+            original[:80],
+            candidate[:80],
+        )
+        return localize_nonspeech_events(original), "keep"
+    return localize_nonspeech_events(candidate), "fix"
 
 
 def _max_consecutive_run(tokens: Sequence[str]) -> int:
@@ -178,7 +299,54 @@ def _char_loop_score(text: str) -> float:
     return 0.0
 
 
-def score_stt_text(text: str) -> tuple[float, List[str]]:
+def _script_letter_counts(text: str) -> tuple[int, int, int]:
+    """Return (persian, latin, other_letters) over alphabetic chars."""
+    persian = latin = other = 0
+    for ch in text or "":
+        if ch in _PERSIAN_LETTERS:
+            persian += 1
+        elif ch.lower() in _LATIN_LETTERS:
+            latin += 1
+        elif ch.isalpha():
+            other += 1
+    return persian, latin, other
+
+
+def _persian_script_penalty(text: str, language: str) -> tuple[float, List[str]]:
+    """Penalize Latin / non-Persian hallucinations when STT language is Persian."""
+    lang = (language or "fa").strip().lower()
+    if lang not in _PERSIAN_LANGS:
+        return 0.0, []
+
+    # Ignore ASR event tags like (cough) — they are Latin but get localized later
+    stripped = _NONSPEECH_RE.sub(" ", text or "")
+    persian, latin, other = _script_letter_counts(stripped)
+    letters = persian + latin + other
+    if letters == 0:
+        return 0.0, []
+
+    reasons: List[str] = []
+    penalty = 0.0
+    latin_ratio = latin / letters
+
+    if persian == 0 and latin > 0:
+        # Pure Latin / wrong-language hop (Polish, Hungarian, gibberish, …)
+        penalty = 1.0
+        reasons.append("wrong_script")
+    elif persian == 0 and other > 0:
+        penalty = 0.9
+        reasons.append("no_persian")
+    elif latin_ratio >= 0.45:
+        penalty = 0.7
+        reasons.append(f"latin_heavy:{latin_ratio:.2f}")
+    elif latin_ratio >= 0.3:
+        penalty = 0.35
+        reasons.append(f"latin_ratio:{latin_ratio:.2f}")
+
+    return penalty, reasons
+
+
+def score_stt_text(text: str, *, language: str = "fa") -> tuple[float, List[str]]:
     """Return quality score in [0,1] (higher=better) and reason codes."""
     t = (text or "").strip()
     reasons: List[str] = []
@@ -229,6 +397,11 @@ def score_stt_text(text: str) -> tuple[float, List[str]]:
         score -= 0.4
         reasons.append("tiny_vocab")
 
+    script_penalty, script_reasons = _persian_script_penalty(t, language)
+    if script_penalty:
+        score -= script_penalty
+        reasons.extend(script_reasons)
+
     return max(0.0, min(1.0, score)), reasons
 
 
@@ -237,12 +410,13 @@ def gate_stt_text(
     *,
     min_score: float = 0.35,
     collapse_runs: bool = True,
+    language: str = "fa",
 ) -> ReviewResult:
     """Fast heuristic gate: drop / lightly collapse / keep. No LLM."""
     from api.meeting.aligner import _collapse_internal_repeats
 
     raw = (text or "").strip()
-    score, reasons = score_stt_text(raw)
+    score, reasons = score_stt_text(raw, language=language)
     if score < min_score:
         return ReviewResult(
             action="drop",
@@ -303,7 +477,7 @@ class TranscriptReviewAgent:
         self.enabled = enabled and llm is not None
 
     async def review_text(self, text: str, *, language: str = "fa") -> ReviewResult:
-        heuristic = gate_stt_text(text)
+        heuristic = gate_stt_text(text, language=language)
         if heuristic.action == "drop":
             return heuristic
         if not self.enabled:
@@ -312,7 +486,7 @@ class TranscriptReviewAgent:
         candidate = heuristic.text
         try:
             messages = [
-                {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
+                {"role": "system", "content": _load_polish_prompts()[0]},
                 {
                     "role": "user",
                     "content": (
@@ -321,20 +495,24 @@ class TranscriptReviewAgent:
                     ),
                 },
             ]
-            raw = await self.llm.complete(messages, temperature=0.1, max_tokens=400)
+            raw = await self.llm.complete(messages, temperature=0.0, max_tokens=800)
             data = _parse_review_json(raw) or {}
             action = str(data.get("action") or "keep").lower()
-            if action not in {"keep", "fix", "drop"}:
-                action = "keep"
-            out_text = (data.get("text") if action != "drop" else "") or ""
-            out_text = str(out_text).strip()
-            if action != "drop" and not out_text:
-                out_text = candidate
-                action = "keep"
+            out_text, action = _apply_llm_edit(
+                candidate, action, str(data.get("text") or "")
+            )
             reason = str(data.get("reason") or "llm_review")
+            if action == "drop":
+                return ReviewResult(
+                    action="drop",
+                    text="",
+                    score=heuristic.score,
+                    reasons=heuristic.reasons + [reason],
+                    raw_text=heuristic.raw_text or text,
+                )
             return ReviewResult(
                 action=action,  # type: ignore[arg-type]
-                text=localize_nonspeech_events(out_text) if action != "drop" else "",
+                text=out_text,
                 score=heuristic.score,
                 reasons=heuristic.reasons + [reason],
                 raw_text=heuristic.raw_text or text,
@@ -356,7 +534,7 @@ class TranscriptReviewAgent:
         # First pass: heuristics (always)
         gated: List[TranscriptSegment] = []
         for seg in segments:
-            result = gate_stt_text(seg.text)
+            result = gate_stt_text(seg.text, language=language)
             if not result.accepted:
                 logger.info(
                     "Dropped STT segment %s (%s): %s",
@@ -395,20 +573,25 @@ class TranscriptReviewAgent:
         reviewed_map: dict[str, str] = {}
 
         try:
+            # Budget for full near-literal texts in JSON (avoid forced summarization)
+            approx_chars = sum(len(t) for t in id_to_text.values())
+            max_tokens = min(8192, max(1024, approx_chars // 2 + 250 * len(items_payload)))
+            _, batch_prompt = _load_polish_prompts()
             messages = [
-                {"role": "system", "content": BATCH_REVIEW_SYSTEM_PROMPT},
+                {"role": "system", "content": batch_prompt},
                 {
                     "role": "user",
                     "content": (
                         f"Language hint: {language}\n"
+                        "Return keep/fix/drop per item. Never summarize.\n"
                         f"Segments JSON:\n{json.dumps(items_payload, ensure_ascii=False)}"
                     ),
                 },
             ]
             raw = await self.llm.complete(
                 messages,
-                temperature=0.1,
-                max_tokens=min(4096, 200 + 120 * len(items_payload)),
+                temperature=0.0,
+                max_tokens=max_tokens,
             )
             data = _parse_review_json(raw) or {}
             items = data.get("items") or []
@@ -420,13 +603,10 @@ class TranscriptReviewAgent:
                 original = id_to_text.get(sid)
                 if original is None:
                     continue
-                if action == "drop":
-                    reviewed_map[original] = ""
-                else:
-                    fixed = str(item.get("text") or original).strip()
-                    reviewed_map[original] = localize_nonspeech_events(
-                        fixed or original
-                    )
+                fixed, _eff = _apply_llm_edit(
+                    original, action, str(item.get("text") or "")
+                )
+                reviewed_map[original] = fixed
         except Exception as exc:
             logger.warning("Batch LLM STT review failed: %s", exc)
             return gated

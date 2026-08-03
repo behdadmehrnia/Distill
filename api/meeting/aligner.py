@@ -165,13 +165,13 @@ def merge_adjacent_segments(
             continue
 
         if same_spk and hop_overlap and not _same_utterance(prev.text, seg.text):
-            # Truly different speech in overlapping windows: keep both
-            prev.end_ms = min(prev.end_ms, max(prev.start_ms + 400, seg.start_ms))
-            if prev.end_ms - prev.start_ms < 400:
-                merged[-1] = seg
-            else:
-                seg.text = _collapse_internal_repeats(seg.text)
-                merged.append(seg)
+            # Overlapping hops of continuous speech: stitch, don't fragment
+            prev.text = _collapse_internal_repeats(
+                _stitch_hop_texts(prev.text, seg.text)
+            )
+            prev.start_ms = min(prev.start_ms, seg.start_ms)
+            prev.end_ms = max(prev.end_ms, seg.end_ms)
+            prev.provisional = prev.provisional or seg.provisional
             continue
 
         if same_spk and gap <= max_gap_ms and ov == 0:
@@ -194,8 +194,86 @@ def merge_adjacent_segments(
 
 def _pick_hop_text(prev: str, new: str) -> str:
     """
-    Choose the best transcript among Whisper variants of the same utterance.
-    Prefer longer/more complete; never concatenate full copies.
+    Choose / stitch transcripts among Whisper variants of the same utterance.
+    Prefer longer/more complete; stitch overlapping hops instead of dropping prefixes.
+    """
+    return _stitch_hop_texts(prev, new)
+
+
+def _norm_token(tok: str) -> str:
+    t = (tok or "").replace("\u200c", "").replace("\u200d", "")
+    t = t.replace("ي", "ی").replace("ك", "ک")
+    t = re.sub(r"[^\w\u0600-\u06FF]+", "", t, flags=re.UNICODE)
+    return t.lower()
+
+
+def _tokens_close(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if not a or not b:
+        return False
+    if a in b or b in a:
+        return abs(len(a) - len(b)) <= max(2, len(a) // 3)
+    # cheap edit tolerance for short ASR variants (چرخی/چرخه)
+    if abs(len(a) - len(b)) > 2:
+        return False
+    mismatches = sum(1 for x, y in zip(a, b) if x != y) + abs(len(a) - len(b))
+    return mismatches <= 2
+
+
+def _best_suffix_prefix_overlap(ta: List[str], tb: List[str]) -> int:
+    """Return k such that ta[-k:] ≈ tb[:k] (exact or fuzzy). 0 if none."""
+    if not ta or not tb:
+        return 0
+    na = [_norm_token(t) for t in ta]
+    nb = [_norm_token(t) for t in tb]
+    max_k = min(len(na), len(nb), 16)
+    best_k = 0
+    best_score = 0.0
+    for k in range(1, max_k + 1):
+        suf, pref = na[-k:], nb[:k]
+        if suf == pref:
+            score = 1.0
+        else:
+            matches = sum(1 for x, y in zip(suf, pref) if _tokens_close(x, y))
+            score = matches / k
+        if score >= 0.6 and (k > best_k or (k == best_k and score > best_score)):
+            # Prefer longer overlaps when score is decent
+            if k >= 2 or score >= 0.99:
+                best_k = k
+                best_score = score
+    return best_k if best_score >= 0.6 else 0
+
+
+def _continuation_skip(ta: List[str], tb: List[str]) -> int:
+    """
+    How many leading tokens of tb restating the end of ta should be skipped
+    before appending the new continuation.
+    """
+    if not ta or not tb:
+        return 0
+    na = [_norm_token(t) for t in ta]
+    nb = [_norm_token(t) for t in tb]
+    a_set = set(na)
+    # Prefer matching near the end of A
+    tail = set(na[max(0, len(na) - 14) :])
+    best = 0
+    for j in range(1, min(len(nb), 14) + 1):
+        pref = nb[:j]
+        pref_set = set(pref)
+        hit_tail = len(pref_set & tail) / max(1, len(pref_set))
+        hit_all = len(pref_set & a_set) / max(1, len(pref_set))
+        if hit_tail >= 0.5 or hit_all >= 0.65:
+            best = j
+    return best
+
+
+def _stitch_hop_texts(prev: str, new: str) -> str:
+    """
+    Merge overlapping-window transcripts into continuous text.
+
+    Keeps unique prefixes from earlier hops and unique suffixes from later hops
+    (fixes monologue fragmentation / silent data loss across 8s/6s windows).
     """
     a = (prev or "").strip()
     b = (new or "").strip()
@@ -209,18 +287,28 @@ def _pick_hop_text(prev: str, new: str) -> str:
         return b
 
     ta, tb = a.split(), b.split()
-    max_k = min(len(ta), len(tb))
-    best_k = 0
-    for k in range(1, max_k + 1):
-        if ta[-k:] == tb[:k]:
-            best_k = k
-    if best_k >= 2:
-        return _collapse_internal_repeats(" ".join(ta + tb[best_k:]).strip())
+    k = _best_suffix_prefix_overlap(ta, tb)
+    if k >= 2 or (k == 1 and len(ta) <= 4):
+        return _collapse_internal_repeats(" ".join(ta + tb[k:]).strip())
 
-    # Prefer more complete (more tokens), then longer string
-    if len(tb) != len(ta):
-        return b if len(tb) > len(ta) else a
-    return a if len(a) >= len(b) else b
+    # Same utterance variants with no clean edge: keep the fuller form
+    if _same_utterance(a, b):
+        cont = _token_containment(a, b)
+        if cont >= 0.7:
+            return a if len(ta) >= len(tb) else b
+        # Partial variants — still try continuation skip then prefer longer
+        skip = _continuation_skip(ta, tb)
+        if skip > 0 and skip < len(tb):
+            return _collapse_internal_repeats(" ".join(ta + tb[skip:]).strip())
+        return a if len(ta) >= len(tb) else b
+
+    # Time-overlapping continuation of a monologue (different lexical content)
+    skip = _continuation_skip(ta, tb)
+    if skip > 0 and skip < len(tb):
+        return _collapse_internal_repeats(" ".join(ta + tb[skip:]).strip())
+    if skip >= len(tb):
+        return a
+    return _collapse_internal_repeats(" ".join(ta + tb).strip())
 
 
 def _join_adjacent_texts(prev: str, new: str) -> str:
@@ -235,16 +323,7 @@ def _join_adjacent_texts(prev: str, new: str) -> str:
         return a
     if a in b:
         return b
-    ta, tb = a.split(), b.split()
-    best_k = 0
-    for k in range(1, min(len(ta), len(tb)) + 1):
-        if ta[-k:] == tb[:k]:
-            best_k = k
-    if best_k >= 2:
-        return " ".join(ta + tb[best_k:]).strip()
-    if _same_utterance(a, b):
-        return _pick_hop_text(a, b)
-    return f"{a} {b}".strip()
+    return _stitch_hop_texts(a, b)
 
 
 def _collapse_internal_repeats(text: str) -> str:
@@ -338,6 +417,12 @@ def _collapse_overlapping_stt_windows(
         if ov / shorter >= 0.12 and _same_utterance(prev[2], item[2]):
             prev[1] = max(prev[1], item[1])
             prev[2] = _pick_hop_text(prev[2], item[2])
+            if item[3] and (not prev[3] or len(item[2].split()) >= len(prev[2].split())):
+                prev[3] = item[3]
+        elif ov / shorter >= 0.12:
+            # Continuous monologue across hops — stitch instead of many cards
+            prev[1] = max(prev[1], item[1])
+            prev[2] = _stitch_hop_texts(prev[2], item[2])
             if item[3] and (not prev[3] or len(item[2].split()) >= len(prev[2].split())):
                 prev[3] = item[3]
         else:

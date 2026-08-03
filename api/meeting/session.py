@@ -16,7 +16,12 @@ from .chunker import OverlappingChunker
 from .diarization import SpeakerDiarizer
 from .ingest import AudioIngest
 from .models import MeetingRecord, MeetingStatus, TranscriptSegment
-from .review import TranscriptReviewAgent, gate_stt_text, localize_nonspeech_events
+from .review import (
+    TranscriptReviewAgent,
+    gate_stt_text,
+    localize_nonspeech_events,
+    score_stt_text,
+)
 from .store import TranscriptStore
 
 logger = logging.getLogger(__name__)
@@ -164,19 +169,32 @@ class MeetingSession:
 
     async def _gate_stt_text(self, text: str) -> Optional[str]:
         mode = self._review_mode()
+        lang = str(self.tuning.get("stt_language") or "fa")
         if mode == "off":
             cleaned = (text or "").strip()
             if len(cleaned) < 2 or not any(ch.isalpha() for ch in cleaned):
                 return None
+            # Language-drift guard only; skip full heuristic polish when off
+            score, reasons = score_stt_text(cleaned, language=lang)
+            if score < 0.35 and any(
+                r in {"wrong_script", "no_persian"} or r.startswith("latin_")
+                for r in reasons
+            ):
+                logger.info(
+                    "STT gate dropped text score=%.2f reasons=%s text=%r",
+                    score,
+                    ",".join(reasons),
+                    cleaned[:100],
+                )
+                return None
             return localize_nonspeech_events(cleaned)
 
         if mode == "live" and self.review_agent is not None:
-            result = await self.review_agent.review_text(
-                text,
-                language=str(self.tuning.get("stt_language") or "fa"),
-            )
+            result = await self.review_agent.review_text(text, language=lang)
         else:
-            result = gate_stt_text(text, min_score=self._review_min_score())
+            result = gate_stt_text(
+                text, min_score=self._review_min_score(), language=lang
+            )
 
         if not result.accepted:
             logger.info(
@@ -414,7 +432,12 @@ class MeetingSession:
         words: Optional[Sequence[Tuple[str, int, int]]],
     ) -> None:
         """Keep one pending row per spoken utterance; fold Whisper hop variants."""
-        from api.meeting.aligner import _overlap_ms, _pick_hop_text, _same_utterance
+        from api.meeting.aligner import (
+            _overlap_ms,
+            _pick_hop_text,
+            _same_utterance,
+            _stitch_hop_texts,
+        )
 
         acc_s, acc_e, acc_t, acc_w = start_ms, end_ms, text, words
         kept: List[PendingStt] = []
@@ -434,6 +457,12 @@ class MeetingSession:
                     acc_w = acc_w or pw
                 else:
                     acc_w = words or pw or acc_w
+            elif ov / shorter >= 0.12:
+                # Overlapping hop continuation — stitch full monologue
+                acc_s = min(acc_s, ps)
+                acc_e = max(acc_e, pe)
+                acc_t = _stitch_hop_texts(pt, acc_t)
+                acc_w = words or pw or acc_w
             else:
                 kept.append(prev)
         kept.append((acc_s, acc_e, acc_t, acc_w))

@@ -18,6 +18,28 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gapgpt/whisper-1"
 DEFAULT_ENDPOINT = "https://api.gapgpt.app/v1/audio/transcriptions"
+_MAX_ERROR_BODY = 240
+
+
+def _format_http_error(status: int, body: str, content_type: str = "") -> str:
+    """Compact STT HTTP errors; avoid logging full HTML 404 pages."""
+    text = (body or "").strip()
+    ctype = (content_type or "").lower()
+    looks_html = "text/html" in ctype or text[:32].lower().startswith(
+        ("<!doctype", "<html")
+    )
+    if looks_html:
+        title = ""
+        lower = text.lower()
+        start = lower.find("<title>")
+        end = lower.find("</title>")
+        if 0 <= start < end:
+            title = " ".join(text[start + 7 : end].split())
+        hint = f" ({title})" if title else ""
+        return f"STT error {status}: HTML error page{hint}"
+    if len(text) > _MAX_ERROR_BODY:
+        text = text[:_MAX_ERROR_BODY].rstrip() + "…"
+    return f"STT error {status}: {text or '(empty body)'}"
 
 
 @dataclass
@@ -157,7 +179,10 @@ class OpenAICompatibleSTT:
             async with session.post(self.endpoint, data=form, headers=headers) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    raise RuntimeError(f"STT error {response.status}: {error_text}")
+                    ctype = response.headers.get("Content-Type", "")
+                    raise RuntimeError(
+                        _format_http_error(response.status, error_text, ctype)
+                    )
                 return await response.json()
 
     async def transcribe_detailed(
