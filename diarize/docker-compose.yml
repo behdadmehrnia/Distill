@@ -1,0 +1,31 @@
+# Local pyannote sidecar — independent of the root Distill docker-compose.
+# Usage (from this directory):
+#   docker compose up -d --build
+# Then point the API at it:
+#   DIARIZATION_ENDPOINT=http://127.0.0.1:8090
+
+services:
+  diarize:
+    build: .
+    image: distill-diarize:latest
+    container_name: distill-diarize
+    ports:
+      - "${DIARIZE_PORT:-8090}:8090"
+    env_file:
+      - ../.env
+    environment:
+      DIARIZE_HOST: "0.0.0.0"
+      DIARIZE_PORT: "8090"
+      CUDA_VISIBLE_DEVICES: ""
+      HF_HOME: /data/hf_cache
+      TORCH_HOME: /data/torch_cache
+      XDG_CACHE_HOME: /data/cache
+      # If huggingface.co is unreachable, set in ../.env:
+      #   HF_ENDPOINT=https://hf-mirror.com
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+    volumes:
+      - diarize-cache:/data
+    restart: unless-stopped
+
+volumes:
+  diarize-cache:

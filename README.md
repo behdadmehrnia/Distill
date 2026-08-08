@@ -51,7 +51,8 @@ UI دستیار: `http://localhost:8000/assistant`
 
 ## Diarization
 
-- **بهتر:** `pip install -r requirements.optional.txt` و تنظیم `HF_TOKEN` برای pyannote.
+- **Remote (recommended for light local API):** run the sidecar in `diarize/` and set `DIARIZATION_ENDPOINT=http://127.0.0.1:8090` (see `diarize/README.md`). The API stays torch-free.
+- **In-process:** `pip install -r requirements.optional.txt` و تنظیم `HF_TOKEN` برای pyannote.
 - **Fallback:** بدون pyannote هم pipeline کار می‌کند، ولی برچسب گوینده روی میک تکی ضعیف است. سرور در لاگ و رویداد `warning` این را اعلام می‌کند.
 - هر جلسه diarizer جدا (`fork`) دارد تا state گوینده بین جلسات قاطی نشود.
 
@@ -123,7 +124,9 @@ pip install -r requirements.optional.txt
 | `STT_ENDPOINT` | — | آدرس STT |
 | `STT_API_KEY` | — | کلید STT |
 | `STT_MODEL` | — | مدل STT |
-| `HF_TOKEN` | — | توکن HuggingFace برای pyannote |
+| `HF_TOKEN` | — | توکن HuggingFace برای pyannote (in-process یا sidecar) |
+| `DIARIZATION_ENDPOINT` | — | آدرس سرویس remote diarize (مثلاً `http://127.0.0.1:8090`) |
+| `DIARIZATION_TIMEOUT_S` | `120` | مهلت درخواست به sidecar |
 
 ## تست
 

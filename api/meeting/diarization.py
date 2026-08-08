@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
 import logging
 import os
 import tempfile
 import threading
+import wave
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin
 
 import numpy as np
 
@@ -17,8 +20,10 @@ class SpeakerDiarizer:
     """
     Speaker diarization with overlap detection.
 
-    Tries pyannote.audio when available (HF token via HF_TOKEN / HUGGINGFACE_TOKEN).
-    Falls back to energy/spectral change clustering so the meeting pipeline still works offline.
+    Priority:
+      1. Remote HTTP service when DIARIZATION_ENDPOINT is set (no local torch)
+      2. In-process pyannote.audio when available (HF_TOKEN)
+      3. Energy/spectral fallback
 
     Pyannote/torch loading is deferred until the first diarize() call so the
     HTTP server can bind and pass readiness probes without OOM risk.
@@ -32,6 +37,8 @@ class SpeakerDiarizer:
         hf_token: Optional[str] = None,
         energy_threshold: float = 0.01,
         merge_short_ms: int = 400,
+        remote_endpoint: Optional[str] = None,
+        remote_timeout_s: float = 120.0,
     ):
         self.sample_rate = sample_rate
         self.min_speakers = min_speakers
@@ -44,10 +51,20 @@ class SpeakerDiarizer:
             or os.getenv("HUGGINGFACE_TOKEN")
             or os.getenv("HUGGING_FACE_HUB_TOKEN")
         )
+        endpoint = (
+            remote_endpoint
+            if remote_endpoint is not None
+            else os.getenv("DIARIZATION_ENDPOINT")
+        )
+        self.remote_endpoint = (endpoint or "").strip().rstrip("/") or None
+        self.remote_timeout_s = float(
+            os.getenv("DIARIZATION_TIMEOUT_S") or remote_timeout_s
+        )
         # Shared across fork() children so a late load is visible to all sessions.
         self._load: Dict[str, Any] = {
             "pipeline": None,
             "backend": "fallback",
+            "mode": "fallback",  # remote | local | fallback
             "done": False,
         }
         self._load_lock = threading.Lock()
@@ -83,6 +100,8 @@ class SpeakerDiarizer:
         child.energy_threshold = self.energy_threshold
         child.merge_short_ms = self.merge_short_ms
         child.hf_token = self.hf_token
+        child.remote_endpoint = self.remote_endpoint
+        child.remote_timeout_s = self.remote_timeout_s
         child._load = self._load
         child._load_lock = self._load_lock
         child._label_map = {}
@@ -92,26 +111,33 @@ class SpeakerDiarizer:
 
     def ensure_loaded(self) -> str:
         """
-        Load pyannote once (thread-safe). Called on first diarize — never at HTTP startup.
+        Resolve backend once (thread-safe). Called on first diarize — never at HTTP startup.
         """
         with self._load_lock:
             if self._load["done"]:
                 return str(self._load["backend"])
             try:
-                self._try_load_pyannote()
+                if self.remote_endpoint:
+                    self._try_bind_remote()
+                else:
+                    self._try_load_pyannote()
             except MemoryError:
                 logger.error(
                     "Out of memory loading pyannote; staying on fallback diarization. "
-                    "Raise the pod memory limit (≈2Gi+) or set DISTILL_ENABLE_PYANNOTE=0."
+                    "Raise the pod memory limit (≈2Gi+) or set DISTILL_ENABLE_PYANNOTE=0 "
+                    "(or use DIARIZATION_ENDPOINT for a remote sidecar)."
                 )
                 self._load["pipeline"] = None
                 self._load["backend"] = "fallback"
+                self._load["mode"] = "fallback"
             self._load["done"] = True
             return str(self._load["backend"])
 
     @property
     def pyannote_enabled(self) -> bool:
-        """Whether we will attempt to import/load pyannote when needed."""
+        """Whether high-quality diarization (remote or local pyannote) is configured."""
+        if self.remote_endpoint:
+            return True
         flag = (os.getenv("DISTILL_ENABLE_PYANNOTE") or "auto").strip().lower()
         if flag in {"0", "false", "no", "off"}:
             return False
@@ -119,6 +145,45 @@ class SpeakerDiarizer:
             return True
         # auto: only when a HF token is present
         return bool(self.hf_token)
+
+    def _try_bind_remote(self) -> None:
+        """Prefer remote sidecar; never import torch in this process when endpoint is set."""
+        assert self.remote_endpoint
+        health_url = urljoin(self.remote_endpoint + "/", "health")
+        self._load["pipeline"] = None
+        self._load["mode"] = "remote"
+        try:
+            import httpx
+
+            with httpx.Client(timeout=min(10.0, self.remote_timeout_s)) as client:
+                resp = client.get(health_url)
+            if resp.status_code >= 400:
+                raise RuntimeError(f"health HTTP {resp.status_code}")
+            payload = resp.json() if resp.content else {}
+            ready = bool(payload.get("ready"))
+            err = payload.get("error")
+            self._load["backend"] = "pyannote"
+            if ready:
+                logger.info(
+                    "Using remote diarization at %s (model ready)",
+                    self.remote_endpoint,
+                )
+            else:
+                logger.info(
+                    "Using remote diarization at %s (model still loading%s)",
+                    self.remote_endpoint,
+                    f": {err}" if err else "",
+                )
+        except Exception as exc:
+            # Still mark as remote so diarize() retries the HTTP call;
+            # heuristic fallback only if the request itself fails.
+            self._load["backend"] = "pyannote"
+            logger.warning(
+                "Remote diarization health check failed at %s (%s); "
+                "will retry on first diarize()",
+                self.remote_endpoint,
+                exc,
+            )
 
     def _try_load_pyannote(self) -> None:
         if not self.pyannote_enabled:
@@ -128,6 +193,7 @@ class SpeakerDiarizer:
             )
             self._load["pipeline"] = None
             self._load["backend"] = "fallback"
+            self._load["mode"] = "fallback"
             return
 
         try:
@@ -136,20 +202,23 @@ class SpeakerDiarizer:
             logger.warning(
                 "pyannote not installed (%s); using fallback diarization "
                 "(speaker labels will be weak on mono mic). "
-                "Install requirements.optional.txt + set HF_TOKEN for production quality.",
+                "Install requirements.optional.txt + set HF_TOKEN, "
+                "or set DIARIZATION_ENDPOINT for a remote sidecar.",
                 exc,
             )
             self._load["pipeline"] = None
             self._load["backend"] = "fallback"
+            self._load["mode"] = "fallback"
             return
 
         if not self.hf_token:
             logger.warning(
                 "HF_TOKEN not set; pyannote available but unused — falling back to "
-                "heuristic diarization. Set HF_TOKEN to enable speaker-diarization-3.1."
+                "heuristic diarization. Set HF_TOKEN or DIARIZATION_ENDPOINT."
             )
             self._load["pipeline"] = None
             self._load["backend"] = "fallback"
+            self._load["mode"] = "fallback"
             return
 
         try:
@@ -167,6 +236,7 @@ class SpeakerDiarizer:
                 )
             self._load["pipeline"] = pipeline
             self._load["backend"] = "pyannote"
+            self._load["mode"] = "local"
             logger.info("Loaded pyannote speaker-diarization-3.1")
         except MemoryError:
             raise
@@ -177,6 +247,7 @@ class SpeakerDiarizer:
             )
             self._load["pipeline"] = None
             self._load["backend"] = "fallback"
+            self._load["mode"] = "fallback"
 
     @property
     def _pipeline(self) -> Any:
@@ -197,13 +268,71 @@ class SpeakerDiarizer:
             return []
 
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)
-        if self._pipeline is not None:
+        if self._load.get("mode") == "remote" and self.remote_endpoint:
+            try:
+                return self._diarize_remote(audio, sr)
+            except Exception as exc:
+                logger.warning("remote diarization failed, falling back: %s", exc)
+        elif self._pipeline is not None:
             try:
                 return self._diarize_pyannote(audio, sr)
             except Exception as exc:
                 logger.warning("pyannote diarization failed, falling back: %s", exc)
 
         return self._diarize_fallback(audio, sr)
+
+    @staticmethod
+    def _float_audio_to_wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
+        pcm = np.clip(audio, -1.0, 1.0)
+        pcm_i16 = (pcm * 32767.0).astype(np.int16)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(int(sample_rate))
+            wav_file.writeframes(pcm_i16.tobytes())
+        return buf.getvalue()
+
+    def _diarize_remote(self, audio: np.ndarray, sr: int) -> List[SpeakerInterval]:
+        import httpx
+
+        assert self.remote_endpoint
+        url = urljoin(self.remote_endpoint + "/", "v1/diarize")
+        wav_bytes = self._float_audio_to_wav_bytes(audio, sr)
+        data = {
+            "sample_rate": str(int(sr)),
+            "min_speakers": str(int(self.min_speakers)),
+            "max_speakers": str(int(self.max_speakers)),
+        }
+        files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
+        with httpx.Client(timeout=self.remote_timeout_s) as client:
+            resp = client.post(url, data=data, files=files)
+            if resp.status_code == 503:
+                # Model still loading — surface clearly; caller may fall back.
+                raise RuntimeError(resp.text or "diarization model not ready")
+            resp.raise_for_status()
+            payload = resp.json()
+
+        intervals: List[SpeakerInterval] = []
+        for item in payload.get("intervals") or []:
+            if not isinstance(item, dict):
+                continue
+            speaker = str(item.get("speaker_id") or "SPEAKER_00")
+            try:
+                start_ms = int(item.get("start_ms", 0))
+                end_ms = int(item.get("end_ms", start_ms))
+            except (TypeError, ValueError):
+                continue
+            intervals.append(
+                SpeakerInterval(
+                    speaker_id=self._normalize_speaker(speaker),
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    is_overlap=bool(item.get("is_overlap", False)),
+                )
+            )
+        self._load["backend"] = "pyannote"
+        return sorted(intervals, key=lambda x: x.start_ms)
 
     def _diarize_pyannote(self, audio: np.ndarray, sr: int) -> List[SpeakerInterval]:
         import torch

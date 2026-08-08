@@ -54,9 +54,12 @@ def _build_services(settings: Settings) -> Dict[str, Any]:
     )
     store = TranscriptStore(db_path=str(settings.db_path))
     # Never load pyannote/torch here — it OOMs small pods and blocks readiness.
+    # Prefer DIARIZATION_ENDPOINT (remote sidecar) when set.
     diarizer = SpeakerDiarizer(
         sample_rate=settings.sample_rate,
         hf_token=settings.hf_token,
+        remote_endpoint=settings.diarization_endpoint,
+        remote_timeout_s=settings.diarization_timeout_s,
         min_speakers=int(tuning["min_speakers"]),
         max_speakers=int(tuning["max_speakers"]),
         energy_threshold=float(tuning["energy_threshold"]),
@@ -97,7 +100,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         # Pyannote loads lazily on first diarize() — never during lifespan.
         diarizer = getattr(app.state.manager, "diarizer", None)
         backend_hint = "fallback"
-        if diarizer is not None and getattr(diarizer, "pyannote_enabled", False):
+        if diarizer is not None and getattr(diarizer, "remote_endpoint", None):
+            backend_hint = f"remote ({diarizer.remote_endpoint})"
+        elif diarizer is not None and getattr(diarizer, "pyannote_enabled", False):
             backend_hint = "pyannote (lazy)"
         logger.info(
             "Distill HTTP starting (diarization=%s; model not loaded yet)",

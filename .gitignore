@@ -29,6 +29,8 @@ cache_metadata.json
 *.DS_Store
 .DS_Store
 
+.vscode
+
 *.mp3
 *.wav
 *.pcm

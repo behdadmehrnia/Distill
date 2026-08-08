@@ -60,11 +60,18 @@ class Settings:
     llm_model: str | None = None
 
     hf_token: str | None = None
+    diarization_endpoint: str | None = None
+    diarization_timeout_s: float = 120.0
 
     @classmethod
     def from_env(cls) -> "Settings":
         # Prefer MEETING_PORT; fall back to PORT (common on PaaS like Hamdocker)
         port = _env_int("MEETING_PORT", 0) or _env_int("PORT", 8000)
+        timeout_raw = _env_str("DIARIZATION_TIMEOUT_S")
+        try:
+            diarization_timeout_s = float(timeout_raw) if timeout_raw else 120.0
+        except ValueError:
+            diarization_timeout_s = 120.0
         return cls(
             host=_env_str("MEETING_HOST", "0.0.0.0") or "0.0.0.0",
             port=port,
@@ -89,6 +96,8 @@ class Settings:
             hf_token=_env_str("HF_TOKEN")
             or _env_str("HUGGINGFACE_TOKEN")
             or _env_str("HUGGING_FACE_HUB_TOKEN"),
+            diarization_endpoint=_env_str("DIARIZATION_ENDPOINT"),
+            diarization_timeout_s=diarization_timeout_s,
         )
 
     def ensure_dirs(self) -> None:
