@@ -84,6 +84,61 @@ def test_speaker_map_patch(tmp_path):
         assert again.json()["speaker_map"]["SPEAKER_00"] == "علی"
 
 
+def test_segment_text_patch(tmp_path):
+    from api.meeting.models import TranscriptSegment
+
+    with _make_client(tmp_path) as client:
+        created = client.post("/meetings", json={"title": "ویرایش متن", "start": False})
+        meeting_id = created.json()["id"]
+        store = client.app.state.manager.store
+
+        final_seg = TranscriptSegment.create(
+            meeting_id=meeting_id,
+            speaker_id="SPEAKER_00",
+            start_ms=0,
+            end_ms=1500,
+            text="متن اولیه",
+            provisional=False,
+        )
+        live_seg = TranscriptSegment.create(
+            meeting_id=meeting_id,
+            speaker_id="SPEAKER_00",
+            start_ms=2000,
+            end_ms=3500,
+            text="در حال صحبت",
+            provisional=True,
+        )
+        store.save_segment(final_seg)
+        store.save_segment(live_seg)
+
+        ok = client.patch(
+            f"/meetings/{meeting_id}/segments/{final_seg.id}",
+            json={"text": "متن اصلاح‌شده"},
+        )
+        assert ok.status_code == 200
+        body = ok.json()
+        assert body["segments"][0]["text"] == "متن اصلاح‌شده"
+        assert store.get_segment(meeting_id, final_seg.id).text == "متن اصلاح‌شده"
+
+        blocked = client.patch(
+            f"/meetings/{meeting_id}/segments/{live_seg.id}",
+            json={"text": "نباید ذخیره شود"},
+        )
+        assert blocked.status_code == 400
+
+        empty = client.patch(
+            f"/meetings/{meeting_id}/segments/{final_seg.id}",
+            json={"text": "   "},
+        )
+        assert empty.status_code == 400
+
+        missing = client.patch(
+            f"/meetings/{meeting_id}/segments/does-not-exist",
+            json={"text": "x"},
+        )
+        assert missing.status_code == 404
+
+
 def test_recording_endpoint_and_restart(tmp_path):
     with _make_client(tmp_path) as client:
         created = client.post("/meetings", json={"title": "ضبط", "start": False})

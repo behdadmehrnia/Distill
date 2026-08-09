@@ -245,6 +245,88 @@ class TranscriptStore:
             finally:
                 conn.close()
 
+    def get_segment(self, meeting_id: str, segment_id: str) -> Optional[TranscriptSegment]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT * FROM segments
+                    WHERE meeting_id = ? AND id = ?
+                    """,
+                    (meeting_id, segment_id),
+                ).fetchone()
+                return self._row_to_segment(row) if row else None
+            finally:
+                conn.close()
+
+    def update_segment_text(
+        self, meeting_id: str, segment_id: str, text: str
+    ) -> List[TranscriptSegment]:
+        """Update finalized segment text. Overlap peers with same span/text are synced."""
+        cleaned = (text or "").strip()
+        if not cleaned:
+            raise ValueError("text must not be empty")
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT * FROM segments
+                    WHERE meeting_id = ? AND id = ?
+                    """,
+                    (meeting_id, segment_id),
+                ).fetchone()
+                if not row:
+                    raise KeyError(f"Segment not found: {segment_id}")
+                if bool(row["provisional"]):
+                    raise ValueError("provisional segments cannot be edited")
+
+                ids = [row["id"]]
+                if bool(row["is_overlap"]):
+                    peer_rows = conn.execute(
+                        """
+                        SELECT id FROM segments
+                        WHERE meeting_id = ?
+                          AND provisional = 0
+                          AND is_overlap = 1
+                          AND start_ms = ?
+                          AND end_ms = ?
+                          AND text = ?
+                        """,
+                        (
+                            meeting_id,
+                            row["start_ms"],
+                            row["end_ms"],
+                            row["text"],
+                        ),
+                    ).fetchall()
+                    ids = [r["id"] for r in peer_rows] or ids
+
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"""
+                    UPDATE segments
+                    SET text = ?
+                    WHERE meeting_id = ? AND id IN ({placeholders})
+                    """,
+                    (cleaned, meeting_id, *ids),
+                )
+                conn.commit()
+
+                updated_rows = conn.execute(
+                    f"""
+                    SELECT * FROM segments
+                    WHERE meeting_id = ? AND id IN ({placeholders})
+                    ORDER BY start_ms ASC, created_at ASC
+                    """,
+                    (meeting_id, *ids),
+                ).fetchall()
+                return [self._row_to_segment(r) for r in updated_rows]
+            finally:
+                conn.close()
+
     def delete_provisional_segments(self, meeting_id: str) -> None:
         with self._lock:
             conn = self._connect()

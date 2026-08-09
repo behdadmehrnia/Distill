@@ -346,14 +346,13 @@ class SpeakerDiarizer:
             # Prefer waveform dict when supported
             try:
                 waveform = torch.from_numpy(audio).unsqueeze(0)
-                diarization = self._pipeline({"waveform": waveform, "sample_rate": sr})
+                output = self._pipeline({"waveform": waveform, "sample_rate": sr})
             except Exception:
-                diarization = self._pipeline(path)
+                output = self._pipeline(path)
 
-            intervals: List[SpeakerInterval] = []
-            # Collect raw turns
+            annotation = self._pyannote_as_annotation(output)
             turns = []
-            for turn, _, speaker in diarization.itertracks(yield_label=True):
+            for turn, _, speaker in annotation.itertracks(yield_label=True):
                 turns.append(
                     (
                         int(turn.start * 1000),
@@ -363,6 +362,7 @@ class SpeakerDiarizer:
                 )
 
             # Mark overlaps: any time point covered by >1 speaker
+            intervals: List[SpeakerInterval] = []
             for i, (s, e, spk) in enumerate(turns):
                 is_overlap = False
                 for j, (s2, e2, spk2) in enumerate(turns):
@@ -385,6 +385,20 @@ class SpeakerDiarizer:
                 os.unlink(path)
             except OSError:
                 pass
+
+    @staticmethod
+    def _pyannote_as_annotation(output: Any) -> Any:
+        """
+        pyannote.audio 3.x returns Annotation (has itertracks).
+        pyannote.audio 4.x returns DiarizeOutput with .speaker_diarization.
+        """
+        if hasattr(output, "itertracks"):
+            return output
+        for attr in ("speaker_diarization", "exclusive_speaker_diarization"):
+            ann = getattr(output, attr, None)
+            if ann is not None and hasattr(ann, "itertracks"):
+                return ann
+        raise TypeError(f"Unsupported pyannote output type: {type(output)!r}")
 
     def _normalize_speaker(self, label: str) -> str:
         label = str(label)

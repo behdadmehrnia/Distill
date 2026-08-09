@@ -405,7 +405,16 @@ class MeetingSession:
                 result = await self._transcribe_with_retry(chunk.audio, lang)
                 if result is None:
                     continue
-                text = await self._gate_stt_text(result.text)
+                raw = (result.text or "").strip()
+                if not raw:
+                    # Common for quiet hops that still clear min_speech_rms
+                    logger.debug(
+                        "STT empty chunk %dms-%dms (rms gate passed, model returned '')",
+                        chunk.start_ms,
+                        chunk.end_ms,
+                    )
+                    continue
+                text = await self._gate_stt_text(raw)
                 if not text:
                     continue
                 words = self._words_abs(chunk.start_ms, result)
@@ -664,7 +673,8 @@ class MeetingSession:
                         }
                     )
                     return
-                text = await self._gate_stt_text(result.text)
+                raw = (result.text or "").strip()
+                text = await self._gate_stt_text(raw) if raw else None
                 words = self._words_abs(chunk.start_ms, result) if text else None
                 if words:
                     self._stt_with_timings += 1

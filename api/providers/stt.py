@@ -20,6 +20,18 @@ DEFAULT_MODEL = "gapgpt/whisper-1"
 DEFAULT_ENDPOINT = "https://api.gapgpt.app/v1/audio/transcriptions"
 _MAX_ERROR_BODY = 240
 
+# Models known to reject response_format=verbose_json (OpenAI transcribe family).
+_NO_VERBOSE_JSON_MARKERS = (
+    "gpt-4o-mini-transcribe",
+    "gpt-4o-transcribe",
+    "gpt-4o-transcribe-diarize",
+)
+
+
+def _model_supports_verbose_json(model: str) -> bool:
+    name = (model or "").lower()
+    return not any(marker in name for marker in _NO_VERBOSE_JSON_MARKERS)
+
 
 def _format_http_error(status: int, body: str, content_type: str = "") -> str:
     """Compact STT HTTP errors; avoid logging full HTML 404 pages."""
@@ -149,13 +161,22 @@ class OpenAICompatibleSTT:
                     )
         return words
 
+    @staticmethod
+    def _normalize_payload(payload: Any) -> Dict[str, Any]:
+        """Accept dict JSON or bare string bodies from OpenAI-compatible APIs."""
+        if isinstance(payload, dict):
+            return payload
+        if isinstance(payload, str):
+            return {"text": payload}
+        return {}
+
     async def _post_transcribe(
         self,
         wav_content: bytes,
         model: Optional[str],
         language: Optional[str],
         *,
-        verbose: bool,
+        response_format: str,
     ) -> Dict[str, Any]:
         headers = {}
         if self.api_key:
@@ -170,8 +191,8 @@ class OpenAICompatibleSTT:
         )
         form.add_field("language", language or "fa")
         form.add_field("model", model or self.model)
-        if verbose:
-            form.add_field("response_format", "verbose_json")
+        form.add_field("response_format", response_format)
+        if response_format == "verbose_json":
             # OpenAI-compatible optional hint; ignored by endpoints that don't support it
             form.add_field("timestamp_granularities[]", "word")
 
@@ -183,7 +204,15 @@ class OpenAICompatibleSTT:
                     raise RuntimeError(
                         _format_http_error(response.status, error_text, ctype)
                     )
-                return await response.json()
+                ctype = (response.headers.get("Content-Type") or "").lower()
+                if response_format == "text" or "application/json" not in ctype:
+                    body = await response.text()
+                    # Some gateways still return JSON even when text was requested
+                    try:
+                        return self._normalize_payload(json.loads(body))
+                    except json.JSONDecodeError:
+                        return {"text": body}
+                return self._normalize_payload(await response.json())
 
     async def transcribe_detailed(
         self,
@@ -216,25 +245,37 @@ class OpenAICompatibleSTT:
 
         self.cache_misses += 1
         wav_content = self._pcm_to_wav(pcm_bytes)
+        chosen_model = model or self.model
 
         result: Dict[str, Any] = {}
         words: List[TimedWord] = []
+        # Skip probing models that never support word timestamps.
+        if self._verbose_supported is None and not _model_supports_verbose_json(
+            chosen_model
+        ):
+            self._verbose_supported = False
+
         want_verbose = self._verbose_supported is not False
         if want_verbose:
             try:
                 result = await self._post_transcribe(
-                    wav_content, model, language, verbose=True
+                    wav_content,
+                    model,
+                    language,
+                    response_format="verbose_json",
                 )
                 words = self._parse_words(result)
                 self._verbose_supported = True
             except Exception as exc:
-                logger.info("verbose_json STT unavailable (%s); falling back to text", exc)
+                logger.info(
+                    "verbose_json STT unavailable (%s); falling back to json", exc
+                )
                 self._verbose_supported = False
                 result = {}
 
         if not result:
             result = await self._post_transcribe(
-                wav_content, model, language, verbose=False
+                wav_content, model, language, response_format="json"
             )
             words = self._parse_words(result)
 

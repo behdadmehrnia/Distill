@@ -214,6 +214,41 @@ async def update_speaker_map(request: Request, meeting_id: str) -> Dict[str, Any
     return record.to_dict()
 
 
+@router.patch("/meetings/{meeting_id}/segments/{segment_id}")
+async def update_segment_text(
+    request: Request, meeting_id: str, segment_id: str
+) -> Dict[str, Any]:
+    """Edit finalized (non-provisional) segment text. Body: {"text": "..."}."""
+    store = request.app.state.manager.store
+    if not store.get_meeting(meeting_id):
+        raise HTTPException(status_code=404, detail="meeting not found")
+    try:
+        raw = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid json") from exc
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="expected object")
+    if "text" not in raw:
+        raise HTTPException(status_code=400, detail="text is required")
+    try:
+        updated = store.update_segment_text(meeting_id, segment_id, str(raw["text"]))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="segment not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    payload = {
+        "type": "segment_update",
+        "meeting_id": meeting_id,
+        "segments": [s.to_dict() for s in updated],
+    }
+    await broadcast(request.app, meeting_id, payload)
+    return {
+        "meeting_id": meeting_id,
+        "segments": [s.to_dict() for s in updated],
+    }
+
+
 @router.post("/meetings/{meeting_id}/stop")
 async def stop_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
     session = request.app.state.manager.get_or_restore(meeting_id)

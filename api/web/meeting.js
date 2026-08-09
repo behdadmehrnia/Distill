@@ -16,6 +16,8 @@ class DistillClient {
     this._cachedInsights = null;
     this._lastDebug = null;
     this._prevGroupSnapshot = [];
+    this._editingSegmentId = null;
+    this._editingDraft = "";
     this._reduceMotion =
       typeof window !== "undefined" &&
       window.matchMedia &&
@@ -426,7 +428,7 @@ class DistillClient {
   startTimer() {
     this._timerStartedAt = Date.now();
     if (this.recordTimer) {
-      this.recordTimer.classList.remove("idle");
+      this.recordTimer.classList.remove("idle", "is-processing");
       this.recordTimer.textContent = "00:00";
     }
     this.stopTimer(false);
@@ -447,7 +449,35 @@ class DistillClient {
       this._timerInterval = null;
     }
     if (resetDisplay && this.recordTimer) {
+      this.recordTimer.classList.remove("is-processing");
       this.recordTimer.classList.add("idle");
+    }
+  }
+
+  setRecordingControls({ recording = false, processing = false } = {}) {
+    if (!this.startBtn || !this.stopBtn) return;
+    if (processing) {
+      this.startBtn.classList.add("hidden");
+      this.stopBtn.classList.remove("hidden");
+      this.stopBtn.disabled = true;
+      this.stopBtn.classList.add("is-processing");
+      this.stopBtn.textContent = "در حال پردازش…";
+      if (this.recordTimer) {
+        this.recordTimer.classList.remove("idle");
+        this.recordTimer.classList.add("is-processing");
+      }
+      return;
+    }
+    this.stopBtn.disabled = false;
+    this.stopBtn.classList.remove("is-processing");
+    this.stopBtn.textContent = "توقف";
+    if (this.recordTimer) this.recordTimer.classList.remove("is-processing");
+    if (recording) {
+      this.startBtn.classList.add("hidden");
+      this.stopBtn.classList.remove("hidden");
+    } else {
+      this.startBtn.classList.remove("hidden");
+      this.stopBtn.classList.add("hidden");
     }
   }
 
@@ -649,8 +679,7 @@ class DistillClient {
       await this.connectWebSocket(this.meetingId);
       await this.startMic();
       this.isRecording = true;
-      this.startBtn.classList.add("hidden");
-      this.stopBtn.classList.remove("hidden");
+      this.setRecordingControls({ recording: true });
       this.setStatus("recording", "در حال ضبط");
       this.audioLevel.classList.remove("hidden");
       this.startTimer();
@@ -670,8 +699,7 @@ class DistillClient {
         } catch (_) {}
         this.meetingStatus = "stopped";
       }
-      this.startBtn.classList.remove("hidden");
-      this.stopBtn.classList.add("hidden");
+      this.setRecordingControls({ recording: false });
       this.audioLevel.classList.add("hidden");
       this.stopTimer(false);
       if (this.levelMeter) this.levelMeter.classList.remove("active");
@@ -689,6 +717,11 @@ class DistillClient {
       this.isRecording = false;
       this.meetingStatus = "processing";
       this.stopMic();
+      this.stopTimer(false);
+      this.setRecordingControls({ processing: true });
+      this.audioLevel.classList.add("hidden");
+      if (this.levelMeter) this.levelMeter.classList.remove("active");
+      this.updateInsightsAvailability();
       // Only stop via HTTP — avoid double-stop race with WS "stop"
       if (this.meetingId) {
         this.setStatus("processing", "در حال پردازش…");
@@ -718,8 +751,7 @@ class DistillClient {
         try { this.ws.close(); } catch (_) {}
         this.ws = null;
       }
-      this.startBtn.classList.remove("hidden");
-      this.stopBtn.classList.add("hidden");
+      this.setRecordingControls({ recording: false });
       this.audioLevel.classList.add("hidden");
       this.stopTimer(false);
       if (this.levelMeter) this.levelMeter.classList.remove("active");
@@ -825,6 +857,17 @@ class DistillClient {
         this.replaceTranscript(msg.segments);
       } else if (msg.type === "segment" && msg.segment) {
         this.upsertSegment(msg.segment);
+      } else if (msg.type === "segment_update" && Array.isArray(msg.segments)) {
+        msg.segments.forEach((s) => this.segments.set(s.id, s));
+        if (
+          !this._editingSegmentId ||
+          !msg.segments.some((s) => s.id === this._editingSegmentId)
+        ) {
+          this.renderTimeline();
+          this._prevGroupSnapshot = this.buildTimelineGroups(
+            Array.from(this.segments.values()).filter((s) => (s.text || "").trim())
+          ).map((g) => this.snapshotGroup(g));
+        }
       } else if (msg.type === "status") {
         if (msg.status) this.meetingStatus = msg.status;
         if (msg.status === "processing") this.setStatus("processing", "در حال پردازش");
@@ -864,6 +907,13 @@ class DistillClient {
   }
 
   replaceTranscript(segments) {
+    if (this._editingSegmentId) {
+      // Avoid wiping an in-progress edit; sync after blur/save.
+      const nextList = (segments || []).filter((s) => (s.text || "").trim());
+      this.segments.clear();
+      nextList.forEach((s) => this.segments.set(s.id, s));
+      return;
+    }
     const nextList = (segments || []).filter((s) => (s.text || "").trim());
     const nextGroups = this.buildTimelineGroups(nextList);
     const mergeFx = this.detectMergePolish(this._prevGroupSnapshot, nextGroups);
@@ -1070,17 +1120,28 @@ class DistillClient {
       const row = document.createElement("div");
       const isLive = !!g.seg.provisional;
       const isActive = key === activeKey;
+      const isEditable = !isLive;
       row.className = g.type === "overlap" ? "segment segment-overlap" : "segment";
       if (isLive) row.classList.add("segment-live");
       if (isActive) row.classList.add("segment-listening");
+      if (isEditable) row.classList.add("segment-finalized", "segment-editable");
       if (polishKeys.has(key)) row.classList.add("segment-polish");
       row.dataset.groupKey = key;
+      row.dataset.segmentId = g.seg.id;
+      row.dataset.editable = isEditable ? "1" : "0";
 
-      const provisional = isLive
-        ? '<span class="badge badge-muted">موقت</span>'
-        : polishKeys.has(key)
-          ? '<span class="badge badge-polish">پالیش‌شده</span>'
-          : "";
+      let statusBadge = "";
+      if (isActive) {
+        statusBadge =
+          '<span class="badge badge-active">فعال</span>' +
+          '<span class="badge badge-locked">درحال پردازش متن فعال (غیر قابل ویرایش)</span>';
+      } else if (isLive) {
+        statusBadge = '<span class="badge badge-muted">موقت</span>';
+      } else if (polishKeys.has(key)) {
+        statusBadge = '<span class="badge badge-polish">پالیش‌شده</span>';
+      } else {
+        statusBadge = '<span class="badge badge-editable">قابل ویرایش</span>';
+      }
       const speakerHtml = g.speakers
         .map((spk) => {
           const color = this.speakerColor(spk);
@@ -1095,23 +1156,38 @@ class DistillClient {
         g.type === "overlap"
           ? '<span class="badge">هم‌صحبتی</span>'
           : "";
+      const editHint = isEditable
+        ? '<span class="segment-edit-hint" aria-hidden="true">ویرایش</span>'
+        : "";
 
       row.innerHTML = `
         <div class="segment-meta">
           <div class="speaker-row">${speakerHtml}</div>
           <span>${this.formatTs(g.seg.start_ms)} – ${this.formatTs(g.seg.end_ms)}</span>
-          ${badge}${provisional}
+          ${badge}${statusBadge}${editHint}
         </div>
         <div class="segment-text" data-role="text"></div>
       `;
 
       const textEl = row.querySelector('[data-role="text"]');
+      const justPolished = polishKeys.has(key);
       this.applyStreamingText(
         textEl,
         g.seg.text || "",
         prev ? prev.text : "",
-        polishKeys.has(key)
+        justPolished
       );
+      if (isEditable) {
+        if (justPolished && !this._reduceMotion) {
+          window.setTimeout(() => {
+            if (!textEl.isConnected) return;
+            textEl.textContent = g.seg.text || "";
+            this.enableSegmentEditing(textEl, g.seg);
+          }, 920);
+        } else {
+          this.enableSegmentEditing(textEl, g.seg);
+        }
+      }
 
       row.querySelectorAll("[data-speaker-id]").forEach((btn) => {
         btn.addEventListener("click", (ev) => {
@@ -1123,6 +1199,90 @@ class DistillClient {
     });
     this.timeline.scrollTop = this.timeline.scrollHeight;
     this.updateInsightsAvailability();
+  }
+
+  enableSegmentEditing(textEl, seg) {
+    if (!textEl || !seg || !seg.id) return;
+    textEl.contentEditable = "true";
+    textEl.spellcheck = true;
+    textEl.setAttribute("role", "textbox");
+    textEl.setAttribute("aria-label", "ویرایش متن بخش");
+    textEl.setAttribute("data-segment-id", seg.id);
+    textEl.title = "برای ویرایش کلیک کنید — Enter برای ذخیره، Esc برای انصراف";
+
+    textEl.addEventListener("focus", () => {
+      this._editingSegmentId = seg.id;
+      this._editingDraft = textEl.innerText || "";
+      textEl.closest(".segment")?.classList.add("segment-editing");
+    });
+
+    textEl.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        textEl.textContent = this._editingDraft;
+        textEl.blur();
+        return;
+      }
+      if (ev.key === "Enter" && !ev.shiftKey) {
+        ev.preventDefault();
+        textEl.blur();
+      }
+    });
+
+    textEl.addEventListener("blur", () => {
+      textEl.closest(".segment")?.classList.remove("segment-editing");
+      const next = (textEl.innerText || "").trim();
+      const prev = (this._editingDraft || "").trim();
+      const editingId = this._editingSegmentId;
+      this._editingSegmentId = null;
+      this._editingDraft = "";
+      if (!editingId || editingId !== seg.id) return;
+      if (!next) {
+        textEl.textContent = prev || seg.text || "";
+        this.renderTimeline();
+        return;
+      }
+      if (next === prev) {
+        this.renderTimeline();
+        return;
+      }
+      this.saveSegmentText(seg.id, next, textEl, prev)
+        .then(() => this.renderTimeline())
+        .catch((err) => {
+          console.error(err);
+          textEl.textContent = prev;
+          alert(`ذخیره ویرایش ناموفق: ${err.message}`);
+        });
+    });
+  }
+
+  async saveSegmentText(segmentId, text, textEl, fallback) {
+    if (!this.meetingId || !segmentId) return;
+    textEl?.closest(".segment")?.classList.add("segment-saving");
+    try {
+      const res = await fetch(
+        `/meetings/${this.meetingId}/segments/${encodeURIComponent(segmentId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        }
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const body = await res.json();
+      (body.segments || []).forEach((s) => this.segments.set(s.id, s));
+      const local = this.segments.get(segmentId);
+      if (local) local.text = text;
+      if (textEl) textEl.textContent = text;
+      this._prevGroupSnapshot = this.buildTimelineGroups(
+        Array.from(this.segments.values()).filter((s) => (s.text || "").trim())
+      ).map((g) => this.snapshotGroup(g));
+    } catch (err) {
+      if (textEl && fallback != null) textEl.textContent = fallback;
+      throw err;
+    } finally {
+      textEl?.closest(".segment")?.classList.remove("segment-saving");
+    }
   }
 
   applyStreamingText(el, newText, oldText, isPolish) {
@@ -1193,7 +1353,21 @@ class DistillClient {
   }
 
   speakerLabel(speakerId) {
-    return this.speakerMap[speakerId] || speakerId;
+    const mapped = this.speakerMap[speakerId];
+    if (mapped) return mapped;
+    return this.defaultSpeakerLabel(speakerId);
+  }
+
+  defaultSpeakerLabel(speakerId) {
+    const match = String(speakerId || "").match(/(\d+)\s*$/);
+    if (!match) return String(speakerId || "سخنگو");
+    const n = parseInt(match[1], 10);
+    if (!Number.isFinite(n)) return String(speakerId);
+    return `سخنگوی ${this.toPersianDigits(n + 1)}`;
+  }
+
+  toPersianDigits(value) {
+    return String(value).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]);
   }
 
   speakerColor(speakerId) {
@@ -1211,8 +1385,9 @@ class DistillClient {
 
   async renameSpeaker(speakerId) {
     if (!this.meetingId || !speakerId) return;
-    const current = this.speakerLabel(speakerId);
-    const name = window.prompt(`نام نمایشی برای ${speakerId}:`, current === speakerId ? "" : current);
+    const fallback = this.defaultSpeakerLabel(speakerId);
+    const current = this.speakerMap[speakerId] || fallback;
+    const name = window.prompt(`نام نمایشی برای ${fallback}:`, current === fallback ? "" : current);
     if (name == null) return;
     const trimmed = String(name).trim();
     if (!trimmed) return;

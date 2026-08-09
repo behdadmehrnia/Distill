@@ -220,6 +220,17 @@ def _mark_overlaps(turns: List[tuple[int, int, str]]) -> List[IntervalOut]:
     return sorted(intervals, key=lambda x: x.start_ms)
 
 
+def _as_annotation(output: Any) -> Any:
+    """pyannote 3.x → Annotation; 4.x → DiarizeOutput.speaker_diarization."""
+    if hasattr(output, "itertracks"):
+        return output
+    for attr in ("speaker_diarization", "exclusive_speaker_diarization"):
+        ann = getattr(output, attr, None)
+        if ann is not None and hasattr(ann, "itertracks"):
+            return ann
+    raise TypeError(f"Unsupported pyannote output type: {type(output)!r}")
+
+
 def _run_pipeline(
     audio: np.ndarray,
     sample_rate: int,
@@ -252,15 +263,16 @@ def _run_pipeline(
 
         try:
             waveform = torch.from_numpy(audio).unsqueeze(0)
-            diarization = state.pipeline(
+            output = state.pipeline(
                 {"waveform": waveform, "sample_rate": sample_rate},
                 **kwargs,
             )
         except Exception:
-            diarization = state.pipeline(path, **kwargs)
+            output = state.pipeline(path, **kwargs)
 
+        annotation = _as_annotation(output)
         turns: List[tuple[int, int, str]] = []
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
+        for turn, _, speaker in annotation.itertracks(yield_label=True):
             turns.append(
                 (
                     int(turn.start * 1000),
