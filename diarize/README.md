@@ -35,7 +35,18 @@ Diarize: `POST /v1/diarize` (multipart WAV + optional `min_speakers` / `max_spea
 
 Needs roughly **≥2Gi** RAM. Weights land in the `diarize-cache` volume.
 
-## Point the API at it
+## Alternative: run locally (no Docker)
+
+```bash
+# Accept gated model terms on Hugging Face first (same account as HF_TOKEN).
+# Ensure .env has HF_TOKEN and preferably:
+#   HF_ENDPOINT=https://hf-mirror.com
+
+./diarize/run_local.sh
+# then: curl -s http://127.0.0.1:8090/health
+```
+
+Keep `DIARIZATION_ENDPOINT=http://127.0.0.1:8090` for `python -m api`.
 
 In the repo `.env`:
 
