@@ -40,5 +40,7 @@ cache_metadata.json
 *.m4b
 *.m4p
 *.m4v
-*.m4b
-*.m4pdiarize/.venv/
+
+diarize/.venv/
+# Offline pyannote weights are intentionally tracked (~31MB total).
+# diarize/models/*.bin

@@ -28,8 +28,15 @@ export CUDA_VISIBLE_DEVICES=""
 mkdir -p "$HF_HOME" "$TORCH_HOME"
 
 if [[ -z "${HF_TOKEN:-}" && -z "${HUGGINGFACE_TOKEN:-}" && -z "${HUGGING_FACE_HUB_TOKEN:-}" ]]; then
-  echo "ERROR: HF_TOKEN missing in environment / $ENV_FILE" >&2
-  exit 1
+  # Local offline weights do not need a token.
+  SEG="$DIR/models/pyannote_model_segmentation-3.0.bin"
+  EMB="$DIR/models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
+  if [[ ! -f "$SEG" || ! -f "$EMB" ]]; then
+    echo "ERROR: HF_TOKEN missing and offline weights not found in diarize/models/" >&2
+    echo "See diarize/models/README.md" >&2
+    exit 1
+  fi
+  echo "==> offline weights detected; HF_TOKEN not required"
 fi
 
 echo "==> HF_ENDPOINT=$HF_ENDPOINT"
@@ -65,8 +72,14 @@ echo "==> installing CPU torch + pyannote (first run can take a while)"
 "$PY" -m pip install -q --index-url https://download.pytorch.org/whl/cpu --force-reinstall --no-deps torch torchaudio
 "$PY" -c "import torch; assert torch.version.cuda is None; print('torch', torch.__version__, 'cpu-only OK')"
 
-echo "==> prefetching pyannote/speaker-diarization-3.1 (and deps)"
-"$PY" - <<'PY'
+SEG="$DIR/models/pyannote_model_segmentation-3.0.bin"
+EMB="$DIR/models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
+if [[ -f "$SEG" && -f "$EMB" ]]; then
+  echo "==> using offline weights in diarize/models/ (skip Hub prefetch)"
+  export PYANNOTE_CONFIG="${PYANNOTE_CONFIG:-$DIR/models/pyannote_diarization_config.yaml}"
+else
+  echo "==> prefetching pyannote models from Hub"
+  "$PY" - <<'PY'
 import os
 from huggingface_hub import snapshot_download
 
@@ -89,6 +102,7 @@ for mid in models:
     except Exception as exc:
         print(f"  WARN {mid}: {exc}")
 PY
+fi
 
 echo "==> starting diarize server on :$PORT"
 cd "$DIR"

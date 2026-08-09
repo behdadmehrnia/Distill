@@ -3,59 +3,43 @@
 Runs `pyannote/speaker-diarization-3.1` as a separate HTTP service so the light
 API (`python -m api`) does not load torch.
 
-## Prerequisites
+## Offline weights (recommended when Hub downloads fail)
 
-1. `HF_TOKEN` in the repo `.env` (read-access token).
-2. Accept gated terms while logged into Hugging Face:
-   - https://huggingface.co/pyannote/speaker-diarization-3.1
-   - https://huggingface.co/pyannote/segmentation-3.0
-3. Outbound access to the Hub (or a mirror). If `huggingface.co` is blocked,
-   add to `.env`:
+Download **two** files on any machine/browser that can reach Hugging Face
+(after accepting gated terms), rename them exactly, and put them in
+`diarize/models/`:
 
-```bash
-HF_ENDPOINT=https://hf-mirror.com
-```
+| Download | Save as |
+|----------|---------|
+| [segmentation-3.0 `pytorch_model.bin`](https://huggingface.co/pyannote/segmentation-3.0/resolve/main/pytorch_model.bin) | `pyannote_model_segmentation-3.0.bin` |
+| [wespeaker embedding `pytorch_model.bin`](https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM/resolve/main/pytorch_model.bin) | `pyannote_model_wespeaker-voxceleb-resnet34-LM.bin` |
 
-## Run
+Also accept [speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) terms (needed to authorize the downloads).
 
-```bash
-cd diarize
-docker compose up -d --build
-curl -s http://127.0.0.1:8090/health
-# wait until "ready": true  (first download can take several minutes)
-```
-
-If the model failed earlier and you fixed network/token:
+Then:
 
 ```bash
-curl -X POST http://127.0.0.1:8090/v1/reload
-```
-
-Diarize: `POST /v1/diarize` (multipart WAV + optional `min_speakers` / `max_speakers`)
-
-Needs roughly **≥2Gi** RAM. Weights land in the `diarize-cache` volume.
-
-## Alternative: run locally (no Docker)
-
-```bash
-# Accept gated model terms on Hugging Face first (same account as HF_TOKEN).
-# Ensure .env has HF_TOKEN and preferably:
-#   HF_ENDPOINT=https://hf-mirror.com
-
 ./diarize/run_local.sh
-# then: curl -s http://127.0.0.1:8090/health
+curl -s http://127.0.0.1:8090/health
+# want: "ready": true, "local": true
 ```
 
-Keep `DIARIZATION_ENDPOINT=http://127.0.0.1:8090` for `python -m api`.
+No Hub access needed at runtime once the `.bin` files are present.
 
-In the repo `.env`:
+## Hub download (optional)
+
+1. `HF_TOKEN` in `.env`
+2. Accept gated terms for the models above
+3. Prefer **no** `HF_ENDPOINT` (hf-mirror often 308-redirects and breaks downloads)
+4. `./diarize/run_local.sh` or `cd diarize && docker compose up -d --build`
+
+## Point the API at it
 
 ```bash
+# .env
 DIARIZATION_ENDPOINT=http://127.0.0.1:8090
 DISTILL_ENABLE_PYANNOTE=0
 ```
-
-Then:
 
 ```bash
 python -m api

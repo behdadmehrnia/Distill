@@ -8,6 +8,7 @@ import os
 import tempfile
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import numpy as np
@@ -22,6 +23,36 @@ logging.basicConfig(
 )
 
 MODEL_ID = os.getenv("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1")
+# Local offline config (see diarize/models/README.md). When set, Hub download is skipped.
+_LOCAL_CONFIG = (os.getenv("PYANNOTE_CONFIG") or "").strip()
+DIARIZE_ROOT = Path(__file__).resolve().parent
+
+
+def _resolve_model_source() -> str:
+    """Return Hub model id OR absolute path to a local pipeline YAML."""
+    if _LOCAL_CONFIG:
+        path = Path(_LOCAL_CONFIG)
+        if not path.is_absolute():
+            # Try cwd, then repo-relative from diarize/, then diarize/ itself.
+            candidates = [
+                path,
+                DIARIZE_ROOT.parent / path,
+                DIARIZE_ROOT / path,
+                DIARIZE_ROOT / "models" / path.name,
+            ]
+            for cand in candidates:
+                if cand.is_file():
+                    return str(cand.resolve())
+            return str((DIARIZE_ROOT / path).resolve())
+        return str(path.resolve())
+    # Auto-detect default offline layout if weights are present.
+    default_cfg = DIARIZE_ROOT / "models" / "pyannote_diarization_config.yaml"
+    seg = DIARIZE_ROOT / "models" / "pyannote_model_segmentation-3.0.bin"
+    emb = DIARIZE_ROOT / "models" / "pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
+    if default_cfg.is_file() and seg.is_file() and emb.is_file():
+        return str(default_cfg.resolve())
+    return MODEL_ID
+
 
 
 class IntervalOut(BaseModel):
@@ -57,29 +88,38 @@ class PipelineState:
             self._load()
 
     def _load(self) -> None:
+        source = _resolve_model_source()
+        local = Path(source).is_file()
         token = (
             os.getenv("HF_TOKEN")
             or os.getenv("HUGGINGFACE_TOKEN")
             or os.getenv("HUGGING_FACE_HUB_TOKEN")
             or ""
         ).strip()
-        if not token:
+
+        if not local and not token:
             self.backend = "error"
-            self.error = "HF_TOKEN not set"
+            self.error = (
+                "HF_TOKEN not set (required for Hub download). "
+                "Or place offline weights under diarize/models/ — see models/README.md"
+            )
             self._permanent_fail = True
             logger.error(self.error)
             return
 
-        hub = (
-            os.getenv("HF_ENDPOINT")
-            or os.getenv("HUGGINGFACE_HUB_ENDPOINT")
-            or "https://huggingface.co"
-        )
-        logger.info(
-            "Loading %s (HF_ENDPOINT=%s, token=set)",
-            MODEL_ID,
-            hub.rstrip("/"),
-        )
+        if local:
+            logger.info("Loading pyannote from local config %s", source)
+        else:
+            hub = (
+                os.getenv("HF_ENDPOINT")
+                or os.getenv("HUGGINGFACE_HUB_ENDPOINT")
+                or "https://huggingface.co"
+            )
+            logger.info(
+                "Loading %s (HF_ENDPOINT=%s, token=set)",
+                source,
+                hub.rstrip("/"),
+            )
 
         try:
             from pyannote.audio import Pipeline  # type: ignore
@@ -91,15 +131,29 @@ class PipelineState:
             return
 
         try:
+            # Local YAML paths are relative to diarize/ (embedding/segmentation files).
+            prev_cwd = Path.cwd()
             try:
-                pipeline = Pipeline.from_pretrained(MODEL_ID, token=token)
-            except TypeError:
-                pipeline = Pipeline.from_pretrained(MODEL_ID, use_auth_token=token)
+                if local:
+                    os.chdir(DIARIZE_ROOT)
+                if local:
+                    pipeline = Pipeline.from_pretrained(source)
+                else:
+                    try:
+                        pipeline = Pipeline.from_pretrained(source, token=token)
+                    except TypeError:
+                        pipeline = Pipeline.from_pretrained(
+                            source, use_auth_token=token
+                        )
+            finally:
+                if local:
+                    os.chdir(prev_cwd)
+
             self.pipeline = pipeline
             self.backend = "pyannote"
             self.error = None
             self._permanent_fail = False
-            logger.info("Loaded %s", MODEL_ID)
+            logger.info("Loaded %s", source)
         except Exception as exc:
             msg = str(exc)
             self.backend = "error"
@@ -107,7 +161,7 @@ class PipelineState:
             # Auth / gated-model / missing-token style errors won't fix themselves
             # without config changes; Hub connectivity can be retried.
             lower = msg.lower()
-            permanent = any(
+            permanent = local or any(
                 tip in lower
                 for tip in (
                     "401",
@@ -117,15 +171,17 @@ class PipelineState:
                     "invalid username or password",
                     "invalid token",
                     "cannot access gated",
+                    "no such file",
+                    "not found",
                 )
             )
             self._permanent_fail = permanent
             logger.exception(
                 "Failed to load %s (permanent=%s). "
-                "Accept model terms on Hugging Face, check HF_TOKEN, "
-                "and if huggingface.co is blocked set HF_ENDPOINT "
-                "(e.g. https://hf-mirror.com).",
-                MODEL_ID,
+                "For offline use put .bin weights in diarize/models/ "
+                "(see models/README.md). For Hub: accept gated terms, check HF_TOKEN, "
+                "and avoid broken HF_ENDPOINT mirrors.",
+                source,
                 permanent,
             )
 
@@ -238,12 +294,14 @@ app = FastAPI(
 
 @app.get("/health")
 def health() -> dict:
+    source = _resolve_model_source()
     return {
         "status": "ok" if state.backend != "error" else "error",
         "service": "distill-diarize",
         "ready": state.ready,
         "backend": state.backend,
-        "model": MODEL_ID,
+        "model": source,
+        "local": Path(source).is_file(),
         "error": state.error,
         "hf_endpoint": (
             os.getenv("HF_ENDPOINT")
