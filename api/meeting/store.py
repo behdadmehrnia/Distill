@@ -8,8 +8,11 @@ from typing import Any, Dict, List, Optional
 
 from .models import (
     MeetingInsights,
+    MeetingMinutes,
     MeetingRecord,
     MeetingStatus,
+    MinutesDecision,
+    SpeakerInterval,
     TranscriptSegment,
 )
 
@@ -74,6 +77,35 @@ class TranscriptStore:
                         action_items TEXT NOT NULL,
                         raw_json TEXT,
                         created_at REAL NOT NULL,
+                        FOREIGN KEY(meeting_id) REFERENCES meetings(id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS speaker_intervals (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        meeting_id TEXT NOT NULL,
+                        speaker_id TEXT NOT NULL,
+                        start_ms INTEGER NOT NULL,
+                        end_ms INTEGER NOT NULL,
+                        is_overlap INTEGER NOT NULL DEFAULT 0,
+                        FOREIGN KEY(meeting_id) REFERENCES meetings(id)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_speaker_intervals_meeting
+                        ON speaker_intervals(meeting_id);
+
+                    CREATE TABLE IF NOT EXISTS minutes (
+                        meeting_id TEXT PRIMARY KEY,
+                        subject TEXT NOT NULL DEFAULT '',
+                        meeting_date TEXT NOT NULL DEFAULT '',
+                        location TEXT NOT NULL DEFAULT '',
+                        attendees TEXT NOT NULL DEFAULT '[]',
+                        absentees TEXT NOT NULL DEFAULT '[]',
+                        secretary TEXT NOT NULL DEFAULT '',
+                        summary TEXT NOT NULL DEFAULT '',
+                        decisions TEXT NOT NULL DEFAULT '[]',
+                        raw_json TEXT,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL,
                         FOREIGN KEY(meeting_id) REFERENCES meetings(id)
                     );
                     """
@@ -327,6 +359,60 @@ class TranscriptStore:
             finally:
                 conn.close()
 
+    def replace_speaker_intervals(
+        self, meeting_id: str, intervals: List[SpeakerInterval]
+    ) -> None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "DELETE FROM speaker_intervals WHERE meeting_id = ?", (meeting_id,)
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO speaker_intervals (
+                        meeting_id, speaker_id, start_ms, end_ms, is_overlap
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            meeting_id,
+                            iv.speaker_id,
+                            iv.start_ms,
+                            iv.end_ms,
+                            1 if iv.is_overlap else 0,
+                        )
+                        for iv in intervals
+                    ],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_speaker_intervals(self, meeting_id: str) -> List[SpeakerInterval]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM speaker_intervals
+                    WHERE meeting_id = ?
+                    ORDER BY start_ms ASC
+                    """,
+                    (meeting_id,),
+                ).fetchall()
+                return [
+                    SpeakerInterval(
+                        speaker_id=r["speaker_id"],
+                        start_ms=r["start_ms"],
+                        end_ms=r["end_ms"],
+                        is_overlap=bool(r["is_overlap"]),
+                    )
+                    for r in rows
+                ]
+            finally:
+                conn.close()
+
     def delete_provisional_segments(self, meeting_id: str) -> None:
         with self._lock:
             conn = self._connect()
@@ -399,6 +485,88 @@ class TranscriptStore:
             conn = self._connect()
             try:
                 conn.execute("DELETE FROM insights WHERE meeting_id = ?", (meeting_id,))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def save_minutes(self, minutes: MeetingMinutes) -> None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO minutes (
+                        meeting_id, subject, meeting_date, location, attendees,
+                        absentees, secretary, summary, decisions, raw_json,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(meeting_id) DO UPDATE SET
+                        subject=excluded.subject,
+                        meeting_date=excluded.meeting_date,
+                        location=excluded.location,
+                        attendees=excluded.attendees,
+                        absentees=excluded.absentees,
+                        secretary=excluded.secretary,
+                        summary=excluded.summary,
+                        decisions=excluded.decisions,
+                        raw_json=excluded.raw_json,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        minutes.meeting_id,
+                        minutes.subject,
+                        minutes.meeting_date,
+                        minutes.location,
+                        json.dumps(minutes.attendees, ensure_ascii=False),
+                        json.dumps(minutes.absentees, ensure_ascii=False),
+                        minutes.secretary,
+                        minutes.summary,
+                        json.dumps(
+                            [d.to_dict() for d in minutes.decisions], ensure_ascii=False
+                        ),
+                        json.dumps(minutes.raw_json, ensure_ascii=False)
+                        if minutes.raw_json
+                        else None,
+                        minutes.created_at,
+                        minutes.updated_at,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_minutes(self, meeting_id: str) -> Optional[MeetingMinutes]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM minutes WHERE meeting_id = ?", (meeting_id,)
+                ).fetchone()
+                if not row:
+                    return None
+                decisions_raw = json.loads(row["decisions"] or "[]")
+                return MeetingMinutes(
+                    meeting_id=row["meeting_id"],
+                    subject=row["subject"] or "",
+                    meeting_date=row["meeting_date"] or "",
+                    location=row["location"] or "",
+                    attendees=json.loads(row["attendees"] or "[]"),
+                    absentees=json.loads(row["absentees"] or "[]"),
+                    secretary=row["secretary"] or "",
+                    summary=row["summary"] or "",
+                    decisions=[MinutesDecision.from_dict(d) for d in decisions_raw],
+                    raw_json=json.loads(row["raw_json"]) if row["raw_json"] else None,
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                )
+            finally:
+                conn.close()
+
+    def delete_minutes(self, meeting_id: str) -> None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("DELETE FROM minutes WHERE meeting_id = ?", (meeting_id,))
                 conn.commit()
             finally:
                 conn.close()

@@ -139,6 +139,109 @@ def test_segment_text_patch(tmp_path):
         assert missing.status_code == 404
 
 
+def test_speakers_list_and_sample_audio(tmp_path):
+    import wave
+
+    from api.meeting.models import SpeakerInterval, TranscriptSegment
+
+    with _make_client(tmp_path) as client:
+        created = client.post("/meetings", json={"title": "سخنگوها", "start": False})
+        meeting_id = created.json()["id"]
+        store = client.app.state.manager.store
+
+        store.save_segment(
+            TranscriptSegment.create(
+                meeting_id=meeting_id,
+                speaker_id="SPEAKER_00",
+                start_ms=0,
+                end_ms=2000,
+                text="سلام وقت بخیر",
+                provisional=False,
+            )
+        )
+        store.replace_speaker_intervals(
+            meeting_id,
+            [SpeakerInterval(speaker_id="SPEAKER_00", start_ms=0, end_ms=2000, is_overlap=False)],
+        )
+
+        no_audio = client.get(f"/meetings/{meeting_id}/speakers")
+        assert no_audio.status_code == 200
+        speakers = no_audio.json()["speakers"]
+        assert len(speakers) == 1
+        assert speakers[0]["id"] == "SPEAKER_00"
+        assert speakers[0]["label"] == "سخنگوی ۱"
+        assert speakers[0]["has_sample"] is True
+
+        audio_dir = tmp_path / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        wav_path = audio_dir / f"{meeting_id}.wav"
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b"\x00\x00" * 16000 * 2)
+        meeting = store.get_meeting(meeting_id)
+        meeting.audio_path = str(wav_path)
+        store.save_meeting(meeting)
+
+        sample = client.get(f"/meetings/{meeting_id}/speakers/SPEAKER_00/audio")
+        assert sample.status_code == 200
+        assert sample.headers["content-type"] == "audio/wav"
+        assert len(sample.content) > 0
+
+        missing_speaker = client.get(f"/meetings/{meeting_id}/speakers/SPEAKER_09/audio")
+        assert missing_speaker.status_code == 404
+
+        rename = client.patch(
+            f"/meetings/{meeting_id}/speakers", json={"SPEAKER_00": "مریم"}
+        )
+        assert rename.status_code == 200
+        after_rename = client.get(f"/meetings/{meeting_id}/speakers")
+        assert after_rename.json()["speakers"][0]["label"] == "مریم"
+
+
+def test_minutes_generate_get_put(tmp_path):
+    from api.meeting.models import TranscriptSegment
+
+    with _make_client(tmp_path) as client:
+        created = client.post("/meetings", json={"title": "صورتجلسه", "start": False})
+        meeting_id = created.json()["id"]
+        store = client.app.state.manager.store
+
+        missing = client.get(f"/meetings/{meeting_id}/minutes")
+        assert missing.status_code == 404
+
+        edited = client.put(
+            f"/meetings/{meeting_id}/minutes",
+            json={
+                "subject": "بررسی بودجه",
+                "meeting_date": "1404/05/18",
+                "location": "اتاق جلسات",
+                "attendees": ["مریم", "علی"],
+                "absentees": [],
+                "secretary": "مریم",
+                "summary": "خلاصه دستی",
+                "decisions": [
+                    {
+                        "description": "تهیه گزارش مالی",
+                        "executor": "علی",
+                        "due_date": "1404/05/25",
+                        "status": "pending",
+                    }
+                ],
+            },
+        )
+        assert edited.status_code == 200
+        body = edited.json()
+        assert body["subject"] == "بررسی بودجه"
+        assert body["decisions"][0]["executor"] == "علی"
+
+        fetched = client.get(f"/meetings/{meeting_id}/minutes")
+        assert fetched.status_code == 200
+        assert fetched.json()["subject"] == "بررسی بودجه"
+        assert fetched.json()["decisions"][0]["description"] == "تهیه گزارش مالی"
+
+
 def test_recording_endpoint_and_restart(tmp_path):
     with _make_client(tmp_path) as client:
         created = client.post("/meetings", json={"title": "ضبط", "start": False})

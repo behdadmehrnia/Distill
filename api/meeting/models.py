@@ -91,6 +91,60 @@ class MeetingInsights:
 
 
 @dataclass
+class MinutesDecision:
+    id: str
+    description: str
+    executor: str = ""
+    due_date: str = ""
+    status: str = "pending"  # pending | done
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "MinutesDecision":
+        return MinutesDecision(
+            id=str(data.get("id") or uuid.uuid4()),
+            description=str(data.get("description") or "").strip(),
+            executor=str(data.get("executor") or "").strip(),
+            due_date=str(data.get("due_date") or "").strip(),
+            status=str(data.get("status") or "pending").strip() or "pending",
+        )
+
+
+@dataclass
+class MeetingMinutes:
+    meeting_id: str
+    subject: str = ""
+    meeting_date: str = ""
+    location: str = ""
+    attendees: List[str] = field(default_factory=list)
+    absentees: List[str] = field(default_factory=list)
+    secretary: str = ""
+    summary: str = ""
+    decisions: List[MinutesDecision] = field(default_factory=list)
+    raw_json: Optional[Dict[str, Any]] = None
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "meeting_id": self.meeting_id,
+            "subject": self.subject,
+            "meeting_date": self.meeting_date,
+            "location": self.location,
+            "attendees": self.attendees,
+            "absentees": self.absentees,
+            "secretary": self.secretary,
+            "summary": self.summary,
+            "decisions": [d.to_dict() for d in self.decisions],
+            "raw_json": self.raw_json,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+@dataclass
 class MeetingRecord:
     id: str
     title: str

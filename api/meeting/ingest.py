@@ -113,3 +113,28 @@ class AudioIngest:
             wf.setframerate(self.sample_rate)
             wf.writeframes(pcm.tobytes())
         return bio.getvalue()
+
+    @staticmethod
+    def slice_wav_file(path: str, start_ms: int, end_ms: int) -> bytes:
+        """Read a mono WAV file on disk and return WAV bytes for [start_ms, end_ms)."""
+        with wave.open(path, "rb") as wf:
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            n_frames = wf.getnframes()
+
+            start_frame = max(0, int(start_ms * framerate / 1000))
+            end_frame = min(n_frames, int(end_ms * framerate / 1000))
+            if end_frame <= start_frame:
+                start_frame, end_frame = 0, n_frames
+
+            wf.setpos(start_frame)
+            frames = wf.readframes(end_frame - start_frame)
+
+            bio = io.BytesIO()
+            with wave.open(bio, "wb") as out:
+                out.setnchannels(n_channels)
+                out.setsampwidth(sampwidth)
+                out.setframerate(framerate)
+                out.writeframes(frames)
+            return bio.getvalue()

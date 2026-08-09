@@ -12,12 +12,19 @@ class DistillClient {
     this.meetingStatus = null;
     this.segments = new Map();
     this.speakerMap = {};
-    this._insightsBusy = false;
-    this._cachedInsights = null;
     this._lastDebug = null;
     this._prevGroupSnapshot = [];
     this._editingSegmentId = null;
     this._editingDraft = "";
+    this._reviewWizardOpen = false;
+    this._reviewStep = null;
+    this._confirmedSpeakers = new Set();
+    this._speakerList = [];
+    this._minutesAttendees = [];
+    this._minutesAbsentees = [];
+    this._minutesDecisions = [];
+    this._minutesSaveTimer = null;
+    this._activeSpeakerAudio = null;
     this._reduceMotion =
       typeof window !== "undefined" &&
       window.matchMedia &&
@@ -39,7 +46,6 @@ class DistillClient {
     this.stopBtn = document.getElementById("stopBtn");
     this.uploadBtn = document.getElementById("uploadBtn");
     this.uploadFile = document.getElementById("uploadFile");
-    this.insightsBtn = document.getElementById("insightsBtn");
     this.clearBtn = document.getElementById("clearBtn");
     this.timeline = document.getElementById("timeline");
     this.connectionStatus = document.getElementById("connectionStatus");
@@ -48,7 +54,6 @@ class DistillClient {
     this.audioInput = document.getElementById("audioInput");
     this.meetingTitle = document.getElementById("meetingTitle");
     this.meetingMeta = document.getElementById("meetingMeta");
-    this.insightsPanel = document.getElementById("insightsPanel");
     this.recordTimer = document.getElementById("recordTimer");
     this.levelMeter = document.getElementById("levelMeter");
     this.statusChip = document.getElementById("statusChip");
@@ -70,6 +75,36 @@ class DistillClient {
     this.confirmOkBtn = document.getElementById("confirmOkBtn");
     this.confirmCancelBtn = document.getElementById("confirmCancelBtn");
     this._confirmResolver = null;
+
+    this.reviewWizard = document.getElementById("reviewWizard");
+    this.reviewStepDots = this.reviewWizard
+      ? Array.from(this.reviewWizard.querySelectorAll(".review-step-dot"))
+      : [];
+    this.reviewStepProcessing = document.getElementById("reviewStepProcessing");
+    this.reviewStepSpeakers = document.getElementById("reviewStepSpeakers");
+    this.reviewStepTranscript = document.getElementById("reviewStepTranscript");
+    this.reviewStepMinutes = document.getElementById("reviewStepMinutes");
+    this.reviewWizardFoot = document.getElementById("reviewWizardFoot");
+    this.closeReviewWizardBtn = document.getElementById("closeReviewWizardBtn");
+    this.processingPhaseList = document.getElementById("processingPhaseList");
+    this.speakerNamingList = document.getElementById("speakerNamingList");
+    this.speakersContinueBtn = document.getElementById("speakersContinueBtn");
+    this.transcriptReviewList = document.getElementById("transcriptReviewList");
+    this.transcriptContinueBtn = document.getElementById("transcriptContinueBtn");
+    this.minutesLoading = document.getElementById("minutesLoading");
+    this.minutesForm = document.getElementById("minutesForm");
+    this.minutesSubject = document.getElementById("minutesSubject");
+    this.minutesDate = document.getElementById("minutesDate");
+    this.minutesLocation = document.getElementById("minutesLocation");
+    this.minutesSecretary = document.getElementById("minutesSecretary");
+    this.minutesAttendeesList = document.getElementById("minutesAttendeesList");
+    this.minutesAttendeesInput = document.getElementById("minutesAttendeesInput");
+    this.minutesAbsenteesList = document.getElementById("minutesAbsenteesList");
+    this.minutesAbsenteesInput = document.getElementById("minutesAbsenteesInput");
+    this.minutesSummary = document.getElementById("minutesSummary");
+    this.minutesDecisionsEl = document.getElementById("minutesDecisions");
+    this.minutesSaveStatus = document.getElementById("minutesSaveStatus");
+    this.reopenReviewBtn = document.getElementById("reopenReviewBtn");
 
     this.bindEvents();
     this.loadAudioDevices();
@@ -115,14 +150,13 @@ class DistillClient {
       if (this.meetingMeta) {
         this.meetingMeta.textContent = `جلسه یافت نشد: ${meetingId}`;
       }
-      this.updateInsightsAvailability();
+      this.updateReviewAvailability();
       return;
     }
     const meeting = await res.json();
     this.meetingId = meeting.id;
     this.meetingStatus = meeting.status || "stopped";
     this.speakerMap = { ...(meeting.speaker_map || {}) };
-    this._cachedInsights = null;
     this.setHasRecording(!!meeting.has_recording);
     if (this.meetingTitle) {
       this.meetingTitle.value = meeting.title || "";
@@ -131,16 +165,6 @@ class DistillClient {
     this.setMeetingMeta();
     this.setSessionUrl(meeting.id);
     await this.refreshTranscript();
-
-    // Load saved insights if any (ignore 404)
-    try {
-      const insightsRes = await fetch(`/meetings/${meeting.id}/insights`);
-      if (insightsRes.ok) {
-        const insights = await insightsRes.json();
-        // Keep panel closed; just enable knowing history exists
-        this._cachedInsights = insights;
-      }
-    } catch (_) {}
 
     const status = meeting.status || "stopped";
     this.meetingStatus = status;
@@ -151,14 +175,13 @@ class DistillClient {
     } else {
       this.setStatus("connected", "تاریخچه جلسه بارگذاری شد");
     }
-    this.updateInsightsAvailability();
+    this.updateReviewAvailability();
   }
 
   bindEvents() {
     this.startBtn.addEventListener("click", () => this.startLive());
     this.stopBtn.addEventListener("click", () => this.stopLive());
     this.uploadBtn.addEventListener("click", () => this.uploadRecording());
-    this.insightsBtn.addEventListener("click", () => this.generateInsights());
     this.clearBtn.addEventListener("click", () => this.clearTimeline(true));
     if (this.confirmCancelBtn) {
       this.confirmCancelBtn.addEventListener("click", () => this.resolveConfirm(false));
@@ -225,14 +248,73 @@ class DistillClient {
       });
     }
 
-    const closeInsights = document.getElementById("closeInsightsBtn");
-    if (closeInsights) {
-      closeInsights.addEventListener("click", () => this.closeInsights());
+    if (this.closeReviewWizardBtn) {
+      this.closeReviewWizardBtn.addEventListener("click", () => this.closeReviewWizard());
     }
-    if (this.insightsPanel) {
-      this.insightsPanel.addEventListener("click", (ev) => {
-        if (ev.target === this.insightsPanel) this.closeInsights();
+    if (this.reviewWizard) {
+      this.reviewWizard.addEventListener("click", (ev) => {
+        if (ev.target === this.reviewWizard) this.closeReviewWizard();
       });
+    }
+    if (this.speakersContinueBtn) {
+      this.speakersContinueBtn.addEventListener("click", () => this.onSpeakersContinue());
+    }
+    if (this.transcriptContinueBtn) {
+      this.transcriptContinueBtn.addEventListener("click", () => this.onTranscriptContinue());
+    }
+    if (this.transcriptReviewList) {
+      this.transcriptReviewList.addEventListener("click", (ev) => {
+        const btn = ev.target.closest("[data-speaker-id]");
+        if (btn) {
+          ev.preventDefault();
+          this.renameSpeaker(btn.getAttribute("data-speaker-id"));
+        }
+      });
+    }
+    if (this.speakerNamingList) {
+      this.speakerNamingList.addEventListener("click", (ev) => {
+        const btn = ev.target.closest(".speaker-play-btn");
+        if (btn) this.toggleSpeakerSample(btn);
+      });
+    }
+    if (this.reopenReviewBtn) {
+      this.reopenReviewBtn.addEventListener("click", () => this.openExistingMinutes());
+    }
+    const minutesAttendeesAdd = document.getElementById("minutesAttendeesAddBtn");
+    if (minutesAttendeesAdd) {
+      minutesAttendeesAdd.addEventListener("click", () => this.addMinutesChip("attendees"));
+    }
+    if (this.minutesAttendeesInput) {
+      this.minutesAttendeesInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          this.addMinutesChip("attendees");
+        }
+      });
+    }
+    const minutesAbsenteesAdd = document.getElementById("minutesAbsenteesAddBtn");
+    if (minutesAbsenteesAdd) {
+      minutesAbsenteesAdd.addEventListener("click", () => this.addMinutesChip("absentees"));
+    }
+    if (this.minutesAbsenteesInput) {
+      this.minutesAbsenteesInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          this.addMinutesChip("absentees");
+        }
+      });
+    }
+    const minutesAddDecision = document.getElementById("minutesAddDecisionBtn");
+    if (minutesAddDecision) {
+      minutesAddDecision.addEventListener("click", () => this.addMinutesDecisionRow());
+    }
+    const minutesSave = document.getElementById("minutesSaveBtn");
+    if (minutesSave) {
+      minutesSave.addEventListener("click", () => this.saveMinutes());
+    }
+    const minutesRegenerate = document.getElementById("minutesRegenerateBtn");
+    if (minutesRegenerate) {
+      minutesRegenerate.addEventListener("click", () => this.generateMinutes());
     }
   }
 
@@ -485,12 +567,12 @@ class DistillClient {
     if (!this.meetingMeta) return;
     if (!this.meetingId) {
       this.meetingMeta.textContent = "جلسه‌ای انتخاب نشده";
-      this.updateInsightsAvailability();
+      this.updateReviewAvailability();
       return;
     }
     this.meetingMeta.innerHTML =
       `شناسه جلسه: <button type="button" class="session-link" data-copy-session title="کلیک برای کپی لینک جلسه">${this.escape(this.meetingId)}</button>`;
-    this.updateInsightsAvailability();
+    this.updateReviewAvailability();
   }
 
   setHasRecording(has) {
@@ -594,18 +676,14 @@ class DistillClient {
     return words.length >= 1 && words.join("").length >= 2;
   }
 
-  canShowInsights() {
-    if (!this.meetingId) return false;
-    if (this.isRecording || this.meetingStatus === "recording") return false;
-    return this.hasTranscriptContext();
-  }
-
-  updateInsightsAvailability() {
-    if (!this.insightsBtn) return;
-    const canShow = this.canShowInsights();
-    const visible = canShow || this._insightsBusy;
-    this.insightsBtn.classList.toggle("hidden", !visible);
-    this.insightsBtn.disabled = !canShow || this._insightsBusy;
+  updateReviewAvailability() {
+    if (!this.reopenReviewBtn) return;
+    const canShow =
+      !!this.meetingId &&
+      this.meetingStatus === "stopped" &&
+      !this.isRecording &&
+      this.hasTranscriptContext();
+    this.reopenReviewBtn.classList.toggle("hidden", !canShow);
   }
 
   requireMeetingTitle() {
@@ -670,7 +748,6 @@ class DistillClient {
       this.meetingId = meeting.id;
       this.meetingStatus = "recording";
       this.speakerMap = { ...(meeting.speaker_map || {}) };
-      this._cachedInsights = null;
       this.setHasRecording(false);
       this.setMeetingMeta();
       this.setSessionUrl(meeting.id);
@@ -684,7 +761,7 @@ class DistillClient {
       this.audioLevel.classList.remove("hidden");
       this.startTimer();
       if (this.levelMeter) this.levelMeter.classList.add("active");
-      this.updateInsightsAvailability();
+      this.updateReviewAvailability();
     } catch (err) {
       console.error(err);
       this.isRecording = false;
@@ -703,7 +780,7 @@ class DistillClient {
       this.audioLevel.classList.add("hidden");
       this.stopTimer(false);
       if (this.levelMeter) this.levelMeter.classList.remove("active");
-      this.updateInsightsAvailability();
+      this.updateReviewAvailability();
 
       const micHint = this.micUnavailableReason();
       const message = micHint || err.message || String(err);
@@ -721,7 +798,8 @@ class DistillClient {
       this.setRecordingControls({ processing: true });
       this.audioLevel.classList.add("hidden");
       if (this.levelMeter) this.levelMeter.classList.remove("active");
-      this.updateInsightsAvailability();
+      this.updateReviewAvailability();
+      this.openReviewWizard();
       // Only stop via HTTP — avoid double-stop race with WS "stop"
       if (this.meetingId) {
         this.setStatus("processing", "در حال پردازش…");
@@ -742,10 +820,16 @@ class DistillClient {
         } else {
           this.setStatus("connected", "متوقف شد — آماده تحلیل");
         }
+        if (hasText) {
+          await this.advanceToSpeakerStep();
+        } else {
+          this.closeReviewWizard(true);
+        }
       }
     } catch (err) {
       console.error(err);
       this.setStatus("disconnected", "خطا در توقف");
+      this.closeReviewWizard(true);
     } finally {
       if (this.ws) {
         try { this.ws.close(); } catch (_) {}
@@ -755,7 +839,7 @@ class DistillClient {
       this.audioLevel.classList.add("hidden");
       this.stopTimer(false);
       if (this.levelMeter) this.levelMeter.classList.remove("active");
-      this.updateInsightsAvailability();
+      this.updateReviewAvailability();
     }
   }
 
@@ -870,7 +954,10 @@ class DistillClient {
         }
       } else if (msg.type === "status") {
         if (msg.status) this.meetingStatus = msg.status;
-        if (msg.status === "processing") this.setStatus("processing", "در حال پردازش");
+        if (msg.status === "processing") {
+          this.setStatus("processing", "در حال پردازش");
+          if (msg.phase) this.updateProcessingPhase(msg.phase);
+        }
         if (msg.status === "transcribing" && msg.progress) {
           const p = msg.progress;
           const done = p.done != null ? p.done : p.chunk;
@@ -884,7 +971,7 @@ class DistillClient {
           this.refreshDebug().catch(() => {});
         }
         if (msg.status === "recording") this.setStatus("recording", "در حال ضبط");
-        this.updateInsightsAvailability();
+        this.updateReviewAvailability();
       } else if (msg.type === "speaker_update") {
         this.refreshTranscript().catch(() => {});
       } else if (msg.type === "speaker_map" && msg.speaker_map) {
@@ -895,8 +982,6 @@ class DistillClient {
         if (msg.code === "fallback_diarization") {
           this.setStatus("processing", "هشدار: diarization ساده (بدون pyannote)");
         }
-      } else if (msg.type === "insights") {
-        this.renderInsights(msg.insights);
       } else if (msg.type === "error") {
         console.error(msg.message);
         this.setStatus("processing", `خطا: ${String(msg.message || "").slice(0, 80)}`);
@@ -956,7 +1041,7 @@ class DistillClient {
         <div class="rec-ring">●</div>
         <p>برای شروع ضبط، دکمه زرد را بزنید.</p>
       </div>`;
-    this.updateInsightsAvailability();
+    this.updateReviewAvailability();
   }
 
   snapshotGroup(g) {
@@ -1198,7 +1283,7 @@ class DistillClient {
       this.timeline.appendChild(row);
     });
     this.timeline.scrollTop = this.timeline.scrollHeight;
-    this.updateInsightsAvailability();
+    this.updateReviewAvailability();
   }
 
   enableSegmentEditing(textEl, seg) {
@@ -1407,6 +1492,524 @@ class DistillClient {
     }
   }
 
+  openReviewWizard() {
+    if (!this.reviewWizard) return;
+    this._reviewWizardOpen = true;
+    this.reviewWizard.classList.remove("hidden");
+    this.resetProcessingPhases();
+    this.setReviewStep("processing");
+  }
+
+  closeReviewWizard(force = false) {
+    if (!force && this._reviewStep !== "minutes") return;
+    this._reviewWizardOpen = false;
+    this.stopSpeakerSamplePlayback();
+    if (this.reviewWizard) this.reviewWizard.classList.add("hidden");
+  }
+
+  setReviewStep(step) {
+    this._reviewStep = step;
+    const map = {
+      processing: this.reviewStepProcessing,
+      speakers: this.reviewStepSpeakers,
+      transcript: this.reviewStepTranscript,
+      minutes: this.reviewStepMinutes,
+    };
+    Object.entries(map).forEach(([key, el]) => {
+      if (el) el.classList.toggle("active", key === step);
+    });
+    const order = ["processing", "speakers", "transcript", "minutes"];
+    const idx = order.indexOf(step);
+    this.reviewStepDots.forEach((dot) => {
+      const dotStep = dot.getAttribute("data-step");
+      const dotIdx = order.indexOf(dotStep);
+      dot.classList.toggle("is-active", dotStep === step);
+      dot.classList.toggle("is-done", dotIdx >= 0 && dotIdx < idx);
+    });
+    // User cannot exit the wizard until the final (minutes) step is reached.
+    if (this.reviewWizardFoot) {
+      this.reviewWizardFoot.classList.toggle("hidden", step !== "minutes");
+    }
+  }
+
+  resetProcessingPhases() {
+    if (!this.processingPhaseList) return;
+    this.processingPhaseList.querySelectorAll("li").forEach((li) => {
+      li.classList.remove("is-active", "is-done");
+    });
+  }
+
+  updateProcessingPhase(phase) {
+    if (!this.processingPhaseList) return;
+    const items = Array.from(this.processingPhaseList.querySelectorAll("li"));
+    const idx = items.findIndex((li) => li.getAttribute("data-phase") === phase);
+    if (idx === -1) return;
+    items.forEach((li, i) => {
+      li.classList.toggle("is-done", i < idx);
+      li.classList.toggle("is-active", i === idx);
+    });
+  }
+
+  markProcessingDone() {
+    if (!this.processingPhaseList) return;
+    this.processingPhaseList.querySelectorAll("li").forEach((li) => {
+      li.classList.remove("is-active");
+      li.classList.add("is-done");
+    });
+  }
+
+  async advanceToSpeakerStep() {
+    if (!this._reviewWizardOpen) return;
+    this.markProcessingDone();
+    this.setReviewStep("speakers");
+    await this.loadSpeakerNamingStep();
+  }
+
+  stopSpeakerSamplePlayback() {
+    if (this._activeSpeakerAudio) {
+      try {
+        this._activeSpeakerAudio.pause();
+      } catch (_) {}
+      this._activeSpeakerAudio = null;
+    }
+  }
+
+  toggleSpeakerSample(btn) {
+    const src = btn.getAttribute("data-audio-src");
+    if (!src) return;
+    if (!btn._audio) {
+      const audio = new Audio(src);
+      audio.preload = "none";
+      audio.addEventListener("timeupdate", () => {
+        const pct = audio.duration ? audio.currentTime / audio.duration : 0;
+        btn.style.setProperty("--progress", `${Math.min(1, Math.max(0, pct)) * 360}deg`);
+      });
+      audio.addEventListener("play", () => {
+        btn.classList.add("is-playing");
+      });
+      audio.addEventListener("pause", () => {
+        btn.classList.remove("is-playing");
+      });
+      audio.addEventListener("ended", () => {
+        btn.classList.remove("is-playing");
+        btn.style.setProperty("--progress", "0deg");
+      });
+      btn._audio = audio;
+    }
+    const audio = btn._audio;
+    if (this._activeSpeakerAudio && this._activeSpeakerAudio !== audio) {
+      this._activeSpeakerAudio.pause();
+    }
+    if (audio.paused) {
+      audio.currentTime = audio.ended ? 0 : audio.currentTime;
+      audio.play().catch((err) => console.error(err));
+      this._activeSpeakerAudio = audio;
+    } else {
+      audio.pause();
+    }
+  }
+
+  async loadSpeakerNamingStep() {
+    if (!this.meetingId || !this.speakerNamingList) return;
+    this.stopSpeakerSamplePlayback();
+    this._confirmedSpeakers = new Set();
+    this.speakerNamingList.innerHTML = '<p class="review-hint">در حال بارگذاری سخنگوها…</p>';
+    if (this.speakersContinueBtn) this.speakersContinueBtn.disabled = true;
+    try {
+      const res = await fetch(`/meetings/${this.meetingId}/speakers`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      this._speakerList = data.speakers || [];
+      this.renderSpeakerNamingList();
+    } catch (err) {
+      console.error(err);
+      this.speakerNamingList.innerHTML =
+        '<p class="review-hint">دریافت لیست سخنگوها ناموفق بود.</p>';
+    }
+  }
+
+  renderSpeakerNamingList() {
+    if (!this.speakerNamingList) return;
+    this.speakerNamingList.innerHTML = "";
+    if (!this._speakerList.length) {
+      this.speakerNamingList.innerHTML =
+        '<p class="review-hint">سخنگویی شناسایی نشد؛ می‌توانید مستقیم ادامه دهید.</p>';
+      if (this.speakersContinueBtn) this.speakersContinueBtn.disabled = false;
+      return;
+    }
+    this._speakerList.forEach((spk) => {
+      const card = document.createElement("div");
+      card.className = "speaker-naming-card";
+      card.dataset.speakerId = spk.id;
+      const color = this.speakerColor(spk.id);
+      const audioSrc = `/meetings/${this.meetingId}/speakers/${encodeURIComponent(spk.id)}/audio`;
+      const audioHtml = spk.has_sample
+        ? `<button type="button" class="speaker-play-btn" data-audio-src="${this.escape(audioSrc)}" aria-label="پخش نمونه صدا">
+            <svg class="play-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            <svg class="pause-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+          </button>`
+        : '<span class="speaker-naming-status">نمونه صدایی موجود نیست</span>';
+      card.innerHTML = `
+        <span class="speaker-naming-dot" style="background:${color}"></span>
+        <input
+          type="text"
+          class="speaker-naming-name"
+          value="${this.escape(spk.custom_label || "")}"
+          placeholder="${this.escape(spk.label)}"
+        />
+        ${audioHtml}
+        <span class="speaker-naming-status">${spk.custom_label ? "ثبت شد" : "در انتظار نام"}</span>
+      `;
+      if (spk.custom_label) {
+        card.classList.add("is-confirmed");
+        this._confirmedSpeakers.add(spk.id);
+      }
+      const input = card.querySelector(".speaker-naming-name");
+      input.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          input.blur();
+        }
+      });
+      input.addEventListener("blur", () => {
+        this.confirmSpeakerName(spk.id, input, card);
+      });
+      this.speakerNamingList.appendChild(card);
+    });
+    this.updateSpeakersContinueState();
+  }
+
+  async confirmSpeakerName(speakerId, input, card) {
+    const value = (input.value || "").trim();
+    const statusEl = card.querySelector(".speaker-naming-status");
+    if (!value) {
+      this._confirmedSpeakers.delete(speakerId);
+      card.classList.remove("is-confirmed");
+      if (statusEl) statusEl.textContent = "در انتظار نام";
+      this.updateSpeakersContinueState();
+      return;
+    }
+    try {
+      const res = await fetch(`/meetings/${this.meetingId}/speakers`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [speakerId]: value }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const meeting = await res.json();
+      this.speakerMap = { ...(meeting.speaker_map || {}) };
+      this._confirmedSpeakers.add(speakerId);
+      card.classList.add("is-confirmed");
+      if (statusEl) statusEl.textContent = "ثبت شد";
+      this.renderTimeline();
+    } catch (err) {
+      console.error(err);
+      if (statusEl) statusEl.textContent = "خطا در ذخیره";
+    }
+    this.updateSpeakersContinueState();
+  }
+
+  updateSpeakersContinueState() {
+    if (!this.speakersContinueBtn) return;
+    const allConfirmed = this._speakerList.every((s) => this._confirmedSpeakers.has(s.id));
+    this.speakersContinueBtn.disabled = !allConfirmed;
+  }
+
+  async onSpeakersContinue() {
+    this.setReviewStep("transcript");
+    await this.loadTranscriptReviewStep();
+  }
+
+  async loadTranscriptReviewStep() {
+    if (!this.transcriptReviewList) return;
+    this.transcriptReviewList.innerHTML = '<p class="review-hint">در حال بارگذاری متن…</p>';
+    try {
+      await this.refreshTranscript();
+    } catch (err) {
+      console.error(err);
+    }
+    this.renderTranscriptReviewList();
+  }
+
+  renderTranscriptReviewList() {
+    if (!this.transcriptReviewList) return;
+    const list = Array.from(this.segments.values()).filter(
+      (s) => !s.provisional && (s.text || "").trim()
+    );
+    const groups = this.buildTimelineGroups(list);
+    this.transcriptReviewList.innerHTML = "";
+    if (!groups.length) {
+      this.transcriptReviewList.innerHTML =
+        '<p class="review-hint">متنی برای نمایش وجود ندارد.</p>';
+      return;
+    }
+    groups.forEach((g) => {
+      const row = document.createElement("div");
+      row.className = "transcript-review-row";
+      row.dataset.segmentId = g.seg.id;
+      const speakerHtml = g.speakers
+        .map((spk) => {
+          const color = this.speakerColor(spk);
+          const label = this.speakerLabel(spk);
+          return `<button type="button" class="speaker-chip" data-speaker-id="${this.escape(spk)}" title="کلیک برای نام‌گذاری">
+            <span class="speaker-dot" style="background:${color}"></span>
+            <span class="speaker-name" style="color:${color}">${this.escape(label)}</span>
+          </button>`;
+        })
+        .join("");
+      row.innerHTML = `
+        <div class="transcript-review-meta">
+          <span class="speaker-row">${speakerHtml}</span>
+          <span>${this.formatTs(g.seg.start_ms)} – ${this.formatTs(g.seg.end_ms)}</span>
+        </div>
+        <div class="transcript-review-text" contenteditable="true" spellcheck="true"></div>
+      `;
+      const textEl = row.querySelector(".transcript-review-text");
+      textEl.textContent = g.seg.text || "";
+      this.bindTranscriptReviewEditing(textEl, g.seg, row);
+      this.transcriptReviewList.appendChild(row);
+    });
+  }
+
+  bindTranscriptReviewEditing(textEl, seg, row) {
+    let draft = "";
+    textEl.addEventListener("focus", () => {
+      draft = textEl.innerText || "";
+    });
+    textEl.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        textEl.textContent = draft;
+        textEl.blur();
+        return;
+      }
+      if (ev.key === "Enter" && !ev.shiftKey) {
+        ev.preventDefault();
+        textEl.blur();
+      }
+    });
+    textEl.addEventListener("blur", () => {
+      const next = (textEl.innerText || "").trim();
+      const prev = draft.trim();
+      if (!next) {
+        textEl.textContent = prev || seg.text || "";
+        return;
+      }
+      if (next === prev) {
+        textEl.textContent = next;
+        return;
+      }
+      row.classList.add("is-saving");
+      this.saveSegmentText(seg.id, next, textEl, prev)
+        .then(() => this.renderTimeline())
+        .catch((err) => {
+          console.error(err);
+          alert(`ذخیره ویرایش ناموفق: ${err.message}`);
+        })
+        .finally(() => row.classList.remove("is-saving"));
+    });
+  }
+
+  async onTranscriptContinue() {
+    this.setReviewStep("minutes");
+    await this.generateMinutes();
+  }
+
+  showMinutesLoading(loading) {
+    if (this.minutesLoading) this.minutesLoading.classList.toggle("hidden", !loading);
+    if (this.minutesForm) this.minutesForm.classList.toggle("hidden", loading);
+  }
+
+  async generateMinutes() {
+    if (!this.meetingId) return;
+    this.showMinutesLoading(true);
+    try {
+      const res = await fetch(`/meetings/${this.meetingId}/minutes/generate`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      this.renderMinutesForm(data);
+    } catch (err) {
+      console.error(err);
+      alert(`تولید صورت جلسه ناموفق بود؛ فرم خالی برای تکمیل دستی نمایش داده می‌شود.\n${err.message}`);
+      this.renderMinutesForm({
+        subject: "",
+        meeting_date: "",
+        location: "",
+        secretary: "",
+        summary: "",
+        attendees: Object.values(this.speakerMap || {}),
+        absentees: [],
+        decisions: [],
+      });
+    } finally {
+      this.showMinutesLoading(false);
+    }
+  }
+
+  renderMinutesForm(data) {
+    this._minutesAttendees = [...(data.attendees || [])];
+    this._minutesAbsentees = [...(data.absentees || [])];
+    this._minutesDecisions = (data.decisions || []).map((d) => ({
+      id: d.id || `d-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      description: d.description || "",
+      executor: d.executor || "",
+      due_date: d.due_date || "",
+      status: d.status || "pending",
+    }));
+    if (this.minutesSubject) this.minutesSubject.value = data.subject || "";
+    if (this.minutesDate) this.minutesDate.value = data.meeting_date || "";
+    if (this.minutesLocation) this.minutesLocation.value = data.location || "";
+    if (this.minutesSecretary) this.minutesSecretary.value = data.secretary || "";
+    if (this.minutesSummary) this.minutesSummary.value = data.summary || "";
+    this.renderMinutesChipList("attendees");
+    this.renderMinutesChipList("absentees");
+    this.renderMinutesDecisions();
+    if (this.minutesSaveStatus) this.minutesSaveStatus.classList.add("hidden");
+  }
+
+  renderMinutesChipList(kind) {
+    const listEl = kind === "attendees" ? this.minutesAttendeesList : this.minutesAbsenteesList;
+    const arr = kind === "attendees" ? this._minutesAttendees : this._minutesAbsentees;
+    if (!listEl) return;
+    listEl.innerHTML = "";
+    arr.forEach((name, idx) => {
+      const chip = document.createElement("span");
+      chip.className = "minutes-chip";
+      chip.innerHTML = `<span>${this.escape(name)}</span><button type="button" aria-label="حذف">×</button>`;
+      chip.querySelector("button").addEventListener("click", () => {
+        arr.splice(idx, 1);
+        this.renderMinutesChipList(kind);
+      });
+      listEl.appendChild(chip);
+    });
+  }
+
+  addMinutesChip(kind) {
+    const inputEl = kind === "attendees" ? this.minutesAttendeesInput : this.minutesAbsenteesInput;
+    const arr = kind === "attendees" ? this._minutesAttendees : this._minutesAbsentees;
+    const value = (inputEl?.value || "").trim();
+    if (!value) return;
+    if (!arr.includes(value)) arr.push(value);
+    if (inputEl) inputEl.value = "";
+    this.renderMinutesChipList(kind);
+  }
+
+  renderMinutesDecisions() {
+    if (!this.minutesDecisionsEl) return;
+    this.minutesDecisionsEl.innerHTML = "";
+    if (!this._minutesDecisions.length) {
+      this.minutesDecisionsEl.innerHTML =
+        '<p class="review-hint">مصوبه‌ای ثبت نشده — با «افزودن ردیف» یکی اضافه کنید.</p>';
+      return;
+    }
+    this._minutesDecisions.forEach((d) => {
+      const row = document.createElement("div");
+      row.className = "minutes-decision-row";
+      row.dataset.decisionId = d.id;
+      row.innerHTML = `
+        <textarea rows="2" data-field="description" placeholder="شرح مصوبه / پیگیری">${this.escape(d.description)}</textarea>
+        <input type="text" data-field="executor" placeholder="مجری" value="${this.escape(d.executor)}" />
+        <input type="text" data-field="due_date" placeholder="سررسید" value="${this.escape(d.due_date)}" />
+        <select data-field="status">
+          <option value="pending"${d.status === "pending" ? " selected" : ""}>در انتظار</option>
+          <option value="done"${d.status === "done" ? " selected" : ""}>انجام‌شده</option>
+        </select>
+        <button type="button" class="minutes-decision-remove">حذف</button>
+      `;
+      row.querySelectorAll("[data-field]").forEach((fieldEl) => {
+        const field = fieldEl.getAttribute("data-field");
+        const eventName = fieldEl.tagName === "SELECT" ? "change" : "input";
+        fieldEl.addEventListener(eventName, () => {
+          d[field] = fieldEl.value;
+        });
+      });
+      row.querySelector(".minutes-decision-remove").addEventListener("click", () => {
+        this._minutesDecisions = this._minutesDecisions.filter((x) => x.id !== d.id);
+        this.renderMinutesDecisions();
+      });
+      this.minutesDecisionsEl.appendChild(row);
+    });
+  }
+
+  addMinutesDecisionRow() {
+    this._minutesDecisions.push({
+      id: `d-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      description: "",
+      executor: "",
+      due_date: "",
+      status: "pending",
+    });
+    this.renderMinutesDecisions();
+  }
+
+  async saveMinutes() {
+    if (!this.meetingId) return;
+    const payload = {
+      subject: (this.minutesSubject?.value || "").trim(),
+      meeting_date: (this.minutesDate?.value || "").trim(),
+      location: (this.minutesLocation?.value || "").trim(),
+      secretary: (this.minutesSecretary?.value || "").trim(),
+      summary: (this.minutesSummary?.value || "").trim(),
+      attendees: [...this._minutesAttendees],
+      absentees: [...this._minutesAbsentees],
+      decisions: this._minutesDecisions
+        .map((d) => ({
+          id: d.id,
+          description: (d.description || "").trim(),
+          executor: (d.executor || "").trim(),
+          due_date: (d.due_date || "").trim(),
+          status: d.status || "pending",
+        }))
+        .filter((d) => d.description),
+    };
+    try {
+      const res = await fetch(`/meetings/${this.meetingId}/minutes`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      this.renderMinutesForm(data);
+      if (this.minutesSaveStatus) {
+        this.minutesSaveStatus.textContent = "ذخیره شد";
+        this.minutesSaveStatus.classList.remove("hidden");
+        clearTimeout(this._minutesSaveTimer);
+        this._minutesSaveTimer = setTimeout(() => {
+          this.minutesSaveStatus.classList.add("hidden");
+        }, 2500);
+      }
+      this.updateReviewAvailability();
+    } catch (err) {
+      console.error(err);
+      alert(`ذخیره صورت جلسه ناموفق: ${err.message}`);
+    }
+  }
+
+  async openExistingMinutes() {
+    if (!this.meetingId) return;
+    this.openReviewWizard();
+    this.markProcessingDone();
+    this.setReviewStep("minutes");
+    this.showMinutesLoading(true);
+    try {
+      const res = await fetch(`/meetings/${this.meetingId}/minutes`);
+      if (res.ok) {
+        const data = await res.json();
+        this.renderMinutesForm(data);
+        this.showMinutesLoading(false);
+      } else {
+        this.setReviewStep("speakers");
+        await this.loadSpeakerNamingStep();
+      }
+    } catch (err) {
+      console.error(err);
+      this.showMinutesLoading(false);
+    }
+  }
+
   async refreshDebug() {
     if (!this.meetingId) return;
     const res = await fetch(`/meetings/${this.meetingId}/debug`);
@@ -1479,7 +2082,6 @@ class DistillClient {
       this.meetingId = meeting.id;
       this.meetingStatus = meeting.status || "stopped";
       this.speakerMap = { ...(meeting.speaker_map || {}) };
-      this._cachedInsights = null;
       this.setMeetingMeta();
       this.setSessionUrl(meeting.id);
       this.clearTimeline(true);
@@ -1511,69 +2113,6 @@ class DistillClient {
         this.ws = null;
       }
     }
-  }
-
-  async generateInsights() {
-    if (!this.canShowInsights()) return;
-    try {
-      this._insightsBusy = true;
-      this.updateInsightsAvailability();
-      this.insightsBtn.textContent = "در حال تولید…";
-
-      // Show existing insights first if already saved for this session
-      if (this._cachedInsights) {
-        this.renderInsights(this._cachedInsights);
-      }
-
-      const res = await fetch(`/meetings/${this.meetingId}/insights`, {
-        method: "POST",
-      });
-      if (!res.ok) {
-        if (this._cachedInsights) return;
-        throw new Error(await res.text());
-      }
-      const data = await res.json();
-      this._cachedInsights = data;
-      this.renderInsights(data);
-    } catch (err) {
-      console.error(err);
-      if (!this._cachedInsights) {
-        alert(`تولید تحلیل ناموفق: ${err.message}`);
-      }
-    } finally {
-      this._insightsBusy = false;
-      this.insightsBtn.textContent = "تولید خلاصه و تصمیمات";
-      this.updateInsightsAvailability();
-    }
-  }
-
-  renderInsights(data) {
-    this.insightsPanel.classList.remove("hidden");
-    const summary = (data.summary || "").trim();
-    const summaryEl = document.getElementById("insightSummary");
-    summaryEl.textContent = summary || "خلاصه‌ای تولید نشد.";
-    summaryEl.style.color = summary ? "" : "var(--muted, #888)";
-    this.fillList("insightHighlights", data.highlights || []);
-    this.fillList("insightDecisions", data.decisions || []);
-    this.fillList("insightActions", data.action_items || []);
-  }
-
-  closeInsights() {
-    if (this.insightsPanel) this.insightsPanel.classList.add("hidden");
-  }
-
-  fillList(id, items) {
-    const el = document.getElementById(id);
-    el.innerHTML = "";
-    if (!items.length) {
-      el.innerHTML = '<li style="color:var(--muted)">موردی نیست</li>';
-      return;
-    }
-    items.forEach((item) => {
-      const li = document.createElement("li");
-      li.textContent = item;
-      el.appendChild(li);
-    });
   }
 
   escape(text) {

@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from api.config import Settings
 from api.meeting.diarization import SpeakerDiarizer
 from api.meeting.insights import MeetingInsightsGenerator
+from api.meeting.minutes import MeetingMinutesGenerator
 from api.meeting.review import TranscriptReviewAgent
 from api.meeting.session import MeetingManager
 from api.meeting.store import TranscriptStore
@@ -66,6 +67,7 @@ def _build_services(settings: Settings) -> Dict[str, Any]:
         merge_short_ms=int(tuning["merge_short_ms"]),
     )
     insights = MeetingInsightsGenerator(llm)
+    minutes_generator = MeetingMinutesGenerator(llm)
     review_agent = TranscriptReviewAgent(llm)
     manager = MeetingManager(
         store=store,
@@ -84,6 +86,7 @@ def _build_services(settings: Settings) -> Dict[str, Any]:
         "tuning": tuning,
         "manager": manager,
         "insights": insights,
+        "minutes": minutes_generator,
         "diarizer": diarizer,
         "ws_by_meeting": {},
     }
@@ -120,6 +123,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.state.tuning = services["tuning"]
     app.state.manager = services["manager"]
     app.state.insights = services["insights"]
+    app.state.minutes = services["minutes"]
     app.state.ws_by_meeting = services["ws_by_meeting"]
 
     setup_routes(app)

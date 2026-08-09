@@ -16,13 +16,30 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
+from api.meeting.ingest import AudioIngest
+from api.meeting.models import MeetingMinutes, MinutesDecision
 from api.realtime import broadcast
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["meetings"])
+
+_PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
+_MAX_SAMPLE_MS = 4000
+_MIN_SAMPLE_MS = 600
+
+
+def _to_persian_digits(value: int) -> str:
+    return "".join(_PERSIAN_DIGITS[int(ch)] for ch in str(value))
+
+
+def _default_speaker_label(speaker_id: str) -> str:
+    digits = "".join(ch for ch in str(speaker_id) if ch.isdigit())
+    if not digits:
+        return "سخنگو"
+    return f"سخنگوی {_to_persian_digits(int(digits) + 1)}"
 
 
 def _resolve_recording_path(
@@ -249,6 +266,122 @@ async def update_segment_text(
     }
 
 
+@router.get("/meetings/{meeting_id}/speakers")
+async def list_speakers(request: Request, meeting_id: str) -> Dict[str, Any]:
+    """List distinct speakers with current label + a suggested sample span for playback."""
+    store = request.app.state.manager.store
+    meeting = store.get_meeting(meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="meeting not found")
+
+    segments = store.get_segments(meeting_id)
+    final_segments = [s for s in segments if not s.provisional]
+    intervals = store.get_speaker_intervals(meeting_id)
+
+    speaker_ids = set()
+    for s in final_segments:
+        speaker_ids.add(s.speaker_id)
+        speaker_ids.update(s.overlap_speakers or [])
+    for iv in intervals:
+        speaker_ids.add(iv.speaker_id)
+
+    out = []
+    for spk in sorted(speaker_ids):
+        sample_start_ms: Optional[int] = None
+        sample_end_ms: Optional[int] = None
+
+        candidates = [
+            iv
+            for iv in intervals
+            if iv.speaker_id == spk
+            and not iv.is_overlap
+            and (iv.end_ms - iv.start_ms) >= _MIN_SAMPLE_MS
+        ]
+        if candidates:
+            best = max(candidates, key=lambda iv: iv.end_ms - iv.start_ms)
+            sample_start_ms = best.start_ms
+            sample_end_ms = min(best.end_ms, best.start_ms + _MAX_SAMPLE_MS)
+        else:
+            seg_candidates = [
+                s
+                for s in final_segments
+                if s.speaker_id == spk and not s.is_overlap
+            ]
+            if seg_candidates:
+                best_seg = max(seg_candidates, key=lambda s: s.end_ms - s.start_ms)
+                sample_start_ms = best_seg.start_ms
+                sample_end_ms = min(
+                    best_seg.end_ms, best_seg.start_ms + _MAX_SAMPLE_MS
+                )
+
+        out.append(
+            {
+                "id": spk,
+                "label": meeting.speaker_map.get(spk) or _default_speaker_label(spk),
+                "custom_label": meeting.speaker_map.get(spk),
+                "sample_start_ms": sample_start_ms,
+                "sample_end_ms": sample_end_ms,
+                "has_sample": sample_start_ms is not None,
+            }
+        )
+    return {"meeting_id": meeting_id, "speakers": out}
+
+
+@router.get("/meetings/{meeting_id}/speakers/{speaker_id}/audio")
+async def get_speaker_sample_audio(
+    request: Request, meeting_id: str, speaker_id: str
+):
+    """Return a short WAV clip for the given speaker, for naming/preview UI."""
+    store = request.app.state.manager.store
+    meeting = store.get_meeting(meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="meeting not found")
+
+    settings = request.app.state.settings
+    path = _resolve_recording_path(
+        meeting_id,
+        meeting.audio_path,
+        audio_dir=settings.audio_dir,
+        upload_dir=settings.upload_dir,
+    )
+    if not path:
+        raise HTTPException(status_code=404, detail="recording not found")
+
+    intervals = [
+        iv
+        for iv in store.get_speaker_intervals(meeting_id)
+        if iv.speaker_id == speaker_id
+        and not iv.is_overlap
+        and (iv.end_ms - iv.start_ms) >= _MIN_SAMPLE_MS
+    ]
+    start_ms: Optional[int] = None
+    end_ms: Optional[int] = None
+    if intervals:
+        best = max(intervals, key=lambda iv: iv.end_ms - iv.start_ms)
+        start_ms = best.start_ms
+        end_ms = min(best.end_ms, best.start_ms + _MAX_SAMPLE_MS)
+    else:
+        segments = [
+            s
+            for s in store.get_segments(meeting_id)
+            if s.speaker_id == speaker_id and not s.provisional and not s.is_overlap
+        ]
+        if segments:
+            best_seg = max(segments, key=lambda s: s.end_ms - s.start_ms)
+            start_ms = best_seg.start_ms
+            end_ms = min(best_seg.end_ms, best_seg.start_ms + _MAX_SAMPLE_MS)
+
+    if start_ms is None or end_ms is None:
+        raise HTTPException(status_code=404, detail="no sample available for speaker")
+
+    try:
+        wav_bytes = AudioIngest.slice_wav_file(path, start_ms, end_ms)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"could not slice audio: {exc}") from exc
+
+    return Response(content=wav_bytes, media_type="audio/wav")
+
+
 @router.post("/meetings/{meeting_id}/stop")
 async def stop_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
     session = request.app.state.manager.get_or_restore(meeting_id)
@@ -371,6 +504,78 @@ async def get_insights(request: Request, meeting_id: str) -> Dict[str, Any]:
     if not result:
         raise HTTPException(status_code=404, detail="insights not found")
     return result.to_dict()
+
+
+@router.post("/meetings/{meeting_id}/minutes/generate")
+async def generate_minutes(request: Request, meeting_id: str) -> Dict[str, Any]:
+    store = request.app.state.manager.store
+    meeting = store.get_meeting(meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="meeting not found")
+    segments = store.get_segments(meeting_id)
+    final = [s for s in segments if not s.provisional] or segments
+    try:
+        result = await request.app.state.minutes.generate(
+            meeting_id,
+            final,
+            speaker_map=meeting.speaker_map,
+            participants=meeting.participants,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    store.save_minutes(result)
+    await broadcast(
+        request.app, meeting_id, {"type": "minutes", "minutes": result.to_dict()}
+    )
+    return result.to_dict()
+
+
+@router.get("/meetings/{meeting_id}/minutes")
+async def get_minutes(request: Request, meeting_id: str) -> Dict[str, Any]:
+    result = request.app.state.manager.store.get_minutes(meeting_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="minutes not found")
+    return result.to_dict()
+
+
+@router.put("/meetings/{meeting_id}/minutes")
+async def update_minutes(request: Request, meeting_id: str) -> Dict[str, Any]:
+    """Persist a fully user-edited minutes document (no LLM call)."""
+    store = request.app.state.manager.store
+    if not store.get_meeting(meeting_id):
+        raise HTTPException(status_code=404, detail="meeting not found")
+    try:
+        raw = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid json") from exc
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="expected object")
+
+    existing = store.get_minutes(meeting_id)
+    decisions_raw = raw.get("decisions") or []
+    if not isinstance(decisions_raw, list):
+        raise HTTPException(status_code=400, detail="decisions must be a list")
+
+    minutes_kwargs: Dict[str, Any] = dict(
+        meeting_id=meeting_id,
+        subject=str(raw.get("subject") or "").strip(),
+        meeting_date=str(raw.get("meeting_date") or "").strip(),
+        location=str(raw.get("location") or "").strip(),
+        attendees=[str(a).strip() for a in (raw.get("attendees") or []) if str(a).strip()],
+        absentees=[str(a).strip() for a in (raw.get("absentees") or []) if str(a).strip()],
+        secretary=str(raw.get("secretary") or "").strip(),
+        summary=str(raw.get("summary") or "").strip(),
+        decisions=[MinutesDecision.from_dict(d) for d in decisions_raw if isinstance(d, dict)],
+        raw_json=(existing.raw_json if existing else None),
+    )
+    if existing:
+        minutes_kwargs["created_at"] = existing.created_at
+    minutes = MeetingMinutes(**minutes_kwargs)
+    store.save_minutes(minutes)
+    await broadcast(
+        request.app, meeting_id, {"type": "minutes", "minutes": minutes.to_dict()}
+    )
+    return minutes.to_dict()
 
 
 @router.websocket("/meetings/{meeting_id}/audio")

@@ -283,6 +283,8 @@ class MeetingSession:
 
         self.store.replace_meeting_segments(self.meeting_id, [])
         self.store.delete_insights(self.meeting_id)
+        self.store.replace_speaker_intervals(self.meeting_id, [])
+        self.store.delete_minutes(self.meeting_id)
         self.record.audio_path = self.ingest.audio_path
         self.record.started_at = None
         self.record.stopped_at = None
@@ -503,7 +505,9 @@ class MeetingSession:
             }
         )
 
-    async def _refresh_diarization(self, provisional: bool = True) -> None:
+    async def _refresh_diarization(
+        self, provisional: bool = True, review_phase: Optional[str] = None
+    ) -> None:
         async with self._diarize_lock:
             audio = self.ingest.get_buffer()
             if len(audio) < self.sample_rate:
@@ -516,6 +520,8 @@ class MeetingSession:
         async with self._transcript_lock:
             self._speaker_intervals = intervals
             self._last_diarize_ms = duration_ms
+            if not provisional:
+                self.store.replace_speaker_intervals(self.meeting_id, intervals)
 
             await self._emit(
                 {
@@ -544,6 +550,8 @@ class MeetingSession:
                     ),
                 )
                 if not provisional:
+                    if review_phase:
+                        await self._emit_phase(review_phase)
                     segments = await self._finalize_review(segments)
                 self.store.replace_meeting_segments(self.meeting_id, segments)
                 await self._emit(
@@ -553,6 +561,16 @@ class MeetingSession:
                         "segments": [s.to_dict() for s in segments],
                     }
                 )
+
+    async def _emit_phase(self, phase: str) -> None:
+        await self._emit(
+            {
+                "type": "status",
+                "status": "processing",
+                "phase": phase,
+                "meeting_id": self.meeting_id,
+            }
+        )
 
     async def stop(self) -> MeetingRecord:
         async with self._stop_lock:
@@ -566,6 +584,15 @@ class MeetingSession:
                 {"type": "status", "status": "processing", "meeting_id": self.meeting_id}
             )
 
+            await self._emit_phase("save_audio")
+            try:
+                path = self.ingest.save_wav()
+                self.record.audio_path = path
+                self.store.save_meeting(self.record)
+            except Exception as exc:
+                logger.warning("Could not save WAV: %s", exc)
+
+            await self._emit_phase("flush_stt")
             rem = self.chunker.flush_remainder(self.ingest.get_buffer())
             if rem is not None:
                 await self._stt_queue.put(rem)
@@ -577,13 +604,8 @@ class MeetingSession:
                 await asyncio.gather(*self._worker_tasks)
             self._worker_tasks = []
 
-            await self._refresh_diarization(provisional=False)
-
-            try:
-                path = self.ingest.save_wav()
-                self.record.audio_path = path
-            except Exception as exc:
-                logger.warning("Could not save WAV: %s", exc)
+            await self._emit_phase("diarize")
+            await self._refresh_diarization(provisional=False, review_phase="review")
 
             self._running = False
             self.record.status = MeetingStatus.STOPPED
@@ -629,6 +651,7 @@ class MeetingSession:
         audio = self.ingest.get_buffer()
         intervals = await asyncio.to_thread(self.diarizer.diarize, audio, self.sample_rate)
         self._speaker_intervals = intervals
+        self.store.replace_speaker_intervals(self.meeting_id, intervals)
         await self._emit(
             {
                 "type": "speaker_update",
