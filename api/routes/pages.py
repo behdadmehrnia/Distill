@@ -12,6 +12,9 @@ _CONTENT_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".ttf": "font/ttf",
 }
 
 
@@ -65,3 +68,14 @@ async def serve_js(request: Request) -> Response:
 @router.get("/logo.svg")
 async def serve_logo(request: Request) -> Response:
     return _web_file(request, "logo.svg")
+
+
+@router.get("/fonts/{font_name}")
+async def serve_font(request: Request, font_name: str) -> Response:
+    if "/" in font_name or "\\" in font_name or ".." in font_name:
+        raise HTTPException(status_code=400, detail="invalid font name")
+    path = request.app.state.settings.web_dir / "fonts" / font_name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"missing font: {font_name}")
+    media_type = _CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
+    return FileResponse(path, media_type=media_type)

@@ -324,7 +324,12 @@ class DistillClient {
     }
     const minutesPrint = document.getElementById("minutesPrintBtn");
     if (minutesPrint) {
-      minutesPrint.addEventListener("click", () => this.printMinutes());
+      minutesPrint.addEventListener("click", () => {
+        this.printMinutes().catch((err) => {
+          console.error(err);
+          alert(`پرینت ناموفق بود: ${err.message || err}`);
+        });
+      });
     }
     const minutesRegenerate = document.getElementById("minutesRegenerateBtn");
     if (minutesRegenerate) {
@@ -2404,69 +2409,92 @@ class DistillClient {
     };
   }
 
-  printMinutes() {
+  async printMinutes() {
     const data = this.collectMinutesFormData();
-    const html = this.buildMinutesPrintHtml(data);
-    let iframe = document.getElementById("minutesPrintFrame");
-    if (!iframe) {
-      iframe = document.createElement("iframe");
-      iframe.id = "minutesPrintFrame";
-      iframe.setAttribute("aria-hidden", "true");
-      iframe.setAttribute("title", "چاپ صورت جلسه");
-      iframe.style.cssText =
-        "position:fixed;inset-inline-end:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;";
-      document.body.appendChild(iframe);
-    }
-
-    const win = iframe.contentWindow;
-    const doc = win?.document;
-    if (!win || !doc) {
-      alert("امکان آماده‌سازی پرینت در این مرورگر وجود ندارد.");
+    try {
+      await this.ensurePrintFontsLoaded();
+    } catch (err) {
+      console.error(err);
+      alert(`بارگذاری فونت چاپ ناموفق بود: ${err.message || err}`);
       return;
     }
 
-    doc.open();
-    doc.write(html);
-    doc.close();
+    let root = document.getElementById("minutesPrintRoot");
+    if (!root) {
+      root = document.createElement("div");
+      root.id = "minutesPrintRoot";
+      root.setAttribute("aria-hidden", "true");
+      document.body.appendChild(root);
+    }
+    root.innerHTML = this.buildMinutesPrintSheet(data);
 
-    const triggerPrint = () => {
-      try {
-        win.focus();
-        win.print();
-      } catch (err) {
-        console.error(err);
-        alert(`پرینت ناموفق بود: ${err.message || err}`);
-      }
-    };
+    const prevTitle = document.title;
+    document.title = "فرم صورت جلسه";
+    document.body.classList.add("is-printing-minutes");
 
-    // Wait for Vazirmatn to load (or timeout) before printing.
-    const triggerWhenReady = () => {
-      const start = Date.now();
-      const tryPrint = () => {
-        const fontsReady =
-          !doc.fonts ||
-          !doc.fonts.check ||
-          doc.fonts.check("12px Vazirmatn") ||
-          Date.now() - start > 1200;
-        if (fontsReady) {
-          triggerPrint();
-          return;
-        }
-        window.setTimeout(tryPrint, 80);
-      };
-      if (doc.fonts && doc.fonts.ready) {
-        Promise.race([
-          doc.fonts.ready,
-          new Promise((resolve) => window.setTimeout(resolve, 1200)),
-        ]).then(tryPrint);
-      } else {
-        window.setTimeout(tryPrint, 280);
-      }
+    const cleanup = () => {
+      document.body.classList.remove("is-printing-minutes");
+      document.title = prevTitle;
+      root.innerHTML = "";
+      window.removeEventListener("afterprint", cleanup);
     };
-    triggerWhenReady();
+    window.addEventListener("afterprint", cleanup);
+
+    // Let the browser apply print styles + settle fonts before dialog.
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    try {
+      if (document.fonts?.load) {
+        await Promise.all([
+          document.fonts.load("400 12px Vazirmatn"),
+          document.fonts.load("700 12px Vazirmatn"),
+        ]);
+      }
+    } catch (_) {
+      /* ignore */
+    }
+
+    try {
+      window.focus();
+      window.print();
+    } catch (err) {
+      cleanup();
+      console.error(err);
+      alert(`پرینت ناموفق بود: ${err.message || err}`);
+    }
   }
 
-  buildMinutesPrintHtml(data) {
+  async ensurePrintFontsLoaded() {
+    if (this._printFontsReady) return;
+    if (typeof FontFace === "undefined" || !document.fonts?.add) {
+      throw new Error("این مرورگر از فونت سفارشی برای چاپ پشتیبانی نمی‌کند");
+    }
+    const faces = [
+      [400, "Vazirmatn-Regular.ttf"],
+      [500, "Vazirmatn-Medium.ttf"],
+      [700, "Vazirmatn-Bold.ttf"],
+    ];
+    await Promise.all(
+      faces.map(async ([weight, file]) => {
+        const url = new URL(`/fonts/${file}`, window.location.href).href;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`فونت ${file} یافت نشد (${res.status})`);
+        const buffer = await res.arrayBuffer();
+        const face = new FontFace("Vazirmatn", buffer, {
+          style: "normal",
+          weight: String(weight),
+          display: "block",
+        });
+        const loaded = await face.load();
+        document.fonts.add(loaded);
+      })
+    );
+    if (document.fonts.ready) await document.fonts.ready;
+    const ok = document.fonts.check("12px Vazirmatn");
+    if (!ok) throw new Error("فونت Vazirmatn بعد از بارگذاری در دسترس نیست");
+    this._printFontsReady = true;
+  }
+
+  buildMinutesPrintSheet(data) {
     const subject = this.escape(data.subject || "");
     const dateFull = this.escape(data.meeting_date || "");
     const dateOnly = this.escape(String(data.meeting_date || "").split(/\s+/)[0] || "");
@@ -2503,188 +2531,180 @@ class DistillClient {
       })
       .join("");
 
-    return `<!DOCTYPE html>
-<html lang="fa" dir="rtl">
-<head>
-  <meta charset="UTF-8" />
-  <title>فرم صورت جلسه</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700;900&display=swap" rel="stylesheet" />
-  <style>
-    @page { size: A4 portrait; margin: 8mm; }
-    * { box-sizing: border-box; }
-    html, body {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      background: #fff;
-      color: #000;
-      font-family: 'Vazirmatn', Tahoma, 'Segoe UI', sans-serif;
-      font-size: 10pt;
-      line-height: 1.45;
-      direction: rtl;
-    }
-    .page {
-      width: 100%;
-      min-height: 277mm;
-      height: 277mm;
-      display: flex;
-      flex-direction: column;
-      border: 1.6px solid #000;
-      overflow: hidden;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      table-layout: fixed;
-    }
-    td, th {
-      border: 1px solid #000;
-      padding: 5px 6px;
-      vertical-align: middle;
-      overflow: hidden;
-      word-wrap: break-word;
-      overflow-wrap: anywhere;
-      hyphens: auto;
-    }
-    .head-logo {
-      width: 20%;
-      text-align: center;
-      padding: 8px 4px;
-    }
-    .head-title {
-      width: 48%;
-      text-align: center;
-      font-size: 18pt;
-      font-weight: 700;
-    }
-    .head-id {
-      width: 32%;
-      text-align: center;
-      font-size: 7.5pt;
-      line-height: 1.35;
-      padding: 6px 8px;
-      word-break: break-all;
-    }
-    .head-id .id-label {
-      display: block;
-      font-weight: 700;
-      margin-bottom: 3px;
-      font-size: 8pt;
-    }
-    .head-id .id-value {
-      display: block;
-      font-family: ui-monospace, Menlo, Consolas, monospace;
-      font-size: 7pt;
-      direction: ltr;
-      unicode-bidi: isolate;
-    }
-    .brand {
-      margin-top: 2px;
-      font-size: 8.5pt;
-      font-weight: 700;
-    }
-    .lbl {
-      width: 11%;
-      font-weight: 700;
-      white-space: nowrap;
-      font-size: 9.5pt;
-      background: #fafafa;
-    }
-    .val {
-      font-size: 9.5pt;
-      max-width: 0;
-    }
-    .meta-2 .lbl { width: 12%; }
-    .vlabel {
-      width: 28px;
-      max-width: 28px;
-      text-align: center;
-      font-weight: 700;
-      font-size: 9pt;
-      writing-mode: vertical-rl;
-      transform: rotate(180deg);
-      letter-spacing: 0.12em;
-      padding: 6px 2px;
-      background: #fafafa;
-    }
-    .people {
-      vertical-align: top;
-      font-size: 9.5pt;
-      line-height: 1.6;
-      min-height: 36px;
-    }
-    .attach {
-      width: 28%;
-      text-align: center;
-      font-size: 8.5pt;
-      white-space: nowrap;
-    }
-    .box {
-      display: inline-block;
-      width: 10px;
-      height: 10px;
-      border: 1px solid #000;
-      margin-inline: 2px 3px;
-      vertical-align: -1px;
-    }
-    .time-cell { padding: 0; }
-    .time-cell table td {
-      border: 0;
-      border-bottom: 1px solid #000;
-      padding: 4px 6px;
-      font-size: 9pt;
-    }
-    .time-cell table tr:last-child td { border-bottom: 0; }
-    .grow {
-      flex: 1 1 auto;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-    }
-    .grow > table {
-      flex: 1 1 auto;
-      height: 100%;
-    }
-    .decisions {
-      height: 100%;
-    }
-    .decisions thead th {
-      background: #f6e59a;
-      text-align: center;
-      font-weight: 700;
-      font-size: 9pt;
-      padding: 4px 3px;
-    }
-    .decisions tbody td {
-      height: 7.2mm;
-      font-size: 9pt;
-      vertical-align: top;
-      padding: 3px 4px;
-    }
-    .num { width: 6%; text-align: center; vertical-align: middle !important; }
-    .desc { width: 48%; }
-    .center { width: 13%; text-align: center; vertical-align: middle !important; }
-    .mark { width: 10%; text-align: center; vertical-align: middle !important; }
-    .status-top { border-bottom: 1px solid #000; }
-    .sign-wrap { height: 28mm; }
-    .sign-wrap td { height: 28mm; vertical-align: top; }
-    @media print {
-      html, body, .page {
-        height: 277mm;
-        min-height: 277mm;
-      }
-      body {
-        -webkit-print-color-adjust: exact;
-        print-color-adjust: exact;
-      }
-    }
-  </style>
-</head>
-<body>
-  <div class="page">
+    return `
+<style>
+  #minutesPrintRoot .minutes-print-sheet {
+    width: 100%;
+    min-height: 277mm;
+    height: 277mm;
+    display: flex;
+    flex-direction: column;
+    border: 1.6px solid #000;
+    overflow: hidden;
+    background: #fff;
+    color: #000;
+    font-family: 'Vazirmatn', Tahoma, 'Segoe UI', sans-serif;
+    font-size: 10pt;
+    line-height: 1.45;
+    direction: rtl;
+    -webkit-font-smoothing: antialiased;
+  }
+  #minutesPrintRoot .minutes-print-sheet * {
+    font-family: inherit;
+    box-sizing: border-box;
+  }
+  #minutesPrintRoot table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  #minutesPrintRoot td,
+  #minutesPrintRoot th {
+    border: 1px solid #000;
+    padding: 5px 6px;
+    vertical-align: middle;
+    overflow: hidden;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+  }
+  #minutesPrintRoot .head-logo {
+    width: 20%;
+    text-align: center;
+    padding: 8px 4px;
+  }
+  #minutesPrintRoot .head-title {
+    width: 48%;
+    text-align: center;
+    font-size: 18pt;
+    font-weight: 700;
+  }
+  #minutesPrintRoot .head-id {
+    width: 32%;
+    text-align: center;
+    font-size: 7.5pt;
+    line-height: 1.35;
+    padding: 6px 8px;
+    word-break: break-all;
+  }
+  #minutesPrintRoot .head-id .id-label {
+    display: block;
+    font-weight: 700;
+    margin-bottom: 3px;
+    font-size: 8pt;
+  }
+  #minutesPrintRoot .head-id .id-value {
+    display: block;
+    font-size: 7pt;
+    direction: ltr;
+    unicode-bidi: isolate;
+  }
+  #minutesPrintRoot .brand {
+    margin-top: 2px;
+    font-size: 8.5pt;
+    font-weight: 700;
+  }
+  #minutesPrintRoot .lbl {
+    width: 11%;
+    font-weight: 700;
+    white-space: nowrap;
+    font-size: 9.5pt;
+    background: #fafafa;
+  }
+  #minutesPrintRoot .val {
+    font-size: 9.5pt;
+    max-width: 0;
+  }
+  #minutesPrintRoot .field {
+    font-size: 9.5pt;
+    white-space: nowrap;
+  }
+  #minutesPrintRoot .field b {
+    font-weight: 700;
+    margin-inline-end: 6px;
+  }
+  #minutesPrintRoot .minutes-no { width: 24%; }
+  #minutesPrintRoot .minutes-no .blank {
+    display: inline-block;
+    min-width: 8.5ch;
+    letter-spacing: 0.12em;
+    vertical-align: bottom;
+  }
+  #minutesPrintRoot .date-field { width: 18%; }
+  #minutesPrintRoot .secretary-field { width: 34%; }
+  #minutesPrintRoot .meta-2 .lbl { width: 12%; }
+  #minutesPrintRoot .vlabel {
+    width: 28px;
+    max-width: 28px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 9pt;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    letter-spacing: 0.12em;
+    padding: 6px 2px;
+    background: #fafafa;
+  }
+  #minutesPrintRoot .people {
+    vertical-align: top;
+    font-size: 9.5pt;
+    line-height: 1.6;
+    min-height: 36px;
+  }
+  #minutesPrintRoot .attach {
+    width: 28%;
+    text-align: center;
+    font-size: 8.5pt;
+    white-space: nowrap;
+  }
+  #minutesPrintRoot .box {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 1px solid #000;
+    margin-inline: 2px 3px;
+    vertical-align: -1px;
+  }
+  #minutesPrintRoot .time-cell { padding: 0; }
+  #minutesPrintRoot .time-cell table td {
+    border: 0;
+    border-bottom: 1px solid #000;
+    padding: 4px 6px;
+    font-size: 9pt;
+  }
+  #minutesPrintRoot .time-cell table tr:last-child td { border-bottom: 0; }
+  #minutesPrintRoot .grow {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  #minutesPrintRoot .grow > table {
+    flex: 1 1 auto;
+    height: 100%;
+  }
+  #minutesPrintRoot .decisions { height: 100%; }
+  #minutesPrintRoot .decisions thead th {
+    background: #f6e59a;
+    text-align: center;
+    font-weight: 700;
+    font-size: 9pt;
+    padding: 4px 3px;
+  }
+  #minutesPrintRoot .decisions tbody td {
+    height: 7.2mm;
+    font-size: 9pt;
+    vertical-align: top;
+    padding: 3px 4px;
+  }
+  #minutesPrintRoot .num { width: 6%; text-align: center; vertical-align: middle !important; }
+  #minutesPrintRoot .desc { width: 48%; }
+  #minutesPrintRoot .center { width: 13%; text-align: center; vertical-align: middle !important; }
+  #minutesPrintRoot .mark { width: 10%; text-align: center; vertical-align: middle !important; }
+  #minutesPrintRoot .status-top { border-bottom: 1px solid #000; }
+  #minutesPrintRoot .sign-wrap { height: 28mm; }
+  #minutesPrintRoot .sign-wrap td { height: 28mm; vertical-align: top; }
+</style>
+<div class="minutes-print-sheet">
     <table>
       <tr>
         <td class="head-logo">
@@ -2705,14 +2725,14 @@ class DistillClient {
     <table>
       <tr>
         <td class="lbl">موضوع:</td>
-        <td class="val" colspan="3">${subject}</td>
-        <td class="lbl">تاریخ:</td>
-        <td class="val">${dateOnly || dateFull}</td>
+        <td class="val" colspan="2">${subject}</td>
+        <td class="field minutes-no"><b>شماره صورت جلسه:</b><span class="blank"></span></td>
+        <td class="field date-field"><b>تاریخ:</b>${dateOnly || dateFull}</td>
       </tr>
       <tr class="meta-2">
         <td class="lbl">محل برگزاری:</td>
         <td class="val" colspan="2">${location}</td>
-        <td class="time-cell" colspan="2">
+        <td class="time-cell">
           <table>
             <tr><td><b>شروع:</b> ${timeOnly || dateFull}</td></tr>
             <tr><td><b>خاتمه:</b></td></tr>
@@ -2740,8 +2760,7 @@ class DistillClient {
       <tr>
         <td class="vlabel">غائبین</td>
         <td class="people" style="width:58%;">${absentees}</td>
-        <td class="lbl" style="width:12%;">دبیرجلسه:</td>
-        <td class="people" style="width:22%;">${secretary}</td>
+        <td class="field secretary-field"><b>دبیرجلسه:</b>${secretary}</td>
       </tr>
     </table>
 
@@ -2772,10 +2791,9 @@ class DistillClient {
         <td></td>
       </tr>
     </table>
-  </div>
-</body>
-</html>`;
+</div>`;
   }
+
 
   async openExistingMinutes() {
     if (!this.meetingId) return;
