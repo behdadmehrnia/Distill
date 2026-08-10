@@ -7,11 +7,12 @@ from typing import Any, Dict, List
 
 
 DEFAULT_TUNING: Dict[str, Any] = {
-    "window_ms": 8000,
-    "hop_ms": 6000,
-    "diarize_every_ms": 20000,
+    # Longer sequential chunks → better ASR context; hop==window → no overlap fights
+    "window_ms": 10000,
+    "hop_ms": 8500,
+    "diarize_every_ms": 0,
     "min_speech_rms": 0.008,
-    "stt_workers": 2,
+    "stt_workers": 1,
     "stt_retry_count": 3,
     "energy_threshold": 0.01,
     "min_speakers": 1,
@@ -33,11 +34,11 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "label": "طول پنجره STT",
         "unit": "ms",
         "type": "number",
-        "min": 4000,
-        "max": 15000,
-        "step": 500,
+        "min": 5000,
+        "max": 30000,
+        "step": 1000,
         "apply": "next_session",
-        "help": "هر تکه صوت چند میلی‌ثانیه به STT برود — فقط روی جلسات جدید اعمال می‌شود",
+        "help": "هر تکه صوت چند میلی‌ثانیه به STT برود — تکه‌های بلندتر معمولاً دقیق‌ترند (فقط جلسات جدید)",
     },
     {
         "key": "hop_ms",
@@ -49,7 +50,7 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "max": 12000,
         "step": 500,
         "apply": "next_session",
-        "help": "فاصله شروع پنجره‌ها (~۲ثانیه هم‌پوشانی برای Whisper) — فقط جلسات جدید",
+        "help": "فاصله شروع پنجره‌ها — برای سادگی با طول پنجره برابر بگذارید (بدون هم‌پوشانی)",
     },
     {
         "key": "stt_workers",
@@ -61,7 +62,7 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "max": 5,
         "step": 1,
         "apply": "next_session",
-        "help": "چند درخواست STT هم‌زمان — فقط روی جلسات جدید",
+        "help": "چند درخواست STT هم‌زمان — برای دقت و ترتیب پایدار ۱ پیشنهاد می‌شود",
     },
     {
         "key": "stt_retry_count",
@@ -124,11 +125,12 @@ TUNING_SCHEMA: List[Dict[str, Any]] = [
         "label": "فاصله diarization زنده",
         "unit": "ms",
         "type": "number",
-        "min": 10000,
+        "min": 0,
         "max": 60000,
         "step": 1000,
         "apply": "live",
-        "help": "هر چند ms یک‌بار گوینده‌ها به‌روز شوند",
+        "hidden": True,
+        "help": "۰ = فقط روی ضبط نهایی بعد از توقف. مقدار >۰ یعنی diarization دوره‌ای حین ضبط (غیرفعال در UI)",
     },
     {
         "key": "energy_threshold",

@@ -20,6 +20,14 @@ DEFAULT_MODEL = "gapgpt/whisper-1"
 DEFAULT_ENDPOINT = "https://api.gapgpt.app/v1/audio/transcriptions"
 _MAX_ERROR_BODY = 240
 
+# Nudge ASR toward clean Persian meeting speech (OpenAI-compatible `prompt`).
+DEFAULT_STT_PROMPT = (
+    "این یک جلسه کاری به زبان فارسی است. "
+    "گفتار را دقیق و روان پیاده‌سازی کن. "
+    "از ساختن متن بی‌معنی، تکرار بی‌جا، و ترجمه به انگلیسی خودداری کن. "
+    "کلمات انگلیسی را فقط اگر واقعاً گفته شدند بنویس."
+)
+
 # Models known to reject response_format=verbose_json (OpenAI transcribe family).
 _NO_VERBOSE_JSON_MARKERS = (
     "gpt-4o-mini-transcribe",
@@ -83,12 +91,14 @@ class OpenAICompatibleSTT:
         cache_dir: str = "./data/stt_cache",
         sample_rate: int = 16000,
         model: str = DEFAULT_MODEL,
+        prompt: Optional[str] = None,
     ):
         self.endpoint = endpoint
         self.api_key = api_key
         self.cache_dir = cache_dir
         self.sample_rate = sample_rate
         self.model = model
+        self.prompt = (prompt if prompt is not None else DEFAULT_STT_PROMPT).strip()
         self.cache_hits = 0
         self.cache_misses = 0
         self._verbose_supported: Optional[bool] = None
@@ -106,6 +116,11 @@ class OpenAICompatibleSTT:
     @staticmethod
     def _file_hash(content: bytes) -> str:
         return hashlib.md5(content).hexdigest()
+
+    def _request_hash(self, pcm_bytes: bytes, model: str, language: str) -> str:
+        """Cache key includes model/prompt/language so prompt changes invalidate."""
+        meta = f"{model}|{language}|{self.prompt}".encode("utf-8")
+        return hashlib.md5(pcm_bytes + meta).hexdigest()
 
     def _cache_paths(self, pcm_hash: str) -> Tuple[str, str]:
         base = os.path.join(self.cache_dir, pcm_hash)
@@ -192,6 +207,8 @@ class OpenAICompatibleSTT:
         form.add_field("language", language or "fa")
         form.add_field("model", model or self.model)
         form.add_field("response_format", response_format)
+        if self.prompt:
+            form.add_field("prompt", self.prompt)
         if response_format == "verbose_json":
             # OpenAI-compatible optional hint; ignored by endpoints that don't support it
             form.add_field("timestamp_granularities[]", "word")
@@ -222,7 +239,8 @@ class OpenAICompatibleSTT:
     ) -> STTResult:
         audio_int16 = (np.asarray(file_content, dtype=np.float32) * 32768.0).astype(np.int16)
         pcm_bytes = audio_int16.tobytes()
-        pcm_hash = self._file_hash(pcm_bytes)
+        chosen_model = model or self.model
+        pcm_hash = self._request_hash(pcm_bytes, chosen_model, language or "fa")
         text_cache, json_cache = self._cache_paths(pcm_hash)
 
         if os.path.exists(json_cache):

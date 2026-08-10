@@ -132,7 +132,11 @@ def merge_adjacent_segments(
     segments: Iterable[TranscriptSegment],
     max_gap_ms: int = 800,
 ) -> List[TranscriptSegment]:
-    """Merge turn-taking neighbors. Coalesce Whisper hop variants of one sentence."""
+    """Merge only clear same-utterance hop twins or abutting turns.
+
+    Dissimilar overlapping hops stay separate so a later partial window cannot
+    rewrite / absorb an earlier complete sentence.
+    """
     ordered = sorted(
         [s for s in segments if _is_meaningful_text(s.text)],
         key=lambda s: (s.start_ms, s.end_ms, s.speaker_id),
@@ -151,23 +155,12 @@ def merge_adjacent_segments(
         gap = seg.start_ms - prev.end_ms
         ov = _overlap_ms(prev.start_ms, prev.end_ms, seg.start_ms, seg.end_ms)
         shorter = max(1, min(prev.end_ms - prev.start_ms, seg.end_ms - seg.start_ms))
-        hop_overlap = ov > 0 and ov / shorter >= 0.1
-        # Also treat near-abutting hops of the same utterance (tiny gap after truncate)
+        hop_overlap = ov > 0 and ov / shorter >= 0.5
         near_hop = same_spk and gap <= 1500 and gap >= -2000
 
         if same_spk and (hop_overlap or near_hop) and _same_utterance(prev.text, seg.text):
             prev.text = _collapse_internal_repeats(
                 _pick_hop_text(prev.text, seg.text)
-            )
-            prev.start_ms = min(prev.start_ms, seg.start_ms)
-            prev.end_ms = max(prev.end_ms, seg.end_ms)
-            prev.provisional = prev.provisional or seg.provisional
-            continue
-
-        if same_spk and hop_overlap and not _same_utterance(prev.text, seg.text):
-            # Overlapping hops of continuous speech: stitch, don't fragment
-            prev.text = _collapse_internal_repeats(
-                _stitch_hop_texts(prev.text, seg.text)
             )
             prev.start_ms = min(prev.start_ms, seg.start_ms)
             prev.end_ms = max(prev.end_ms, seg.end_ms)
@@ -479,11 +472,10 @@ def _collapse_overlapping_stt_windows(
     stt_windows: Sequence[SttWindow],
 ) -> List[SttWindow]:
     """
-    Pre-pass: only merge hop windows that restate the *same* utterance.
+    Append-only collapse: refine the same time span, otherwise keep windows apart.
 
-    Critical: do NOT chain-merge dissimilar hops into one span with the latest
-    text — that erased earlier speech and looked like "summarization".
-    Also never replace earlier word timings with a later partial hop's words.
+    Heavy overlap (>=0.5 of shorter) updates one row with the fuller text.
+    Mild/no overlap never stitches dissimilar speech into one span.
     """
     items: List[List[Any]] = []
     for window in stt_windows:
@@ -499,33 +491,31 @@ def _collapse_overlapping_stt_windows(
         if not out:
             out.append(item)
             continue
-        prev = out[-1]
-        ov = _overlap_ms(prev[0], prev[1], item[0], item[1])
-        shorter = max(1, min(prev[1] - prev[0], item[1] - item[0]))
-        overlap_ratio = ov / shorter if shorter else 0.0
-        ta, tb = str(prev[2]).split(), str(item[2]).split()
-        cont_signal = (
-            _best_suffix_prefix_overlap(ta, tb) >= 2
-            or (0 < _continuation_skip(ta, tb) < len(tb))
-        )
-        # A short new hop ("خب") must not absorb a complete earlier sentence.
-        partial_new = len(tb) <= max(3, int(len(ta) * 0.35))
+        # Find best heavy-overlap target among existing rows (usually last).
+        best_idx = None
+        best_ratio = 0.0
+        for i, prev in enumerate(out):
+            ov = _overlap_ms(prev[0], prev[1], item[0], item[1])
+            shorter = max(1, min(prev[1] - prev[0], item[1] - item[0]))
+            ratio = ov / shorter if shorter else 0.0
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_idx = i
 
-        if overlap_ratio >= 0.12 and _same_utterance(prev[2], item[2]):
+        if best_idx is not None and best_ratio >= 0.5:
+            prev = out[best_idx]
+            prev_text = str(prev[2])
+            new_text = str(item[2])
+            related = _same_utterance(prev_text, new_text) or _token_containment(
+                prev_text, new_text
+            ) >= 0.4
+            if related and len(new_text.split()) >= len(prev_text.split()):
+                chosen = new_text
+            else:
+                chosen = prev_text
+            prev[0] = min(prev[0], item[0])
             prev[1] = max(prev[1], item[1])
-            prev[2] = _pick_hop_text(prev[2], item[2])
-            prev[3] = _merge_word_timings(prev[3], item[3])
-        elif (
-            overlap_ratio >= 0.12
-            and not _same_utterance(prev[2], item[2])
-            and partial_new
-            and not cont_signal
-        ):
-            out.append(item)
-        elif overlap_ratio >= 0.12:
-            # Continuous monologue across hops — stitch instead of many cards
-            prev[1] = max(prev[1], item[1])
-            prev[2] = _stitch_hop_texts(prev[2], item[2])
+            prev[2] = chosen
             prev[3] = _merge_word_timings(prev[3], item[3])
         else:
             out.append(item)

@@ -46,9 +46,9 @@ class MeetingSession:
         diarizer: Optional[SpeakerDiarizer] = None,
         review_agent: Optional[TranscriptReviewAgent] = None,
         sample_rate: int = 16000,
-        window_ms: int = 8000,
-        hop_ms: int = 6000,
-        diarize_every_ms: int = 20000,
+        window_ms: int = 10000,
+        hop_ms: int = 8500,
+        diarize_every_ms: int = 0,
         audio_dir: str = "./data/audio",
         on_event: Optional[EventCallback] = None,
         tuning: Optional[Dict[str, Any]] = None,
@@ -138,7 +138,7 @@ class MeetingSession:
         return mode
 
     def _stt_workers(self) -> int:
-        return max(1, min(5, int(self.tuning.get("stt_workers", 2))))
+        return max(1, min(5, int(self.tuning.get("stt_workers", 1))))
 
     def _stt_retry_count(self) -> int:
         return max(0, min(5, int(self.tuning.get("stt_retry_count", 3))))
@@ -343,7 +343,10 @@ class MeetingSession:
         for chunk in chunks:
             await self._stt_queue.put(chunk)
 
-        if self.ingest.duration_ms - self._last_diarize_ms >= self.diarize_every_ms:
+        if (
+            self.diarize_every_ms > 0
+            and self.ingest.duration_ms - self._last_diarize_ms >= self.diarize_every_ms
+        ):
             asyncio.create_task(self._refresh_diarization(provisional=True))
 
     def _words_abs(
@@ -448,89 +451,70 @@ class MeetingSession:
         text: str,
         words: Optional[Sequence[Tuple[str, int, int]]],
     ) -> None:
-        """Keep one pending row per spoken utterance; fold Whisper hop variants."""
+        """Append-only live buffer: update same span, otherwise keep a new row.
+
+        No stitch/same-utterance heuristics — those wiped earlier speech when a
+        later partial hop arrived. Words are stored but live UI uses `text`.
+        """
         from api.meeting.aligner import (
-            _best_suffix_prefix_overlap,
-            _continuation_skip,
             _merge_word_timings,
             _overlap_ms,
-            _pick_hop_text,
             _same_utterance,
-            _stitch_hop_texts,
-            _text_quality,
             _token_containment,
         )
 
-        acc_s, acc_e, acc_t, acc_w = start_ms, end_ms, text, words
-        kept: List[PendingStt] = []
-        for prev in self._pending_stt:
-            ps, pe, pt, pw = prev[0], prev[1], prev[2], prev[3]
-            ov = _overlap_ms(ps, pe, acc_s, acc_e)
-            shorter = max(1, min(pe - ps, acc_e - acc_s))
-            overlap_ratio = ov / shorter
-            near = acc_s - pe <= 1500 and ps - acc_e <= 1500
-            ta, tb = pt.split(), acc_t.split()
-            cont_signal = (
-                _best_suffix_prefix_overlap(ta, tb) >= 2
-                or (0 < _continuation_skip(ta, tb) < len(tb))
-            )
-            partial_new = len(tb) <= max(3, int(len(ta) * 0.35))
+        text = (text or "").strip()
+        if not text:
+            return
 
-            if (overlap_ratio >= 0.12 or near) and _same_utterance(pt, acc_t):
-                acc_s = min(acc_s, ps)
-                acc_e = max(acc_e, pe)
-                before = acc_t
-                acc_t = _pick_hop_text(pt, acc_t)
-                if acc_t == pt:
-                    acc_w = _merge_word_timings(pw, None) or pw or acc_w
-                elif acc_t == before:
-                    acc_w = _merge_word_timings(acc_w, pw)
-                else:
-                    acc_w = _merge_word_timings(pw, words)
-            elif overlap_ratio >= 0.45 and not _same_utterance(pt, acc_t):
-                # Heavy overlap + dissimilar text = competing re-transcription
-                # of the same span (common with short hop_ms). Keep established
-                # good text instead of gluing hop hallucinations onto it.
-                acc_s = min(acc_s, ps)
-                acc_e = max(acc_e, pe)
-                if _token_containment(pt, acc_t) >= 0.6:
-                    acc_t = _stitch_hop_texts(pt, acc_t)
-                    acc_w = _merge_word_timings(pw, words)
-                else:
-                    qa, qb = _text_quality(pt), _text_quality(acc_t)
-                    if qb > qa + 0.15:
-                        acc_w = _merge_word_timings(pw, words)
-                    else:
-                        acc_t = pt
-                        acc_w = pw or acc_w
-            elif (
-                overlap_ratio >= 0.12
-                and not _same_utterance(pt, acc_t)
-                and partial_new
-                and not cont_signal
-            ):
-                # New short hop ("خب") overlapping previous complete sentence —
-                # keep both rows so the earlier utterance is not wiped.
-                kept.append(prev)
-            elif overlap_ratio >= 0.12:
-                # Mild overlap — likely monologue continuation across hops
-                acc_s = min(acc_s, ps)
-                acc_e = max(acc_e, pe)
-                acc_t = _stitch_hop_texts(pt, acc_t)
-                acc_w = _merge_word_timings(pw, words)
+        best_idx = None
+        best_ratio = 0.0
+        for i, (ps, pe, _pt, _pw) in enumerate(self._pending_stt):
+            ov = _overlap_ms(ps, pe, start_ms, end_ms)
+            shorter = max(1, min(pe - ps, end_ms - start_ms))
+            ratio = ov / shorter
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_idx = i
+
+        if best_idx is not None and best_ratio >= 0.5:
+            ps, pe, pt, pw = self._pending_stt[best_idx]
+            pt = pt or ""
+            new_tokens = len(text.split())
+            old_tokens = len(pt.split())
+            related = (not pt) or _same_utterance(pt, text) or _token_containment(
+                pt, text
+            ) >= 0.4
+            # Same span: take fuller text only when it is related. Dissimilar
+            # longer hallucinations must not wipe an established sentence.
+            if related and new_tokens >= old_tokens:
+                chosen_text, chosen_words = text, words
             else:
-                kept.append(prev)
-        kept.append((acc_s, acc_e, acc_t, acc_w))
-        kept.sort(key=lambda x: x[0])
-        self._pending_stt = kept
+                chosen_text, chosen_words = pt, pw
+            self._pending_stt[best_idx] = (
+                min(ps, start_ms),
+                max(pe, end_ms),
+                chosen_text,
+                _merge_word_timings(pw, words) or chosen_words,
+            )
+        else:
+            self._pending_stt.append((start_ms, end_ms, text, words))
+
+        self._pending_stt.sort(key=lambda row: row[0])
 
     async def _publish_live_transcript_unlocked(self) -> None:
         """Caller must hold `_transcript_lock`."""
         if not self._pending_stt:
             return
+        # Live path uses STT text only — hop word timings are often partial and
+        # previously rebuilt the whole UI from a single late word like «خب».
+        windows = [
+            (start_ms, end_ms, text, None)
+            for start_ms, end_ms, text, _words in self._pending_stt
+        ]
         segments = align_stt_with_diarization(
             self.meeting_id,
-            list(self._pending_stt),
+            windows,
             self._speaker_intervals,
             provisional=True,
             **self._align_kwargs(),
@@ -588,9 +572,16 @@ class MeetingSession:
 
             pending = list(self._pending_stt)
             if pending:
+                # Live/provisional: text-only windows. Final stop may keep words
+                # for speaker splits when they adequately cover the text.
+                align_windows: list = (
+                    [(s, e, t, None) for s, e, t, _w in pending]
+                    if provisional
+                    else pending
+                )
                 segments = align_stt_with_diarization(
                     self.meeting_id,
-                    pending,
+                    align_windows,
                     intervals,
                     provisional=provisional,
                     **self._align_kwargs(),
@@ -908,10 +899,10 @@ class MeetingManager:
 
     def apply_tuning(self, tuning: Dict[str, Any]) -> None:
         self.tuning = tuning
-        self.session_kwargs["window_ms"] = int(tuning.get("window_ms", 8000))
-        self.session_kwargs["hop_ms"] = int(tuning.get("hop_ms", 6000))
+        self.session_kwargs["window_ms"] = int(tuning.get("window_ms", 15000))
+        self.session_kwargs["hop_ms"] = int(tuning.get("hop_ms", 15000))
         self.session_kwargs["diarize_every_ms"] = int(
-            tuning.get("diarize_every_ms", 20000)
+            tuning.get("diarize_every_ms", 0)
         )
         if hasattr(self.diarizer, "apply_tuning"):
             self.diarizer.apply_tuning(tuning)

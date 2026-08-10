@@ -419,12 +419,14 @@ class DistillClient {
     if (!this.tuningFields) return;
     const groups = {};
     this._tuningSchema.forEach((item) => {
+      if (item.hidden) return;
       const g = item.group || "سایر";
       if (!groups[g]) groups[g] = [];
       groups[g].push(item);
     });
     this.tuningFields.innerHTML = "";
     Object.entries(groups).forEach(([group, items]) => {
+      if (!items.length) return;
       const box = document.createElement("div");
       box.className = "tuning-group";
       box.innerHTML = `<h4>${this.escape(group)}</h4>`;
@@ -1508,18 +1510,25 @@ class DistillClient {
       } else {
         statusBadge = '<span class="badge badge-editable">قابل ویرایش</span>';
       }
-      const speakerHtml = g.speakers
-        .map((spk) => {
-          const color = this.speakerColor(spk);
-          const label = this.speakerLabel(spk);
-          return `<button type="button" class="speaker-chip" data-speaker-id="${this.escape(spk)}" title="کلیک برای نام‌گذاری">
+      // Live capture has no final diarization — hide speaker/overlap chrome until stop.
+      const showSpeakers =
+        !isLive &&
+        !this.isRecording &&
+        this.meetingStatus !== "recording";
+      const speakerHtml = showSpeakers
+        ? g.speakers
+            .map((spk) => {
+              const color = this.speakerColor(spk);
+              const label = this.speakerLabel(spk);
+              return `<button type="button" class="speaker-chip" data-speaker-id="${this.escape(spk)}" title="کلیک برای نام‌گذاری">
             <span class="speaker-dot" style="background:${color}"></span>
             <span class="speaker-name" style="color:${color}">${this.escape(label)}</span>
           </button>`;
-        })
-        .join("");
+            })
+            .join("")
+        : "";
       const badge =
-        g.type === "overlap"
+        showSpeakers && g.type === "overlap"
           ? '<span class="badge">هم‌صحبتی</span>'
           : "";
       const editHint = isEditable
@@ -1528,7 +1537,7 @@ class DistillClient {
 
       row.innerHTML = `
         <div class="segment-meta">
-          <div class="speaker-row">${speakerHtml}</div>
+          ${speakerHtml ? `<div class="speaker-row">${speakerHtml}</div>` : ""}
           <span>${this.formatTs(g.seg.start_ms)} – ${this.formatTs(g.seg.end_ms)}</span>
           ${badge}${statusBadge}${editHint}
         </div>
@@ -1949,7 +1958,8 @@ class DistillClient {
       );
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      this._speakerList = data.speakers || [];
+      // Only name speakers that have a playable sample clip.
+      this._speakerList = (data.speakers || []).filter((s) => s.has_sample);
       this.renderSpeakerNamingList();
     } catch (err) {
       console.error(err);
@@ -1978,16 +1988,10 @@ class DistillClient {
       card.dataset.speakerId = String(spk.id);
       const color = this.speakerColor(spk.id);
       const audioSrc = `/meetings/${this.meetingId}/speakers/${encodeURIComponent(spk.id)}/audio`;
-      const audioHtml = spk.has_sample
-        ? `<button type="button" class="speaker-play-btn" data-audio-src="${this.escape(audioSrc)}" aria-label="پخش نمونه صدا">
+      const audioHtml = `<button type="button" class="speaker-play-btn" data-audio-src="${this.escape(audioSrc)}" aria-label="پخش نمونه صدا">
             <svg class="play-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
             <svg class="pause-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
-          </button>`
-        : `<span class="speaker-naming-nosample">${
-            spk.has_recording === false
-              ? "فایل صدا نیست"
-              : "نمونه صدایی موجود نیست"
-          }</span>`;
+          </button>`;
       card.innerHTML = `
         <span class="speaker-naming-dot" style="background:${color}"></span>
         <input

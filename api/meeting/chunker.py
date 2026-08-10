@@ -18,16 +18,17 @@ class AudioChunk:
 
 class OverlappingChunker:
     """
-    Emit overlapping windows from a continuous PCM buffer.
+    Emit sequential (or lightly overlapping) windows from a continuous PCM buffer.
 
-    Defaults: 8s window / 6s hop (~2s context overlap for Whisper continuity).
+    Defaults: 15s window / 15s hop — non-overlapping chunks for simpler, more
+    accurate live STT (more context per request, no hop merge fights).
     """
 
     def __init__(
         self,
         sample_rate: int = 16000,
-        window_ms: int = 8000,
-        hop_ms: int = 6000,
+        window_ms: int = 15000,
+        hop_ms: int = 15000,
         min_speech_rms: float = 0.008,
     ):
         self.sample_rate = sample_rate

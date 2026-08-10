@@ -167,14 +167,7 @@ def test_speakers_list_and_sample_audio(tmp_path):
         no_audio = client.get(f"/meetings/{meeting_id}/speakers")
         assert no_audio.status_code == 200
         speakers = no_audio.json()["speakers"]
-        assert len(speakers) == 1
-        assert speakers[0]["id"] == "SPEAKER_00"
-        assert speakers[0]["label"] == "سخنگوی ۱"
-        # Playback requires a real recording on disk — span alone is not enough.
-        assert speakers[0]["has_sample"] is False
-        assert speakers[0]["has_recording"] is False
-        assert speakers[0]["sample_start_ms"] == 0
-        assert speakers[0]["sample_end_ms"] == 2000
+        assert speakers == []
 
         audio_dir = tmp_path / "audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
@@ -188,9 +181,23 @@ def test_speakers_list_and_sample_audio(tmp_path):
         meeting.audio_path = str(wav_path)
         store.save_meeting(meeting)
 
+        # Ghost speaker with no span must not appear either.
+        store.replace_speaker_intervals(
+            meeting_id,
+            [
+                SpeakerInterval(
+                    speaker_id="SPEAKER_00", start_ms=0, end_ms=2000, is_overlap=False
+                ),
+                SpeakerInterval(
+                    speaker_id="SPEAKER_01", start_ms=0, end_ms=0, is_overlap=False
+                ),
+            ],
+        )
+
         with_audio = client.get(f"/meetings/{meeting_id}/speakers")
         assert with_audio.status_code == 200
         speakers_ready = with_audio.json()["speakers"]
+        assert [s["id"] for s in speakers_ready] == ["SPEAKER_00"]
         assert speakers_ready[0]["has_recording"] is True
         assert speakers_ready[0]["has_sample"] is True
 

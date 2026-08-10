@@ -359,6 +359,12 @@ async def list_speakers(request: Request, meeting_id: str) -> Dict[str, Any]:
             intervals=intervals,
             segments=final_segments,
         )
+        has_sample = bool(
+            has_recording and sample_start_ms is not None and sample_end_ms is not None
+        )
+        # Naming UI is useless without a playable clip — skip ghost speakers.
+        if not has_sample:
+            continue
 
         out.append(
             {
@@ -367,10 +373,7 @@ async def list_speakers(request: Request, meeting_id: str) -> Dict[str, Any]:
                 "custom_label": meeting.speaker_map.get(spk),
                 "sample_start_ms": sample_start_ms,
                 "sample_end_ms": sample_end_ms,
-                # Only advertise playback when both a span AND the WAV exist.
-                "has_sample": bool(
-                    has_recording and sample_start_ms is not None and sample_end_ms is not None
-                ),
+                "has_sample": True,
                 "has_recording": has_recording,
             }
         )

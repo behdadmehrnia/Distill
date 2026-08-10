@@ -161,8 +161,8 @@ def test_pick_hop_text_never_concatenates():
     assert "عجیبه" in out or out == a
 
 
-def test_monologue_hops_stitch_into_one_continuous_row():
-    """TDD-style continuous reading must not become many overlapping cards."""
+def test_monologue_hops_preserve_all_content_append_only():
+    """Append-only: continuous reading may be several cards, but nothing is dropped."""
     intervals = [SpeakerInterval("SPEAKER_00", 0, 60000, False)]
     segments = align_stt_with_diarization(
         "m1",
@@ -173,28 +173,28 @@ def test_monologue_hops_stitch_into_one_continuous_row():
                 "توسعه مبتنی بر تست یا همان تستینگ و دیزاین رویکردی در مهندسی نرم‌افزار است که در آن ابتدا یک تست واحد یا همان یونیت تست",
             ),
             (
-                6000,
-                14000,
+                7000,
+                15000,
                 "برای عبور از آن تست پیاده سازی شده و در نهایت فرآیند رفاکتورینگ انجام میگیرد تا ساختار کد بدون تغییر رفتار آن بهبود یابد",
             ),
             (
-                12000,
-                20000,
+                14000,
+                22000,
                 "این چرخه با نام Red-Green-Refactor شناخته میشود علاوه بر افزایش قابلیت اطمینان نرم‌افزار باعث کاهش تکنیکال دپت",
             ),
             (
-                18000,
-                26000,
+                21000,
+                29000,
                 "بهبود دیزاین API و افزایش maintainability میشود در پروژه‌های مدرن TDD معمولاً در کنار ابزارهایی مانند JUnit Pytest",
             ),
             (
-                24000,
-                32000,
+                28000,
+                36000,
                 "تی دی دی معمولاً در کنار ابزارهایی مانند جی یونیت پایتست و پایپلاینهای سی آی سی دی اجرا میشود تا هر کامیت به سرعت",
             ),
             (
-                30000,
-                38000,
+                35000,
+                43000,
                 "استفاده از ماک و استاب نیز در این فرآیند اهمیت بالایی دارد زیرا امکان تست مستقل اجزای سیستم را فراهم میکند",
             ),
         ],
@@ -204,8 +204,8 @@ def test_monologue_hops_stitch_into_one_continuous_row():
     assert "یونیت تست" in texts or "تست واحد" in texts
     assert "رفاکتورینگ" in texts or "Refactor" in texts.lower() or "بهبود" in texts
     assert "ماک" in texts or "استاب" in texts or "مستقل" in texts
-    # Should coalesce overlapping hops, not leave ~6 near-duplicate cards
-    assert len(segments) <= 3
+    # Light 1s overlap must not collapse everything into one wiped card
+    assert len(segments) >= 4
 
 
 def test_stitch_keeps_prefix_and_suffix():
@@ -260,10 +260,50 @@ def test_upsert_keeps_previous_when_next_hop_is_partial(tmp_path, store):
         (w, 500 + i * 400, 900 + i * 400) for i, w in enumerate(good.split())
     ]
     session._upsert_pending_stt(0, 8000, good, good_words)
-    session._upsert_pending_stt(6000, 14000, "خب", [("خب", 8200, 8600)])
+    # 1s-style overlap (7000 hop on 8000 window) — append, do not wipe
+    session._upsert_pending_stt(7000, 15000, "خب", [("خب", 8200, 8600)])
     texts = [row[2] for row in session._pending_stt]
     assert any("میشنوی" in t for t in texts)
-    assert not (len(texts) == 1 and texts[0].strip() == "خب")
+    assert any(t.strip() == "خب" or "خب" in t for t in texts)
+    assert len(session._pending_stt) >= 2
+
+
+def test_upsert_appends_non_overlapping_hops(tmp_path, store):
+    from api.meeting.session import MeetingSession
+
+    record = MeetingRecord.create(title="t")
+    store.save_meeting(record)
+    session = MeetingSession(
+        record=record,
+        store=store,
+        stt_provider=object(),
+        diarizer=SpeakerDiarizer(max_speakers=1),
+        audio_dir=str(tmp_path / "audio"),
+    )
+    session._upsert_pending_stt(0, 8000, "جمله اول کامل است", None)
+    session._upsert_pending_stt(8000, 16000, "جمله دوم هم کامل است", None)
+    session._upsert_pending_stt(16000, 24000, "جمله سوم هم اینجاست", None)
+    assert len(session._pending_stt) == 3
+    joined = " ".join(row[2] for row in session._pending_stt)
+    assert "جمله اول" in joined and "جمله دوم" in joined and "جمله سوم" in joined
+
+
+def test_upsert_updates_same_span_with_fuller_text(tmp_path, store):
+    from api.meeting.session import MeetingSession
+
+    record = MeetingRecord.create(title="t")
+    store.save_meeting(record)
+    session = MeetingSession(
+        record=record,
+        store=store,
+        stt_provider=object(),
+        diarizer=SpeakerDiarizer(max_speakers=1),
+        audio_dir=str(tmp_path / "audio"),
+    )
+    session._upsert_pending_stt(0, 8000, "سلام خوبی", None)
+    session._upsert_pending_stt(0, 8000, "سلام خوبی صدای منو میشنوی", None)
+    assert len(session._pending_stt) == 1
+    assert "میشنوی" in session._pending_stt[0][2]
 
 
 def test_word_timings_do_not_override_fuller_stitched_text():
