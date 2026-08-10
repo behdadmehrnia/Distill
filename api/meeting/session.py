@@ -19,6 +19,7 @@ from .models import MeetingRecord, MeetingStatus, TranscriptSegment
 from .review import (
     TranscriptReviewAgent,
     gate_stt_text,
+    is_whisper_boilerplate,
     localize_nonspeech_events,
     score_stt_text,
 )
@@ -170,6 +171,9 @@ class MeetingSession:
     async def _gate_stt_text(self, text: str) -> Optional[str]:
         mode = self._review_mode()
         lang = str(self.tuning.get("stt_language") or "fa")
+        if is_whisper_boilerplate(text):
+            logger.info("STT gate dropped Whisper boilerplate text=%r", (text or "")[:80])
+            return None
         if mode == "off":
             cleaned = (text or "").strip()
             if len(cleaned) < 2 or not any(ch.isalpha() for ch in cleaned):
@@ -177,7 +181,8 @@ class MeetingSession:
             # Language-drift guard only; skip full heuristic polish when off
             score, reasons = score_stt_text(cleaned, language=lang)
             if score < 0.35 and any(
-                r in {"wrong_script", "no_persian"} or r.startswith("latin_")
+                r in {"wrong_script", "no_persian", "whisper_boilerplate"}
+                or r.startswith("latin_")
                 for r in reasons
             ):
                 logger.info(
@@ -449,6 +454,8 @@ class MeetingSession:
             _pick_hop_text,
             _same_utterance,
             _stitch_hop_texts,
+            _text_quality,
+            _token_containment,
         )
 
         acc_s, acc_e, acc_t, acc_w = start_ms, end_ms, text, words
@@ -457,8 +464,9 @@ class MeetingSession:
             ps, pe, pt, pw = prev[0], prev[1], prev[2], prev[3]
             ov = _overlap_ms(ps, pe, acc_s, acc_e)
             shorter = max(1, min(pe - ps, acc_e - acc_s))
+            overlap_ratio = ov / shorter
             near = acc_s - pe <= 1500 and ps - acc_e <= 1500
-            if (ov / shorter >= 0.12 or near) and _same_utterance(pt, acc_t):
+            if (overlap_ratio >= 0.12 or near) and _same_utterance(pt, acc_t):
                 acc_s = min(acc_s, ps)
                 acc_e = max(acc_e, pe)
                 before = acc_t
@@ -469,8 +477,25 @@ class MeetingSession:
                     acc_w = acc_w or pw
                 else:
                     acc_w = words or pw or acc_w
-            elif ov / shorter >= 0.12:
-                # Overlapping hop continuation — stitch full monologue
+            elif overlap_ratio >= 0.45 and not _same_utterance(pt, acc_t):
+                # Heavy overlap + dissimilar text = competing re-transcription
+                # of the same span (common with short hop_ms). Keep established
+                # good text instead of gluing hop hallucinations onto it.
+                acc_s = min(acc_s, ps)
+                acc_e = max(acc_e, pe)
+                if _token_containment(pt, acc_t) >= 0.6:
+                    acc_t = _stitch_hop_texts(pt, acc_t)
+                    acc_w = words or pw or acc_w
+                else:
+                    qa, qb = _text_quality(pt), _text_quality(acc_t)
+                    if qb > qa + 0.15:
+                        # Rare: new hop is clearly better — take it
+                        acc_w = words or pw or acc_w
+                    else:
+                        acc_t = pt
+                        acc_w = pw or acc_w
+            elif overlap_ratio >= 0.12:
+                # Mild overlap — likely monologue continuation across hops
                 acc_s = min(acc_s, ps)
                 acc_e = max(acc_e, pe)
                 acc_t = _stitch_hop_texts(pt, acc_t)

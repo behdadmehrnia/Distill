@@ -192,10 +192,18 @@ def merge_adjacent_segments(
     return merged
 
 
+def _text_quality(text: str) -> float:
+    """Heuristic STT quality in [0,1]; lazy import avoids review↔aligner cycle."""
+    from api.meeting.review import score_stt_text
+
+    score, _ = score_stt_text(text or "", language="fa")
+    return float(score)
+
+
 def _pick_hop_text(prev: str, new: str) -> str:
     """
     Choose / stitch transcripts among Whisper variants of the same utterance.
-    Prefer longer/more complete; stitch overlapping hops instead of dropping prefixes.
+    Prefer higher quality over raw length so a later hop cannot wipe good text.
     """
     return _stitch_hop_texts(prev, new)
 
@@ -268,12 +276,20 @@ def _continuation_skip(ta: List[str], tb: List[str]) -> int:
     return best
 
 
+def _better_text(a: str, b: str) -> str:
+    """Prefer clearly higher quality; on a tie keep established text (a)."""
+    qa, qb = _text_quality(a), _text_quality(b)
+    if qb > qa + 0.08:
+        return b
+    return a
+
+
 def _stitch_hop_texts(prev: str, new: str) -> str:
     """
     Merge overlapping-window transcripts into continuous text.
 
-    Keeps unique prefixes from earlier hops and unique suffixes from later hops
-    (fixes monologue fragmentation / silent data loss across 8s/6s windows).
+    Keeps unique prefixes from earlier hops and unique suffixes from later hops,
+    but refuses to overwrite a high-quality transcript with hop junk/hallucinations.
     """
     a = (prev or "").strip()
     b = (new or "").strip()
@@ -284,29 +300,63 @@ def _stitch_hop_texts(prev: str, new: str) -> str:
     if b in a:
         return a
     if a in b:
-        return b
+        # Modest completion of a partial hop is OK; a huge junk wrap is not.
+        ta, tb = a.split(), b.split()
+        if len(tb) <= len(ta) + max(4, len(ta) // 2):
+            return _better_text(a, b) if _text_quality(b) + 0.08 < _text_quality(a) else b
+        return _better_text(a, b)
 
     ta, tb = a.split(), b.split()
+    qa, qb = _text_quality(a), _text_quality(b)
+    sim = _text_similarity(a, b)
+    cont = _token_containment(a, b)
+
     k = _best_suffix_prefix_overlap(ta, tb)
     if k >= 2 or (k == 1 and len(ta) <= 4):
-        return _collapse_internal_repeats(" ".join(ta + tb[k:]).strip())
+        stitched = _collapse_internal_repeats(" ".join(ta + tb[k:]).strip())
+        qs = _text_quality(stitched)
+        # Stitch that tanks quality vs the established text → keep the better raw hop
+        if qa >= 0.6 and qs + 0.12 < qa:
+            return _better_text(a, b)
+        return stitched
 
-    # Same utterance variants with no clean edge: keep the fuller form
-    if _same_utterance(a, b):
-        cont = _token_containment(a, b)
+    # Same utterance variants: quality first, then fuller form
+    if sim >= 0.38 or cont >= 0.55 or _same_utterance(a, b):
+        if abs(qa - qb) >= 0.12:
+            return a if qa > qb else b
         if cont >= 0.7:
             return a if len(ta) >= len(tb) else b
-        # Partial variants — still try continuation skip then prefer longer
         skip = _continuation_skip(ta, tb)
         if skip > 0 and skip < len(tb):
-            return _collapse_internal_repeats(" ".join(ta + tb[skip:]).strip())
-        return a if len(ta) >= len(tb) else b
+            stitched = _collapse_internal_repeats(" ".join(ta + tb[skip:]).strip())
+            if _text_quality(stitched) + 0.12 < max(qa, qb) and max(qa, qb) >= 0.6:
+                return _better_text(a, b)
+            return stitched
+        return _better_text(a, b)
 
-    # Time-overlapping continuation of a monologue (different lexical content)
+    # Dissimilar heavy-overlap hops: only suppress clear junk overwrites.
+    # Real monologue continuations (different words, both decent) still stitch.
+    if sim < 0.25 and cont < 0.35:
+        if qa >= 0.65 and qb < 0.5:
+            return a
+        if qb >= 0.65 and qa < 0.5:
+            return b
+        if qa >= 0.7 and qb + 0.25 < qa:
+            return a
+        if qb >= 0.7 and qa + 0.25 < qb:
+            return b
+
     skip = _continuation_skip(ta, tb)
     if skip > 0 and skip < len(tb):
-        return _collapse_internal_repeats(" ".join(ta + tb[skip:]).strip())
+        stitched = _collapse_internal_repeats(" ".join(ta + tb[skip:]).strip())
+        if _text_quality(stitched) + 0.12 < max(qa, qb) and max(qa, qb) >= 0.6:
+            return _better_text(a, b)
+        return stitched
     if skip >= len(tb):
+        return a
+
+    # Blind concat is a last resort; refuse when new hop is clearly worse junk
+    if qa >= 0.65 and qb < 0.5:
         return a
     return _collapse_internal_repeats(" ".join(ta + tb).strip())
 
@@ -681,4 +731,6 @@ def _same_utterance(a: str, b: str) -> bool:
         return True
     sim = _text_similarity(a, b)
     cont = _token_containment(a, b)
-    return sim >= 0.30 or cont >= 0.45
+    # Keep this stricter than before: loose matching let junk hops "win"
+    # and wipe a complete good transcript on the next overlapping window.
+    return sim >= 0.40 or cont >= 0.55

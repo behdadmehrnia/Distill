@@ -102,6 +102,7 @@ def needs_llm_polish(score: float, reasons: Sequence[str]) -> bool:
         "collapsed",
         "tiny_vocab",
         "no_persian",
+        "whisper_boilerplate",
     )
     for reason in reasons or ():
         r = str(reason)
@@ -224,6 +225,40 @@ _NONSPEECH_FA: dict[str, str] = {
     "yawning": "خمیازه",
 }
 _NONSPEECH_RE = re.compile(r"[\(\[]\s*([a-zA-Z][a-zA-Z\s_]*)\s*[\)\]]")
+# Bare Whisper hallucinations that wipe real speech on the next hop
+_WHISPER_BOILERPLATE = frozenset(
+    {
+        "music",
+        "music playing",
+        "background music",
+        "موسیقی",
+        "silence",
+        "سکوت",
+        "applause",
+        "تشویق",
+        "subtitles",
+        "subtitle",
+        "زیرنویس",
+        "زیرنویسها",
+        "زیرنویس‌ها",
+        "thanks for watching",
+        "thank you for watching",
+        "subscribe",
+        "like and subscribe",
+        "inaudible",
+        "unintelligible",
+        "نامفهوم",
+        "blank audio",
+        "بی‌صدا",
+        "noise",
+        "سر و صدا",
+        "static",
+        "نویز",
+        *{v for v in _NONSPEECH_FA.values()},
+    }
+)
+_EVENT_TAG_RE = re.compile(r"[\(\[【][^\)\]】]*[\)\]】]")
+_BOILERPLATE_STRIP_RE = re.compile(r"[\(\)\[\]【】♪♫\.\،\,\s_\-]+")
 
 
 def localize_nonspeech_events(text: str) -> str:
@@ -236,6 +271,39 @@ def localize_nonspeech_events(text: str) -> str:
         return f"({fa})" if fa else match.group(0)
 
     return _NONSPEECH_RE.sub(_repl, text or "")
+
+
+def _boilerplate_key(text: str) -> str:
+    t = (text or "").strip().lower().replace("\u200c", "").replace("\u200d", "")
+    t = _BOILERPLATE_STRIP_RE.sub(" ", t)
+    return " ".join(t.split())
+
+
+def is_whisper_boilerplate(text: str) -> bool:
+    """
+    True for Whisper junk that is only a non-speech label / YouTube boilerplate.
+
+    These often arrive on a later hop and wipe a complete good transcript
+    (classic: good Persian sentence → suddenly just «موسیقی»).
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    key = _boilerplate_key(raw)
+    if key in _WHISPER_BOILERPLATE:
+        return True
+
+    # "(سرفه) ." / "[Music]" / "♪ موسیقی ♪" after localization
+    stripped = _NONSPEECH_RE.sub(" ", raw)
+    stripped = _EVENT_TAG_RE.sub(" ", stripped)
+    tokens = tokenize(stripped)
+    if not tokens:
+        return True
+    if len(tokens) <= 3 and all(
+        _boilerplate_key(tok) in _WHISPER_BOILERPLATE for tok in tokens
+    ):
+        return True
+    return False
 
 
 REVIEW_SYSTEM_PROMPT = """You are Distill's ASR cleanup agent for Persian (and mixed) meeting transcripts.
@@ -355,7 +423,13 @@ def _is_faithful_edit(original: str, edited: str) -> bool:
     # Enough original tokens must survive (typo fixes still pass)
     et_set = set(et)
     retained = sum(1 for t in ot if t in et_set)
-    if retained / len(ot) < 0.5:
+    if retained / len(ot) < 0.65:
+        return False
+
+    # Polish must not collapse quality into gibberish
+    qo, _ = score_stt_text(orig)
+    qe, _ = score_stt_text(edit)
+    if qo >= 0.7 and qe + 0.2 < qo:
         return False
     return True
 
@@ -508,6 +582,8 @@ def score_stt_text(text: str, *, language: str = "fa") -> tuple[float, List[str]
         return 0.0, ["too_short"]
     if _PUNCT_ONLY.match(t):
         return 0.0, ["punct_only"]
+    if is_whisper_boilerplate(t):
+        return 0.0, ["whisper_boilerplate"]
     if not any(ch.isalpha() for ch in t):
         return 0.0, ["no_letters"]
 

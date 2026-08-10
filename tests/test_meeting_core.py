@@ -218,6 +218,42 @@ def test_stitch_keeps_prefix_and_suffix():
     assert "عبور از آن تست" in out
 
 
+def test_hop_merge_does_not_wipe_good_text_with_junk():
+    """Later overlapping hop must not replace a complete good transcript with nonsense."""
+    from api.meeting.aligner import _pick_hop_text
+
+    good = "امروز جلسه خوبی داشتیم و تصمیم گرفتیم ادامه دهیم"
+    # Longer hallucination wrapping a short good prefix must lose
+    wrapped = good + " تست تست تست hello hello hello world project"
+    out2 = _pick_hop_text(good, wrapped)
+    assert "جلسه خوبی" in out2
+    assert "hello" not in out2
+
+
+def test_upsert_pending_keeps_quality_across_hops(tmp_path, store):
+    from api.meeting.session import MeetingSession
+
+    record = MeetingRecord.create(title="t")
+    store.save_meeting(record)
+    session = MeetingSession(
+        record=record,
+        store=store,
+        stt_provider=object(),
+        diarizer=SpeakerDiarizer(max_speakers=1),
+        audio_dir=str(tmp_path / "audio"),
+    )
+    good = "امروز جلسه خوبی داشتیم و تصمیم گرفتیم ادامه دهیم"
+    junk = "یکی دو سه تست نشونم چی میگم آدمه ما اصلا نامبر سشک forming"
+    # 75% time overlap (8s window / 2s hop) — competing re-transcription
+    session._upsert_pending_stt(0, 8000, good, None)
+    session._upsert_pending_stt(2000, 10000, junk, None)
+    assert len(session._pending_stt) >= 1
+    texts = " ".join(row[2] for row in session._pending_stt)
+    assert "جلسه خوبی" in texts
+    assert "forming" not in texts
+    assert "نامبر" not in texts
+
+
 def test_align_skips_false_overlap_from_frame_edge_flicker():
     """Abutting turns + tiny 40ms overlaps must not become هم‌صحبتی."""
     intervals = [
@@ -364,12 +400,52 @@ def test_localize_nonspeech_events_to_persian():
 
     assert localize_nonspeech_events("(cough) .") == "(سرفه) ."
     assert localize_nonspeech_events("(cough) . (Sigh) .") == "(سرفه) . (آه) ."
-    result = gate_stt_text("(cough) . (Sigh) .")
-    assert result.accepted
-    assert "(سرفه)" in result.text
-    assert "(آه)" in result.text
-    assert "cough" not in result.text.lower()
-    assert "sigh" not in result.text.lower()
+    # Event tags inside real speech stay (localized); pure event-only is dropped
+    mixed = gate_stt_text("سلام (cough) خوبی؟")
+    assert mixed.accepted
+    assert "(سرفه)" in mixed.text
+    assert "cough" not in mixed.text.lower()
+    pure = gate_stt_text("(cough) . (Sigh) .")
+    assert not pure.accepted
+    assert "whisper_boilerplate" in pure.reasons
+
+
+def test_gate_drops_whisper_music_hallucination():
+    """Classic wipe: good speech hop → later hop returns only «موسیقی»."""
+    for junk in (
+        "موسیقی",
+        "موسیقی.",
+        "Music",
+        "[Music]",
+        "(music)",
+        "♪ موسیقی ♪",
+        "Thanks for watching",
+        "زیرنویس‌ها",
+    ):
+        result = gate_stt_text(junk, language="fa")
+        assert not result.accepted, junk
+        assert "whisper_boilerplate" in result.reasons
+
+
+def test_music_hop_does_not_wipe_good_pending(tmp_path, store):
+    from api.meeting.session import MeetingSession
+
+    record = MeetingRecord.create(title="t")
+    store.save_meeting(record)
+    session = MeetingSession(
+        record=record,
+        store=store,
+        stt_provider=object(),
+        diarizer=SpeakerDiarizer(max_speakers=1),
+        audio_dir=str(tmp_path / "audio"),
+    )
+    good = "خب میخوام ببینم این بار درست مینویسه یا نه"
+    session._upsert_pending_stt(16000, 24000, good, None)
+    # Even if boilerplate somehow bypasses the gate, heavy-overlap must not wipe.
+    session._upsert_pending_stt(18000, 22000, "موسیقی", None)
+    texts = " ".join(row[2] for row in session._pending_stt)
+    assert "درست مینویسه" in texts
+    assert texts.strip() != "موسیقی"
 
 
 def test_polish_prompt_file_loads():
