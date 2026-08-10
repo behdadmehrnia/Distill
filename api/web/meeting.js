@@ -2925,16 +2925,12 @@ class DistillClient {
 
     const decisionRows = decisions
       .map((d, idx) => {
-        const done = d.status === "done";
-        const pending = d.status === "pending";
         const numbered = !!(d.description || d.executor || d.due_date);
         return `<tr>
             <td class="num">${numbered ? this.toPersianDigits(idx + 1) : ""}</td>
             <td class="desc">${this.escape(d.description || "")}</td>
             <td class="center">${this.escape(d.executor || "")}</td>
             <td class="center">${this.escape(d.due_date || "")}</td>
-            <td class="mark">${done ? "✓" : ""}</td>
-            <td class="mark">${pending ? "✓" : ""}</td>
           </tr>`;
       })
       .join("");
@@ -3104,11 +3100,9 @@ class DistillClient {
     vertical-align: top;
     padding: 3px 4px;
   }
-  #minutesPrintRoot .num { width: 6%; text-align: center; vertical-align: middle !important; }
-  #minutesPrintRoot .desc { width: 48%; }
-  #minutesPrintRoot .center { width: 13%; text-align: center; vertical-align: middle !important; }
-  #minutesPrintRoot .mark { width: 10%; text-align: center; vertical-align: middle !important; }
-  #minutesPrintRoot .status-top { border-bottom: 1px solid #000; }
+  #minutesPrintRoot .num { width: 8%; text-align: center; vertical-align: middle !important; }
+  #minutesPrintRoot .desc { width: 54%; }
+  #minutesPrintRoot .center { width: 19%; text-align: center; vertical-align: middle !important; }
   #minutesPrintRoot .sign-wrap { height: 28mm; }
   #minutesPrintRoot .sign-wrap td { height: 28mm; vertical-align: top; }
 </style>
@@ -3176,15 +3170,10 @@ class DistillClient {
       <table class="decisions">
         <thead>
           <tr>
-            <th class="num" rowspan="2">ردیف</th>
-            <th class="desc" rowspan="2">شرح مصوبات/ پیشنهادات/ پیگیری ها</th>
-            <th class="center" rowspan="2">مجری</th>
-            <th class="center" rowspan="2">سر رسید</th>
-            <th class="mark status-top" colspan="2">انجام</th>
-          </tr>
-          <tr>
-            <th class="mark">شد</th>
-            <th class="mark">نشد</th>
+            <th class="num">ردیف</th>
+            <th class="desc">شرح مصوبات/ پیشنهادات/ پیگیری ها</th>
+            <th class="center">مجری</th>
+            <th class="center">سر رسید</th>
           </tr>
         </thead>
         <tbody>
