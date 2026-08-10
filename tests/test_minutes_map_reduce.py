@@ -183,11 +183,12 @@ async def test_minutes_short_transcript_single_llm_call():
     assert result.absentees == []
     assert result.secretary == "علی"
     assert len(result.decisions) == 1
-    assert llm.calls[0]["max_tokens"] <= 1024
+    assert llm.calls[0]["max_tokens"] <= 2048
 
 
 @pytest.mark.asyncio
-async def test_minutes_long_transcript_uses_parallel_map_and_local_merge():
+async def test_minutes_long_transcript_uses_parallel_map_and_local_merge(monkeypatch):
+    monkeypatch.setenv("MINUTES_LLM_MERGE", "0")
     llm = FakeLLM(delay=0.05)
     gen = MeetingMinutesGenerator(llm, max_chars=120)
     segments = [
@@ -211,7 +212,7 @@ async def test_minutes_long_transcript_uses_parallel_map_and_local_merge():
         if "partial minutes extracts" in c["system"] or "partial extracts" in c["user"]
     ]
     assert len(map_calls) >= 2
-    assert merge_calls == []  # local merge by default
+    assert merge_calls == []  # local merge when MINUTES_LLM_MERGE=0
     assert len(llm.calls) == len(map_calls)
     assert llm.max_in_flight >= 2  # parallel extracts
 

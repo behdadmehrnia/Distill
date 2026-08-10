@@ -14,8 +14,8 @@ def test_normalize_chat_completions_url():
 def test_build_llm_timeout_fail_fast_connect():
     t = build_llm_timeout(60)
     assert t.total == 60
-    assert t.sock_connect == 8.0
-    assert t.connect == 8.0
+    assert t.sock_connect == 20.0
+    assert t.connect == 20.0
 
 
 def test_format_llm_failure_connector():

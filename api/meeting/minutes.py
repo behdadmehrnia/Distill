@@ -13,12 +13,13 @@ from .models import MeetingMinutes, MinutesDecision, TranscriptSegment
 
 logger = logging.getLogger(__name__)
 
-# Split earlier so each LLM call stays fast on mid-size remote models.
-DEFAULT_MAX_TRANSCRIPT_CHARS = 12_000
+# Prefer one high-quality LLM call for typical meetings; map-reduce only for very long text.
+DEFAULT_MAX_TRANSCRIPT_CHARS = 40_000
 DEFAULT_MINUTES_MAX_CHUNKS = 4
 DEFAULT_MINUTES_PARALLEL = 2
-DEFAULT_MINUTES_LLM_TIMEOUT_S = 45.0
-DEFAULT_MINUTES_MAX_TOKENS = 1024
+# Minutes agent gets a long budget — remote gemma-class models are slow but required.
+DEFAULT_MINUTES_LLM_TIMEOUT_S = 180.0
+DEFAULT_MINUTES_MAX_TOKENS = 2048
 
 MINUTES_SYSTEM_PROMPT = """You are Distill, producing a formal Persian meeting minutes document (صورت جلسه).
 Given a speaker-labeled transcript and the list of confirmed attendee names, extract structured minutes.
@@ -44,7 +45,8 @@ Rules:
 - attendees MUST be exactly the provided confirmed attendee names, verbatim, with no additions or omissions.
 - absentees MUST always be an empty array []. Never invent absentees; the user fills that field later.
 - secretary MUST be empty or one of the provided attendee names.
-- Only include decisions/action items that are actually supported by the transcript.
+- Extract every decision and follow-up (مصوبه / پیگیری / اقدام) that is actually supported by the transcript into decisions[].
+- Include owner/executor and due date when the transcript states them.
 - If nothing qualifies as a decision or action item, use an empty array.
 - Do not invent people, facts, or names that are not in the provided attendee list / transcript.
 - All free-text fields must be in Persian.
@@ -67,7 +69,7 @@ Extract only what is supported by this part. Respond ONLY with valid JSON:
   ]
 }
 Rules:
-- Only include decisions supported by THIS part.
+- Extract decisions/follow-ups (مصوبه / پیگیری / اقدام) supported by THIS part.
 - Do not invent people or facts.
 - executor must be empty or one of the provided attendee names.
 - All free-text fields must be in Persian.
@@ -96,7 +98,7 @@ Rules:
 - attendees MUST be exactly the provided confirmed attendee names.
 - absentees MUST always be [].
 - secretary MUST be empty or one of the attendees.
-- Deduplicate near-identical decisions; keep distinct action items.
+- Keep all distinct decisions/follow-ups; deduplicate near-identical ones only.
 - Do not invent people, facts, or decisions not present in the partials.
 - All free-text fields must be in Persian.
 """
@@ -131,7 +133,7 @@ def minutes_llm_timeout_s() -> float:
         value = float(raw)
     except ValueError:
         return DEFAULT_MINUTES_LLM_TIMEOUT_S
-    return max(10.0, value)
+    return max(60.0, value)
 
 
 def minutes_max_chunks() -> int:
@@ -165,7 +167,10 @@ def minutes_max_tokens() -> int:
 
 
 def minutes_use_llm_merge() -> bool:
+    """Default ON for quality; set MINUTES_LLM_MERGE=0 for local-only merge."""
     raw = os.getenv("MINUTES_LLM_MERGE", "").strip().lower()
+    if not raw:
+        return True
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -190,13 +195,11 @@ def split_transcript(text: str, max_chars: int) -> List[str]:
             current_len = 0
 
     for line in lines:
-        # +1 for the newline rejoined between lines (except first in chunk)
         add = len(line) + (1 if current else 0)
         if current and current_len + add > max_chars:
             flush()
             add = len(line)
         if len(line) > max_chars:
-            # Rare: a single line longer than budget — hard-split it.
             flush()
             for i in range(0, len(line), max_chars):
                 chunks.append(line[i : i + max_chars])
@@ -220,7 +223,7 @@ def cap_chunks(chunks: List[str], max_chunks: int) -> List[str]:
 def merge_partials_local(
     partials: List[dict], attendee_names: List[str]
 ) -> dict:
-    """Deterministic merge — avoids an extra slow LLM round-trip."""
+    """Deterministic merge used when MINUTES_LLM_MERGE=0."""
     subject = ""
     meeting_date = ""
     location = ""
@@ -324,11 +327,12 @@ class MeetingMinutesGenerator:
             )
         else:
             logger.info(
-                "Minutes map-reduce: transcript_chars=%d chunks=%d budget=%d parallel=%d",
+                "Minutes map-reduce: transcript_chars=%d chunks=%d budget=%d parallel=%d llm_merge=%s",
                 len(transcript),
                 len(chunks),
                 self.max_chars,
                 minutes_parallel(),
+                minutes_use_llm_merge(),
             )
             partials = await self._extract_partials_parallel(chunks, attendee_names)
             if minutes_use_llm_merge():
@@ -346,18 +350,9 @@ class MeetingMinutesGenerator:
 
         async def one(idx: int, chunk: str) -> dict:
             async with sem:
-                try:
-                    return await self._extract_partial(
-                        chunk, attendee_names, part=idx, total=total
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Minutes partial extract failed (part %d/%d): %s",
-                        idx,
-                        total,
-                        exc,
-                    )
-                    return {"summary": "", "decisions": []}
+                return await self._extract_partial(
+                    chunk, attendee_names, part=idx, total=total
+                )
 
         return list(
             await asyncio.gather(
@@ -409,7 +404,7 @@ class MeetingMinutesGenerator:
         raw = await self.llm.complete(
             messages,
             temperature=0.2,
-            max_tokens=min(768, minutes_max_tokens()),
+            max_tokens=min(1536, minutes_max_tokens()),
             timeout=minutes_llm_timeout_s(),
         )
         data = _parse_json_response(raw)
@@ -533,7 +528,6 @@ def _attendees_from_meeting(
         if label and label not in names:
             names.append(label)
 
-    # Include any remaining mapped speakers (named but maybe sparse in segments).
     for sid, label in speaker_map.items():
         cleaned = str(label or "").strip()
         if cleaned and cleaned not in names:

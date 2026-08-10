@@ -202,7 +202,7 @@ def test_minutes_local_merge_quality_preserves_decisions():
 
 
 @pytest.mark.asyncio
-async def test_minutes_generate_surfaces_llm_runtime_error():
+async def test_minutes_generate_raises_when_llm_unreachable():
     class BoomLLM:
         async def complete(self, *args, **kwargs):
             raise RuntimeError(
@@ -214,9 +214,56 @@ async def test_minutes_generate_surfaces_llm_runtime_error():
     with pytest.raises(RuntimeError, match="در دسترس نیست"):
         await gen.generate(
             "m-err",
-            [_seg("سلام، امروز جلسه برگزار شد.")],
+            [_seg("سلام، امروز جلسه برگزار شد و قرار شد گزارش مالی تا فردا آماده شود.")],
             speaker_map={"SPEAKER_00": "علی"},
         )
+
+
+@pytest.mark.asyncio
+async def test_minutes_extracts_decisions_from_llm():
+    class DecisionsLLM:
+        async def complete(self, messages, temperature=0.2, max_tokens=2048, **kwargs):
+            return json.dumps(
+                {
+                    "subject": "بودجه",
+                    "meeting_date": "",
+                    "location": "",
+                    "attendees": ["علی", "مریم"],
+                    "absentees": [],
+                    "secretary": "مریم",
+                    "summary": "درباره بودجه و پیگیری‌ها صحبت شد.",
+                    "decisions": [
+                        {
+                            "description": "تهیه گزارش مالی",
+                            "executor": "علی",
+                            "due_date": "فردا",
+                            "status": "pending",
+                        },
+                        {
+                            "description": "هماهنگی جلسه بعد",
+                            "executor": "مریم",
+                            "due_date": "",
+                            "status": "pending",
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+    gen = MeetingMinutesGenerator(DecisionsLLM(), max_chars=50_000)
+    result = await gen.generate(
+        "m-dec",
+        [
+            _seg("باید گزارش مالی تا فردا آماده شود."),
+            _seg("مریم جلسه بعد را هماهنگ کند.", start_ms=1000),
+        ],
+        speaker_map={"SPEAKER_00": "علی", "SPEAKER_01": "مریم"},
+    )
+    assert len(result.decisions) == 2
+    assert result.decisions[0].description == "تهیه گزارش مالی"
+    assert result.decisions[0].executor == "علی"
+    assert result.decisions[0].due_date == "فردا"
+    assert result.decisions[1].executor == "مریم"
 
 
 def test_pyannote_empty_falls_back_to_heuristic(monkeypatch):

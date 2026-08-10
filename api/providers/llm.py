@@ -30,9 +30,10 @@ def normalize_chat_completions_url(endpoint: str) -> str:
 def _connect_timeout_s(total: float) -> float:
     raw = os.getenv("LLM_CONNECT_TIMEOUT_S", "").strip()
     try:
-        connect = float(raw) if raw else 8.0
+        # Default 20s: remote LLM hosts can be slow to accept TCP before generating.
+        connect = float(raw) if raw else 20.0
     except ValueError:
-        connect = 8.0
+        connect = 20.0
     return max(2.0, min(connect, float(total)))
 
 
@@ -52,15 +53,23 @@ def format_llm_failure(endpoint: str, exc: BaseException) -> str:
     host = urlparse(endpoint).netloc or endpoint
     name = type(exc).__name__
     msg = str(exc) or name
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "Timeout" in name:
-        return (
-            f"زمان پاسخ مدل زبانی (LLM) در {host} به پایان رسید. "
-            "اتصال یا سرویس مدل را بررسی کنید."
-        )
-    if isinstance(exc, aiohttp.ClientConnectorError) or "Cannot connect" in msg:
+    lowered = msg.lower()
+    # sock_connect timeouts often surface as TimeoutError / ClientConnectorError.
+    if (
+        isinstance(exc, aiohttp.ClientConnectorError)
+        or "cannot connect" in lowered
+        or "connect call failed" in lowered
+        or "connection refused" in lowered
+        or "nodename nor servname" in lowered
+    ):
         return (
             f"سرور مدل زبانی (LLM) در {host} در دسترس نیست. "
             "LLM_ENDPOINT و شبکه/فایروال را بررسی کنید."
+        )
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "timeout" in name.lower() or "timeout" in lowered:
+        return (
+            f"زمان پاسخ مدل زبانی (LLM) در {host} به پایان رسید. "
+            "اتصال یا سرویس مدل را بررسی کنید."
         )
     if isinstance(exc, aiohttp.ClientError):
         return f"خطا در ارتباط با مدل زبانی ({host}): {msg}"

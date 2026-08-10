@@ -2196,11 +2196,11 @@ class DistillClient {
     if (!this.meetingId) return;
     this.showMinutesLoading(true);
     try {
-      // Slightly above server minutes LLM budget so we surface API errors, not silent hangs.
+      // Server minutes LLM budget is ~180s; keep UI waiting for a full agent pass.
       const res = await this.fetchWithTimeout(
         `/meetings/${this.meetingId}/minutes/generate`,
         { method: "POST" },
-        75000
+        200000
       );
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
@@ -2210,7 +2210,7 @@ class DistillClient {
       await this.showPrompt({
         title: "تولید صورت جلسه ناموفق",
         message:
-          "تولید خودکار صورت جلسه انجام نشد؛ فرم خالی برای تکمیل دستی نمایش داده می‌شود.\n\n" +
+          "تولید خودکار صورت جلسه انجام نشد؛ می‌توانید بعداً دوباره تلاش کنید یا فرم را دستی تکمیل کنید.\n\n" +
           this.formatErrorDetail(err.message || err),
       });
       this.renderMinutesForm(

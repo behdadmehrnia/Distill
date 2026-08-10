@@ -253,20 +253,21 @@ def test_minutes_generate_get_put(tmp_path):
 
 
 def test_minutes_generate_returns_502_when_llm_unreachable(tmp_path):
+    from api.meeting.minutes import MeetingMinutesGenerator
     from api.meeting.models import TranscriptSegment
 
-    class BoomMinutes:
-        async def generate(self, *args, **kwargs):
-            raise RuntimeError(
-                "سرور مدل زبانی (LLM) در 81.29.248.136 در دسترس نیست. "
-                "LLM_ENDPOINT و شبکه/فایروال را بررسی کنید."
-            )
+    class BoomLLM:
+        async def complete(self, *args, **kwargs):
+            raise RuntimeError("زمان پاسخ مدل زبانی (LLM) در 81.29.248.136 به پایان رسید.")
 
     with _make_client(tmp_path) as client:
-        client.app.state.minutes = BoomMinutes()
+        client.app.state.minutes = MeetingMinutesGenerator(BoomLLM())
         created = client.post("/meetings", json={"title": "صورتجلسه", "start": False})
         meeting_id = created.json()["id"]
         store = client.app.state.manager.store
+        meeting = store.get_meeting(meeting_id)
+        meeting.speaker_map = {"SPEAKER_00": "علی"}
+        store.save_meeting(meeting)
         store.save_segment(
             TranscriptSegment.create(
                 meeting_id=meeting_id,
@@ -279,8 +280,7 @@ def test_minutes_generate_returns_502_when_llm_unreachable(tmp_path):
         )
         resp = client.post(f"/meetings/{meeting_id}/minutes/generate")
         assert resp.status_code == 502
-        detail = resp.json()["detail"]
-        assert "در دسترس نیست" in detail
+        assert "زمان پاسخ" in resp.json()["detail"]
 
 
 def test_recording_endpoint_and_restart(tmp_path):
