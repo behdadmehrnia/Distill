@@ -438,6 +438,43 @@ def _collapse_consecutive_phrase_runs(words: List[str]) -> List[str]:
     return words
 
 
+def _merge_word_timings(
+    left: Optional[Sequence[Tuple[str, int, int]]],
+    right: Optional[Sequence[Tuple[str, int, int]]],
+) -> Optional[List[Tuple[str, int, int]]]:
+    """Union hop word timings; never let a later partial hop erase earlier words."""
+    if not left and not right:
+        return None
+    if not left:
+        return [(w, int(s), int(e)) for w, s, e in right or []]
+    if not right:
+        return [(w, int(s), int(e)) for w, s, e in left]
+
+    merged = sorted(
+        [(str(w), int(s), int(e)) for w, s, e in list(left) + list(right)],
+        key=lambda item: (item[1], item[2], item[0]),
+    )
+    out: List[Tuple[str, int, int]] = []
+    for word, start, end in merged:
+        if end < start:
+            start, end = end, start
+        if not out:
+            out.append((word, start, end))
+            continue
+        pw, ps, pe = out[-1]
+        ov = _overlap_ms(ps, pe, start, end)
+        shorter = max(1, min(pe - ps, end - start))
+        same_tok = _norm_token(pw) == _norm_token(word)
+        if ov / shorter >= 0.5 and same_tok:
+            out[-1] = (pw, min(ps, start), max(pe, end))
+            continue
+        # Competing ASR spellings on the same instant — keep the earlier one
+        if ov / shorter >= 0.7:
+            continue
+        out.append((word, start, end))
+    return out
+
+
 def _collapse_overlapping_stt_windows(
     stt_windows: Sequence[SttWindow],
 ) -> List[SttWindow]:
@@ -446,6 +483,7 @@ def _collapse_overlapping_stt_windows(
 
     Critical: do NOT chain-merge dissimilar hops into one span with the latest
     text — that erased earlier speech and looked like "summarization".
+    Also never replace earlier word timings with a later partial hop's words.
     """
     items: List[List[Any]] = []
     for window in stt_windows:
@@ -464,17 +502,31 @@ def _collapse_overlapping_stt_windows(
         prev = out[-1]
         ov = _overlap_ms(prev[0], prev[1], item[0], item[1])
         shorter = max(1, min(prev[1] - prev[0], item[1] - item[0]))
-        if ov / shorter >= 0.12 and _same_utterance(prev[2], item[2]):
+        overlap_ratio = ov / shorter if shorter else 0.0
+        ta, tb = str(prev[2]).split(), str(item[2]).split()
+        cont_signal = (
+            _best_suffix_prefix_overlap(ta, tb) >= 2
+            or (0 < _continuation_skip(ta, tb) < len(tb))
+        )
+        # A short new hop ("خب") must not absorb a complete earlier sentence.
+        partial_new = len(tb) <= max(3, int(len(ta) * 0.35))
+
+        if overlap_ratio >= 0.12 and _same_utterance(prev[2], item[2]):
             prev[1] = max(prev[1], item[1])
             prev[2] = _pick_hop_text(prev[2], item[2])
-            if item[3] and (not prev[3] or len(item[2].split()) >= len(prev[2].split())):
-                prev[3] = item[3]
-        elif ov / shorter >= 0.12:
+            prev[3] = _merge_word_timings(prev[3], item[3])
+        elif (
+            overlap_ratio >= 0.12
+            and not _same_utterance(prev[2], item[2])
+            and partial_new
+            and not cont_signal
+        ):
+            out.append(item)
+        elif overlap_ratio >= 0.12:
             # Continuous monologue across hops — stitch instead of many cards
             prev[1] = max(prev[1], item[1])
             prev[2] = _stitch_hop_texts(prev[2], item[2])
-            if item[3] and (not prev[3] or len(item[2].split()) >= len(prev[2].split())):
-                prev[3] = item[3]
+            prev[3] = _merge_word_timings(prev[3], item[3])
         else:
             out.append(item)
     return [(int(a), int(b), str(t), w) for a, b, t, w in out]
@@ -581,8 +633,15 @@ def align_stt_with_diarization(
                 meeting_id, words, intervals, provisional, min_overlap_ms
             )
             if word_segs:
-                segments.extend(word_segs)
-                continue
+                word_text = " ".join(s.text for s in word_segs).strip()
+                text_tokens = max(1, len(text.split()))
+                word_tokens = len(word_text.split())
+                # Partial later-hop word timings must not erase fuller window text.
+                # Require words to cover most of the window text (not merely be
+                # a subset of it — «خب» ⊂ full sentence would wrongly pass).
+                if word_tokens >= max(1, int(text_tokens * 0.55)):
+                    segments.extend(word_segs)
+                    continue
 
         overlap_speakers = _significant_overlap_speakers(
             start_ms, end_ms, intervals, min_overlap_ms=min_overlap_ms

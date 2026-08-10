@@ -218,16 +218,67 @@ def test_stitch_keeps_prefix_and_suffix():
     assert "عبور از آن تست" in out
 
 
-def test_hop_merge_does_not_wipe_good_text_with_junk():
-    """Later overlapping hop must not replace a complete good transcript with nonsense."""
-    from api.meeting.aligner import _pick_hop_text
+def test_partial_new_hop_does_not_wipe_previous_utterance():
+    """User: complete sentence stays when next hop only caught «خب»."""
+    intervals = [SpeakerInterval("SPEAKER_00", 0, 60000, False)]
+    good = "سلام خوبی صدای منو میشنوی"
+    good_words = [
+        (w, 500 + i * 400, 900 + i * 400) for i, w in enumerate(good.split())
+    ]
+    partial = "خب"
+    partial_words = [("خب", 8200, 8600)]
+    segments = align_stt_with_diarization(
+        "m1",
+        [
+            (0, 8000, good, good_words),
+            (6000, 14000, partial, partial_words),
+        ],
+        intervals,
+    )
+    texts = " ".join(s.text for s in segments)
+    assert "سلام" in texts
+    assert "میشنوی" in texts
+    # Must not collapse to only the partial new hop
+    assert texts.strip() != "خب"
+    assert any("سلام" in s.text for s in segments)
 
-    good = "امروز جلسه خوبی داشتیم و تصمیم گرفتیم ادامه دهیم"
-    # Longer hallucination wrapping a short good prefix must lose
-    wrapped = good + " تست تست تست hello hello hello world project"
-    out2 = _pick_hop_text(good, wrapped)
-    assert "جلسه خوبی" in out2
-    assert "hello" not in out2
+
+def test_upsert_keeps_previous_when_next_hop_is_partial(tmp_path, store):
+    from api.meeting.session import MeetingSession
+
+    record = MeetingRecord.create(title="t")
+    store.save_meeting(record)
+    session = MeetingSession(
+        record=record,
+        store=store,
+        stt_provider=object(),
+        diarizer=SpeakerDiarizer(max_speakers=1),
+        audio_dir=str(tmp_path / "audio"),
+    )
+    good = "سلام خوبی صدای منو میشنوی"
+    good_words = [
+        (w, 500 + i * 400, 900 + i * 400) for i, w in enumerate(good.split())
+    ]
+    session._upsert_pending_stt(0, 8000, good, good_words)
+    session._upsert_pending_stt(6000, 14000, "خب", [("خب", 8200, 8600)])
+    texts = [row[2] for row in session._pending_stt]
+    assert any("میشنوی" in t for t in texts)
+    assert not (len(texts) == 1 and texts[0].strip() == "خب")
+
+
+def test_word_timings_do_not_override_fuller_stitched_text():
+    """If hop words are only «خب» but window text is fuller, trust text."""
+    intervals = [SpeakerInterval("SPEAKER_00", 0, 60000, False)]
+    text = "سلام خوبی صدای منو میشنوی خب"
+    words = [("خب", 7000, 7400)]
+    segments = align_stt_with_diarization(
+        "m1",
+        [(0, 14000, text, words)],
+        intervals,
+    )
+    assert segments
+    assert "سلام" in segments[0].text
+    assert "میشنوی" in segments[0].text
 
 
 def test_upsert_pending_keeps_quality_across_hops(tmp_path, store):

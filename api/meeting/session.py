@@ -450,6 +450,9 @@ class MeetingSession:
     ) -> None:
         """Keep one pending row per spoken utterance; fold Whisper hop variants."""
         from api.meeting.aligner import (
+            _best_suffix_prefix_overlap,
+            _continuation_skip,
+            _merge_word_timings,
             _overlap_ms,
             _pick_hop_text,
             _same_utterance,
@@ -466,17 +469,24 @@ class MeetingSession:
             shorter = max(1, min(pe - ps, acc_e - acc_s))
             overlap_ratio = ov / shorter
             near = acc_s - pe <= 1500 and ps - acc_e <= 1500
+            ta, tb = pt.split(), acc_t.split()
+            cont_signal = (
+                _best_suffix_prefix_overlap(ta, tb) >= 2
+                or (0 < _continuation_skip(ta, tb) < len(tb))
+            )
+            partial_new = len(tb) <= max(3, int(len(ta) * 0.35))
+
             if (overlap_ratio >= 0.12 or near) and _same_utterance(pt, acc_t):
                 acc_s = min(acc_s, ps)
                 acc_e = max(acc_e, pe)
                 before = acc_t
                 acc_t = _pick_hop_text(pt, acc_t)
                 if acc_t == pt:
-                    acc_w = pw or acc_w
+                    acc_w = _merge_word_timings(pw, None) or pw or acc_w
                 elif acc_t == before:
-                    acc_w = acc_w or pw
+                    acc_w = _merge_word_timings(acc_w, pw)
                 else:
-                    acc_w = words or pw or acc_w
+                    acc_w = _merge_word_timings(pw, words)
             elif overlap_ratio >= 0.45 and not _same_utterance(pt, acc_t):
                 # Heavy overlap + dissimilar text = competing re-transcription
                 # of the same span (common with short hop_ms). Keep established
@@ -485,21 +495,29 @@ class MeetingSession:
                 acc_e = max(acc_e, pe)
                 if _token_containment(pt, acc_t) >= 0.6:
                     acc_t = _stitch_hop_texts(pt, acc_t)
-                    acc_w = words or pw or acc_w
+                    acc_w = _merge_word_timings(pw, words)
                 else:
                     qa, qb = _text_quality(pt), _text_quality(acc_t)
                     if qb > qa + 0.15:
-                        # Rare: new hop is clearly better — take it
-                        acc_w = words or pw or acc_w
+                        acc_w = _merge_word_timings(pw, words)
                     else:
                         acc_t = pt
                         acc_w = pw or acc_w
+            elif (
+                overlap_ratio >= 0.12
+                and not _same_utterance(pt, acc_t)
+                and partial_new
+                and not cont_signal
+            ):
+                # New short hop ("خب") overlapping previous complete sentence —
+                # keep both rows so the earlier utterance is not wiped.
+                kept.append(prev)
             elif overlap_ratio >= 0.12:
                 # Mild overlap — likely monologue continuation across hops
                 acc_s = min(acc_s, ps)
                 acc_e = max(acc_e, pe)
                 acc_t = _stitch_hop_texts(pt, acc_t)
-                acc_w = words or pw or acc_w
+                acc_w = _merge_word_timings(pw, words)
             else:
                 kept.append(prev)
         kept.append((acc_s, acc_e, acc_t, acc_w))
