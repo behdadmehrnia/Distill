@@ -4,7 +4,6 @@ pipeline:
   name: pyannote.audio.pipelines.SpeakerDiarization
   params:
     clustering: AgglomerativeClustering
-    # Filenames MUST contain "pyannote" so weights load as PyTorch (not ONNX).
     embedding: models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin
     embedding_batch_size: 32
     embedding_exclude_overlap: true

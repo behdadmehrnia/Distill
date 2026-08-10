@@ -31,10 +31,12 @@ Respond ONLY with valid JSON using this schema:
   ]
 }
 Rules:
-- Use the provided attendee names verbatim; do not invent people who did not speak.
+- attendees MUST be exactly the provided confirmed attendee names, verbatim, with no additions or omissions.
+- absentees MUST always be an empty array []. Never invent absentees; the user fills that field later.
+- secretary MUST be empty or one of the provided attendee names.
 - Only include decisions/action items that are actually supported by the transcript.
 - If nothing qualifies as a decision or action item, use an empty array.
-- Do not invent facts that are not supported by the transcript.
+- Do not invent people, facts, or names that are not in the provided attendee list / transcript.
 - All free-text fields must be in Persian.
 """
 
@@ -57,21 +59,21 @@ class MeetingMinutesGenerator:
         participants: Optional[List[str]] = None,
     ) -> MeetingMinutes:
         speaker_map = speaker_map or {}
-        attendee_names = sorted({v for v in speaker_map.values() if v}) or list(
-            participants or []
-        )
+        attendee_names = _attendees_from_meeting(speaker_map, segments, participants)
         transcript = format_transcript_for_llm(segments, speaker_map)
 
         if not transcript.strip():
             return MeetingMinutes(
                 meeting_id=meeting_id,
                 attendees=attendee_names,
+                absentees=[],
                 summary=_EMPTY_SUMMARY,
             )
         if not has_meaningful_speech(segments):
             return MeetingMinutes(
                 meeting_id=meeting_id,
                 attendees=attendee_names,
+                absentees=[],
                 summary=_NOISE_ONLY_SUMMARY,
             )
 
@@ -80,7 +82,8 @@ class MeetingMinutesGenerator:
             {
                 "role": "user",
                 "content": (
-                    f"حاضرین شناسایی‌شده: {', '.join(attendee_names) or '(نامشخص)'}\n\n"
+                    f"حاضرین تأییدشده (فقط همین‌ها را در attendees بگذار؛ absentees را همیشه [] بگذار):\n"
+                    f"{', '.join(attendee_names) or '(نامشخص)'}\n\n"
                     "متن کامل جلسه را تحلیل کن و فقط JSON برگردان.\n\n"
                     f"{transcript}"
                 ),
@@ -98,18 +101,26 @@ class MeetingMinutesGenerator:
                 description = str(item.get("description") or "").strip()
                 if not description:
                     continue
+                executor = str(item.get("executor") or "").strip()
+                if executor and executor not in attendee_names:
+                    executor = ""
                 decisions.append(
                     MinutesDecision(
                         id=str(uuid.uuid4()),
                         description=description,
-                        executor=str(item.get("executor") or "").strip(),
+                        executor=executor,
                         due_date=str(item.get("due_date") or "").strip(),
                         status=str(item.get("status") or "pending").strip() or "pending",
                     )
                 )
 
-        attendees = _as_str_list(data.get("attendees")) or attendee_names
-        absentees = _as_str_list(data.get("absentees"))
+        # Never trust the model for attendance: attendees = registered speakers,
+        # absentees always empty for the user to fill later.
+        attendees = list(attendee_names)
+        absentees: List[str] = []
+        secretary = str(data.get("secretary") or "").strip()
+        if secretary not in attendees:
+            secretary = ""
         summary = str(data.get("summary") or "").strip()
         if not summary and not decisions:
             summary = (
@@ -125,7 +136,7 @@ class MeetingMinutesGenerator:
             location=str(data.get("location") or "").strip(),
             attendees=attendees,
             absentees=absentees,
-            secretary=str(data.get("secretary") or "").strip(),
+            secretary=secretary,
             summary=summary,
             decisions=decisions,
             raw_json=data,
@@ -134,11 +145,37 @@ class MeetingMinutesGenerator:
         )
 
 
-def _as_str_list(value: Any) -> List[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value] if value.strip() else []
-    if isinstance(value, list):
-        return [str(v).strip() for v in value if str(v).strip()]
-    return [str(value)]
+def _attendees_from_meeting(
+    speaker_map: Dict[str, Any],
+    segments: List[TranscriptSegment],
+    participants: Optional[List[str]],
+) -> List[str]:
+    """Build attendees only from registered speaker names (and segment order)."""
+    seen_ids: List[str] = []
+    for seg in segments or []:
+        sid = str(seg.speaker_id or "").strip()
+        if sid and sid not in seen_ids:
+            seen_ids.append(sid)
+        for other in seg.overlap_speakers or []:
+            oid = str(other or "").strip()
+            if oid and oid not in seen_ids:
+                seen_ids.append(oid)
+
+    names: List[str] = []
+    for sid in seen_ids:
+        label = str(speaker_map.get(sid) or "").strip()
+        if label and label not in names:
+            names.append(label)
+
+    # Include any remaining mapped speakers (named but maybe sparse in segments).
+    for sid, label in speaker_map.items():
+        cleaned = str(label or "").strip()
+        if cleaned and cleaned not in names:
+            names.append(cleaned)
+
+    if not names:
+        for p in participants or []:
+            cleaned = str(p or "").strip()
+            if cleaned and cleaned not in names:
+                names.append(cleaned)
+    return names

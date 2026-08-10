@@ -50,7 +50,6 @@ class DistillClient {
     this.stopBtn = document.getElementById("stopBtn");
     this.uploadBtn = document.getElementById("uploadBtn");
     this.uploadFile = document.getElementById("uploadFile");
-    this.clearBtn = document.getElementById("clearBtn");
     this.timeline = document.getElementById("timeline");
     this.connectionStatus = document.getElementById("connectionStatus");
     this.statusText = document.getElementById("statusText");
@@ -194,7 +193,6 @@ class DistillClient {
     this.startBtn.addEventListener("click", () => this.startLive());
     this.stopBtn.addEventListener("click", () => this.stopLive());
     this.uploadBtn.addEventListener("click", () => this.uploadRecording());
-    this.clearBtn.addEventListener("click", () => this.clearTimeline(true));
     if (this.confirmCancelBtn) {
       this.confirmCancelBtn.addEventListener("click", () => this.resolveConfirm(false));
     }
@@ -323,6 +321,10 @@ class DistillClient {
     const minutesSave = document.getElementById("minutesSaveBtn");
     if (minutesSave) {
       minutesSave.addEventListener("click", () => this.saveMinutes());
+    }
+    const minutesPrint = document.getElementById("minutesPrintBtn");
+    if (minutesPrint) {
+      minutesPrint.addEventListener("click", () => this.printMinutes());
     }
     const minutesRegenerate = document.getElementById("minutesRegenerateBtn");
     if (minutesRegenerate) {
@@ -1843,35 +1845,61 @@ class DistillClient {
       });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      this.renderMinutesForm(data);
+      this.renderMinutesForm(data, { fromAgent: true });
     } catch (err) {
       console.error(err);
       alert(`تولید صورت جلسه ناموفق بود؛ فرم خالی برای تکمیل دستی نمایش داده می‌شود.\n${err.message}`);
-      this.renderMinutesForm({
-        subject: "",
-        meeting_date: "",
-        location: "",
-        secretary: "",
-        summary: "",
-        attendees: Object.values(this.speakerMap || {}),
-        absentees: [],
-        decisions: [],
-      });
+      this.renderMinutesForm(
+        {
+          subject: "",
+          meeting_date: "",
+          location: "",
+          secretary: "",
+          summary: "",
+          attendees: this.registeredAttendeeNames(),
+          absentees: [],
+          decisions: [],
+        },
+        { fromAgent: true }
+      );
     } finally {
       this.showMinutesLoading(false);
     }
   }
 
-  renderMinutesForm(data) {
-    this._minutesAttendees = [...(data.attendees || [])];
-    this._minutesAbsentees = [...(data.absentees || [])];
-    this._minutesDecisions = (data.decisions || []).map((d) => ({
-      id: d.id || `d-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      description: d.description || "",
-      executor: d.executor || "",
-      due_date: d.due_date || "",
-      status: d.status || "pending",
-    }));
+  registeredAttendeeNames() {
+    const names = [];
+    const seen = new Set();
+    Object.values(this.speakerMap || {}).forEach((name) => {
+      const cleaned = String(name || "").trim();
+      if (!cleaned || seen.has(cleaned)) return;
+      seen.add(cleaned);
+      names.push(cleaned);
+    });
+    return names;
+  }
+
+  renderMinutesForm(data, { fromAgent = false } = {}) {
+    if (fromAgent) {
+      this._minutesAttendees = this.registeredAttendeeNames();
+      this._minutesAbsentees = [];
+    } else {
+      this._minutesAttendees = [...(data.attendees || [])];
+      this._minutesAbsentees = [...(data.absentees || [])];
+    }
+    this._minutesDecisions = (data.decisions || []).map((d) => {
+      let executor = d.executor || "";
+      if (fromAgent && executor && !this._minutesAttendees.includes(executor)) {
+        executor = "";
+      }
+      return {
+        id: d.id || `d-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        description: d.description || "",
+        executor,
+        due_date: d.due_date || "",
+        status: d.status || "pending",
+      };
+    });
     if (this.minutesSubject) this.minutesSubject.value = data.subject || "";
     if (this.minutesLocation) this.minutesLocation.value = data.location || "";
     if (this.minutesSummary) this.minutesSummary.value = data.summary || "";
@@ -1884,7 +1912,11 @@ class DistillClient {
 
     this.renderMinutesChipList("attendees");
     this.renderMinutesChipList("absentees");
-    this.refreshSecretaryOptions(data.secretary || "");
+    const secretary =
+      fromAgent && data.secretary && !this._minutesAttendees.includes(data.secretary)
+        ? ""
+        : data.secretary || "";
+    this.refreshSecretaryOptions(secretary);
     this.renderMinutesDecisions();
     if (this.minutesSaveStatus) this.minutesSaveStatus.classList.add("hidden");
   }
@@ -2324,23 +2356,10 @@ class DistillClient {
 
   async saveMinutes() {
     if (!this.meetingId) return;
+    const form = this.collectMinutesFormData();
     const payload = {
-      subject: (this.minutesSubject?.value || "").trim(),
-      meeting_date: this.getJalaliDateValue(),
-      location: (this.minutesLocation?.value || "").trim(),
-      secretary: (this.minutesSecretary?.value || "").trim(),
-      summary: (this.minutesSummary?.value || "").trim(),
-      attendees: [...this._minutesAttendees],
-      absentees: [...this._minutesAbsentees],
-      decisions: this._minutesDecisions
-        .map((d) => ({
-          id: d.id,
-          description: (d.description || "").trim(),
-          executor: (d.executor || "").trim(),
-          due_date: (d.due_date || "").trim(),
-          status: d.status || "pending",
-        }))
-        .filter((d) => d.description),
+      ...form,
+      decisions: form.decisions.filter((d) => d.description),
     };
     try {
       const res = await fetch(`/meetings/${this.meetingId}/minutes`, {
@@ -2364,6 +2383,398 @@ class DistillClient {
       console.error(err);
       alert(`ذخیره صورت جلسه ناموفق: ${err.message}`);
     }
+  }
+
+  collectMinutesFormData() {
+    return {
+      subject: (this.minutesSubject?.value || "").trim(),
+      meeting_date: this.getJalaliDateValue(),
+      location: (this.minutesLocation?.value || "").trim(),
+      secretary: (this.minutesSecretary?.value || "").trim(),
+      summary: (this.minutesSummary?.value || "").trim(),
+      attendees: [...this._minutesAttendees],
+      absentees: [...this._minutesAbsentees],
+      decisions: this._minutesDecisions.map((d) => ({
+        id: d.id,
+        description: (d.description || "").trim(),
+        executor: (d.executor || "").trim(),
+        due_date: (d.due_date || "").trim(),
+        status: d.status || "pending",
+      })),
+    };
+  }
+
+  printMinutes() {
+    const data = this.collectMinutesFormData();
+    const html = this.buildMinutesPrintHtml(data);
+    let iframe = document.getElementById("minutesPrintFrame");
+    if (!iframe) {
+      iframe = document.createElement("iframe");
+      iframe.id = "minutesPrintFrame";
+      iframe.setAttribute("aria-hidden", "true");
+      iframe.setAttribute("title", "چاپ صورت جلسه");
+      iframe.style.cssText =
+        "position:fixed;inset-inline-end:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;";
+      document.body.appendChild(iframe);
+    }
+
+    const win = iframe.contentWindow;
+    const doc = win?.document;
+    if (!win || !doc) {
+      alert("امکان آماده‌سازی پرینت در این مرورگر وجود ندارد.");
+      return;
+    }
+
+    doc.open();
+    doc.write(html);
+    doc.close();
+
+    const triggerPrint = () => {
+      try {
+        win.focus();
+        win.print();
+      } catch (err) {
+        console.error(err);
+        alert(`پرینت ناموفق بود: ${err.message || err}`);
+      }
+    };
+
+    // Wait for Vazirmatn to load (or timeout) before printing.
+    const triggerWhenReady = () => {
+      const start = Date.now();
+      const tryPrint = () => {
+        const fontsReady =
+          !doc.fonts ||
+          !doc.fonts.check ||
+          doc.fonts.check("12px Vazirmatn") ||
+          Date.now() - start > 1200;
+        if (fontsReady) {
+          triggerPrint();
+          return;
+        }
+        window.setTimeout(tryPrint, 80);
+      };
+      if (doc.fonts && doc.fonts.ready) {
+        Promise.race([
+          doc.fonts.ready,
+          new Promise((resolve) => window.setTimeout(resolve, 1200)),
+        ]).then(tryPrint);
+      } else {
+        window.setTimeout(tryPrint, 280);
+      }
+    };
+    triggerWhenReady();
+  }
+
+  buildMinutesPrintHtml(data) {
+    const subject = this.escape(data.subject || "");
+    const dateFull = this.escape(data.meeting_date || "");
+    const dateOnly = this.escape(String(data.meeting_date || "").split(/\s+/)[0] || "");
+    const timeOnly = this.escape(
+      (String(data.meeting_date || "").match(/\d{1,2}:\d{2}/) || [""])[0]
+    );
+    const location = this.escape(data.location || "");
+    const secretary = this.escape(data.secretary || "");
+    const attendees = this.escape((data.attendees || []).join("، "));
+    const absentees = this.escape((data.absentees || []).join("، "));
+    const meetingId = this.escape(this.meetingId || "—");
+
+    const decisions = [...(data.decisions || [])].filter(
+      (d) => d.description || d.executor || d.due_date
+    );
+    const minRows = 12;
+    while (decisions.length < minRows) {
+      decisions.push({ description: "", executor: "", due_date: "", status: "" });
+    }
+
+    const decisionRows = decisions
+      .map((d, idx) => {
+        const done = d.status === "done";
+        const pending = d.status === "pending";
+        const numbered = !!(d.description || d.executor || d.due_date);
+        return `<tr>
+            <td class="num">${numbered ? this.toPersianDigits(idx + 1) : ""}</td>
+            <td class="desc">${this.escape(d.description || "")}</td>
+            <td class="center">${this.escape(d.executor || "")}</td>
+            <td class="center">${this.escape(d.due_date || "")}</td>
+            <td class="mark">${done ? "✓" : ""}</td>
+            <td class="mark">${pending ? "✓" : ""}</td>
+          </tr>`;
+      })
+      .join("");
+
+    return `<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <title>فرم صورت جلسه</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <style>
+    @page { size: A4 portrait; margin: 8mm; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #fff;
+      color: #000;
+      font-family: 'Vazirmatn', Tahoma, 'Segoe UI', sans-serif;
+      font-size: 10pt;
+      line-height: 1.45;
+      direction: rtl;
+    }
+    .page {
+      width: 100%;
+      min-height: 277mm;
+      height: 277mm;
+      display: flex;
+      flex-direction: column;
+      border: 1.6px solid #000;
+      overflow: hidden;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    td, th {
+      border: 1px solid #000;
+      padding: 5px 6px;
+      vertical-align: middle;
+      overflow: hidden;
+      word-wrap: break-word;
+      overflow-wrap: anywhere;
+      hyphens: auto;
+    }
+    .head-logo {
+      width: 20%;
+      text-align: center;
+      padding: 8px 4px;
+    }
+    .head-title {
+      width: 48%;
+      text-align: center;
+      font-size: 18pt;
+      font-weight: 700;
+    }
+    .head-id {
+      width: 32%;
+      text-align: center;
+      font-size: 7.5pt;
+      line-height: 1.35;
+      padding: 6px 8px;
+      word-break: break-all;
+    }
+    .head-id .id-label {
+      display: block;
+      font-weight: 700;
+      margin-bottom: 3px;
+      font-size: 8pt;
+    }
+    .head-id .id-value {
+      display: block;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 7pt;
+      direction: ltr;
+      unicode-bidi: isolate;
+    }
+    .brand {
+      margin-top: 2px;
+      font-size: 8.5pt;
+      font-weight: 700;
+    }
+    .lbl {
+      width: 11%;
+      font-weight: 700;
+      white-space: nowrap;
+      font-size: 9.5pt;
+      background: #fafafa;
+    }
+    .val {
+      font-size: 9.5pt;
+      max-width: 0;
+    }
+    .meta-2 .lbl { width: 12%; }
+    .vlabel {
+      width: 28px;
+      max-width: 28px;
+      text-align: center;
+      font-weight: 700;
+      font-size: 9pt;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      letter-spacing: 0.12em;
+      padding: 6px 2px;
+      background: #fafafa;
+    }
+    .people {
+      vertical-align: top;
+      font-size: 9.5pt;
+      line-height: 1.6;
+      min-height: 36px;
+    }
+    .attach {
+      width: 28%;
+      text-align: center;
+      font-size: 8.5pt;
+      white-space: nowrap;
+    }
+    .box {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border: 1px solid #000;
+      margin-inline: 2px 3px;
+      vertical-align: -1px;
+    }
+    .time-cell { padding: 0; }
+    .time-cell table td {
+      border: 0;
+      border-bottom: 1px solid #000;
+      padding: 4px 6px;
+      font-size: 9pt;
+    }
+    .time-cell table tr:last-child td { border-bottom: 0; }
+    .grow {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .grow > table {
+      flex: 1 1 auto;
+      height: 100%;
+    }
+    .decisions {
+      height: 100%;
+    }
+    .decisions thead th {
+      background: #f6e59a;
+      text-align: center;
+      font-weight: 700;
+      font-size: 9pt;
+      padding: 4px 3px;
+    }
+    .decisions tbody td {
+      height: 7.2mm;
+      font-size: 9pt;
+      vertical-align: top;
+      padding: 3px 4px;
+    }
+    .num { width: 6%; text-align: center; vertical-align: middle !important; }
+    .desc { width: 48%; }
+    .center { width: 13%; text-align: center; vertical-align: middle !important; }
+    .mark { width: 10%; text-align: center; vertical-align: middle !important; }
+    .status-top { border-bottom: 1px solid #000; }
+    .sign-wrap { height: 28mm; }
+    .sign-wrap td { height: 28mm; vertical-align: top; }
+    @media print {
+      html, body, .page {
+        height: 277mm;
+        min-height: 277mm;
+      }
+      body {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <table>
+      <tr>
+        <td class="head-logo">
+          <svg width="68" height="32" viewBox="0 0 36 17" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M8.5 0.5C12.9183 0.5 16.5 4.08172 16.5 8.5C16.5 12.9183 12.9183 16.5 8.5 16.5C4.08172 16.5 0.5 12.9183 0.5 8.5C0.5 4.08172 4.08172 0.5 8.5 0.5Z" stroke="#B8860B" stroke-width="1.2"/>
+            <path d="M27.5 17C32.1944 17 36 13.1944 36 8.5C36 3.80558 32.1944 0 27.5 0C22.8056 0 19 3.80558 19 8.5C19 13.1944 22.8056 17 27.5 17Z" fill="#B8860B"/>
+          </svg>
+          <div class="brand">Distill</div>
+        </td>
+        <td class="head-title">فرم صورت جلسه</td>
+        <td class="head-id">
+          <span class="id-label">شناسه جلسه</span>
+          <span class="id-value">${meetingId}</span>
+        </td>
+      </tr>
+    </table>
+
+    <table>
+      <tr>
+        <td class="lbl">موضوع:</td>
+        <td class="val" colspan="3">${subject}</td>
+        <td class="lbl">تاریخ:</td>
+        <td class="val">${dateOnly || dateFull}</td>
+      </tr>
+      <tr class="meta-2">
+        <td class="lbl">محل برگزاری:</td>
+        <td class="val" colspan="2">${location}</td>
+        <td class="time-cell" colspan="2">
+          <table>
+            <tr><td><b>شروع:</b> ${timeOnly || dateFull}</td></tr>
+            <tr><td><b>خاتمه:</b></td></tr>
+          </table>
+        </td>
+        <td class="val" style="text-align:center; width:14%;">
+          <b>صفحه</b><br/>${this.toPersianDigits(1)} از ${this.toPersianDigits(1)}
+        </td>
+      </tr>
+    </table>
+
+    <table>
+      <tr>
+        <td class="vlabel">حاضرین</td>
+        <td class="people" style="width:64%;">${attendees}</td>
+        <td class="attach">
+          <span><span class="box"></span>پیوست دارد</span>
+          &nbsp;
+          <span><span class="box"></span>ندارد</span>
+        </td>
+      </tr>
+    </table>
+
+    <table>
+      <tr>
+        <td class="vlabel">غائبین</td>
+        <td class="people" style="width:58%;">${absentees}</td>
+        <td class="lbl" style="width:12%;">دبیرجلسه:</td>
+        <td class="people" style="width:22%;">${secretary}</td>
+      </tr>
+    </table>
+
+    <div class="grow">
+      <table class="decisions">
+        <thead>
+          <tr>
+            <th class="num" rowspan="2">ردیف</th>
+            <th class="desc" rowspan="2">شرح مصوبات/ پیشنهادات/ پیگیری ها</th>
+            <th class="center" rowspan="2">مجری</th>
+            <th class="center" rowspan="2">سر رسید</th>
+            <th class="mark status-top" colspan="2">انجام</th>
+          </tr>
+          <tr>
+            <th class="mark">شد</th>
+            <th class="mark">نشد</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${decisionRows}
+        </tbody>
+      </table>
+    </div>
+
+    <table class="sign-wrap">
+      <tr>
+        <td class="vlabel">امضاء حاضرین</td>
+        <td></td>
+      </tr>
+    </table>
+  </div>
+</body>
+</html>`;
   }
 
   async openExistingMinutes() {
