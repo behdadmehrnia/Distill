@@ -92,7 +92,7 @@ async def test_review_only_sends_shaky_segments_to_llm(monkeypatch):
     llm = RecordingLLM()
     agent = TranscriptReviewAgent(llm=llm, enabled=True)
     clean = "امروز درباره بودجه پروژه صحبت کردیم و تصمیم گرفتیم."
-    shaky = "تست تست تست برای پالیش متن جلسه امروز"
+    shaky = "تست تست تست برای بهبود متن جلسه امروز"
     out = await agent.review_segments(
         [_seg(clean, start_ms=0), _seg(shaky, start_ms=1000)],
         language="fa",
@@ -110,7 +110,7 @@ async def test_review_keeps_heuristic_text_when_llm_unreachable(monkeypatch):
     llm = RecordingLLM(fail_after=0)
     agent = TranscriptReviewAgent(llm=llm, enabled=True)
     segs = [
-        _seg(f"متن جلسه شماره {i} برای پالیش تست", start_ms=i * 1000)
+        _seg(f"متن جلسه شماره {i} برای بهبود تست", start_ms=i * 1000)
         for i in range(4)
     ]
     out = await agent.review_segments(segs, language="fa")

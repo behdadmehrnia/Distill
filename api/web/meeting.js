@@ -1480,7 +1480,7 @@ class DistillClient {
       } else if (isLive) {
         statusBadge = '<span class="badge badge-muted">موقت</span>';
       } else if (polishKeys.has(key)) {
-        statusBadge = '<span class="badge badge-polish">پالیش‌شده</span>';
+        statusBadge = '<span class="badge badge-polish">بهبودیافته</span>';
       } else {
         statusBadge = '<span class="badge badge-editable">قابل ویرایش</span>';
       }

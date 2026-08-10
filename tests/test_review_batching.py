@@ -86,7 +86,7 @@ async def test_review_segments_batches_long_payload(monkeypatch):
             speaker_id="SPEAKER_00",
             start_ms=i * 1000,
             end_ms=i * 1000 + 900,
-            text=f"متن شماره {i} برای پالیش " + ("الف" * 8),
+            text=f"متن شماره {i} برای بهبود " + ("الف" * 8),
         )
         for i in range(6)
     ]
