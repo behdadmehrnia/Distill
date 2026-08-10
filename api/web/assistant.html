@@ -964,6 +964,21 @@
       background: #4ade80;
     }
 
+    .processing-phase-list li .phase-note {
+      margin-inline-start: auto;
+      font-size: 0.72rem;
+      color: #777;
+    }
+
+    .processing-phase-list li.is-active .phase-note {
+      color: rgba(249, 212, 35, 0.85);
+    }
+
+    .speaker-play-btn.is-loading {
+      opacity: 0.65;
+      cursor: wait;
+    }
+
     .transcript-review-list {
       display: flex;
       flex-direction: column;
@@ -1838,7 +1853,10 @@
           <li data-phase="save_audio">ذخیره فایل صوتی</li>
           <li data-phase="flush_stt">تکمیل پیاده‌سازی متن</li>
           <li data-phase="diarize">شناسایی نهایی سخنگوها</li>
-          <li data-phase="review">پالیش نهایی متن</li>
+          <li data-phase="review">
+            پالیش نهایی متن
+            <span class="phase-note">ممکن است کمی طول بکشد</span>
+          </li>
         </ul>
       </div>
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -26,6 +27,46 @@ def normalize_chat_completions_url(endpoint: str) -> str:
     return f"{url}/chat/completions"
 
 
+def _connect_timeout_s(total: float) -> float:
+    raw = os.getenv("LLM_CONNECT_TIMEOUT_S", "").strip()
+    try:
+        connect = float(raw) if raw else 8.0
+    except ValueError:
+        connect = 8.0
+    return max(2.0, min(connect, float(total)))
+
+
+def build_llm_timeout(total: float) -> aiohttp.ClientTimeout:
+    """Fail fast on dead hosts; keep total budget for slow model responses."""
+    connect = _connect_timeout_s(total)
+    return aiohttp.ClientTimeout(
+        total=float(total),
+        connect=connect,
+        sock_connect=connect,
+        sock_read=float(total),
+    )
+
+
+def format_llm_failure(endpoint: str, exc: BaseException) -> str:
+    """Human-readable error for API responses / UI prompts."""
+    host = urlparse(endpoint).netloc or endpoint
+    name = type(exc).__name__
+    msg = str(exc) or name
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "Timeout" in name:
+        return (
+            f"زمان پاسخ مدل زبانی (LLM) در {host} به پایان رسید. "
+            "اتصال یا سرویس مدل را بررسی کنید."
+        )
+    if isinstance(exc, aiohttp.ClientConnectorError) or "Cannot connect" in msg:
+        return (
+            f"سرور مدل زبانی (LLM) در {host} در دسترس نیست. "
+            "LLM_ENDPOINT و شبکه/فایروال را بررسی کنید."
+        )
+    if isinstance(exc, aiohttp.ClientError):
+        return f"خطا در ارتباط با مدل زبانی ({host}): {msg}"
+    return f"خطای مدل زبانی ({host}): {msg}"
+
+
 class OpenAICompatibleLLM:
     """OpenAI-compatible chat completions client for Distill insights."""
 
@@ -34,7 +75,7 @@ class OpenAICompatibleLLM:
         endpoint: Optional[str] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: float = 120.0,
+        timeout: float = 90.0,
     ):
         raw = (
             endpoint
@@ -48,7 +89,17 @@ class OpenAICompatibleLLM:
             or os.getenv("LLM_MODEL_NAME")
             or "gpt-4o-mini"
         )
-        self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self.timeout = build_llm_timeout(timeout)
+
+    def _resolve_timeout(self, override: Any = None) -> aiohttp.ClientTimeout:
+        if override is None:
+            return self.timeout
+        if isinstance(override, aiohttp.ClientTimeout):
+            return override
+        try:
+            return build_llm_timeout(float(override))
+        except (TypeError, ValueError):
+            return self.timeout
 
     async def complete(
         self,
@@ -67,14 +118,26 @@ class OpenAICompatibleLLM:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
+        req_timeout = self._resolve_timeout(kwargs.get("timeout"))
         logger.info("LLM request to %s model=%s", self.endpoint, payload["model"])
-        async with client_session(timeout=self.timeout) as session:
-            async with session.post(self.endpoint, json=payload, headers=headers) as resp:
-                body = await resp.text()
-                if resp.status >= 400:
-                    raise RuntimeError(f"LLM error {resp.status}: {body[:500]}")
-                data = await resp.json(content_type=None)
-                return self._extract_text(data)
+        try:
+            async with client_session(timeout=req_timeout) as session:
+                async with session.post(
+                    self.endpoint, json=payload, headers=headers
+                ) as resp:
+                    body = await resp.text()
+                    if resp.status >= 400:
+                        raise RuntimeError(
+                            f"LLM error {resp.status}: {body[:500]}"
+                        )
+                    data = await resp.json(content_type=None)
+                    return self._extract_text(data)
+        except RuntimeError:
+            raise
+        except (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError) as exc:
+            detail = format_llm_failure(self.endpoint, exc)
+            logger.warning("LLM request failed: %s", detail)
+            raise RuntimeError(detail) from exc
 
     @staticmethod
     def _extract_text(data: Dict[str, Any]) -> str:

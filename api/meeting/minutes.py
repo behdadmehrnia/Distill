@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 # Approximate context budget for the transcript body (chars ≈ crude token proxy).
 # Leave headroom for system prompt, attendees list, and model output.
 DEFAULT_MAX_TRANSCRIPT_CHARS = 60_000
+# Cap each minutes LLM call; connect failures should fail faster via LLM_CONNECT_TIMEOUT_S.
+DEFAULT_MINUTES_LLM_TIMEOUT_S = 60.0
+DEFAULT_LLM_TIMEOUT_S = 60.0
 
 MINUTES_SYSTEM_PROMPT = """You are Distill, producing a formal Persian meeting minutes document (صورت جلسه).
 Given a speaker-labeled transcript and the list of confirmed attendee names, extract structured minutes.
@@ -117,6 +120,28 @@ def max_transcript_chars() -> int:
     except ValueError:
         return DEFAULT_MAX_TRANSCRIPT_CHARS
     return max(2_000, value)
+
+
+def minutes_llm_timeout_s() -> float:
+    raw = os.getenv("MINUTES_LLM_TIMEOUT_S", "").strip()
+    if not raw:
+        return DEFAULT_MINUTES_LLM_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_MINUTES_LLM_TIMEOUT_S
+    return max(10.0, value)
+
+
+def minutes_llm_timeout_s() -> float:
+    raw = os.getenv("MINUTES_LLM_TIMEOUT_S", "").strip()
+    if not raw:
+        return DEFAULT_LLM_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_LLM_TIMEOUT_S
+    return max(10.0, value)
 
 
 def split_transcript(text: str, max_chars: int) -> List[str]:
@@ -222,7 +247,12 @@ class MeetingMinutesGenerator:
                 ),
             },
         ]
-        raw = await self.llm.complete(messages, temperature=0.2, max_tokens=2048)
+        raw = await self.llm.complete(
+            messages,
+            temperature=0.2,
+            max_tokens=2048,
+            timeout=minutes_llm_timeout_s(),
+        )
         return _parse_json_response(raw)
 
     async def _extract_partial(
@@ -245,7 +275,12 @@ class MeetingMinutesGenerator:
                 ),
             },
         ]
-        raw = await self.llm.complete(messages, temperature=0.2, max_tokens=1536)
+        raw = await self.llm.complete(
+            messages,
+            temperature=0.2,
+            max_tokens=1536,
+            timeout=minutes_llm_timeout_s(),
+        )
         data = _parse_json_response(raw)
         if not isinstance(data, dict):
             return {"summary": "", "decisions": []}
@@ -278,7 +313,12 @@ class MeetingMinutesGenerator:
                 ),
             },
         ]
-        raw = await self.llm.complete(messages, temperature=0.2, max_tokens=2048)
+        raw = await self.llm.complete(
+            messages,
+            temperature=0.2,
+            max_tokens=2048,
+            timeout=minutes_llm_timeout_s(),
+        )
         return _parse_json_response(raw)
 
     def _to_minutes(

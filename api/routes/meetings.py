@@ -556,6 +556,16 @@ async def generate_minutes(request: Request, meeting_id: str) -> Dict[str, Any]:
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        # Defense in depth: never leak a raw 500 for LLM/network failures.
+        logger.exception("Minutes generation failed for %s", meeting_id)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "تولید صورت جلسه ناموفق بود. "
+                f"({type(exc).__name__}: {exc})"
+            ),
+        ) from exc
     store.save_minutes(result)
     await broadcast(
         request.app, meeting_id, {"type": "minutes", "minutes": result.to_dict()}

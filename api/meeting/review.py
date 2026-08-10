@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 # Keep each polish LLM call under a crude context budget (chars of segment text).
 DEFAULT_REVIEW_MAX_BATCH_CHARS = 40_000
+# Keep finalize polish from blocking stop() forever in slow deployments.
+DEFAULT_REVIEW_BATCH_TIMEOUT_S = 25.0
+DEFAULT_REVIEW_TOTAL_BUDGET_S = 50.0
+DEFAULT_REVIEW_MAX_BATCHES = 3
 
 
 def review_max_batch_chars() -> int:
@@ -30,6 +35,36 @@ def review_max_batch_chars() -> int:
         return max(2_000, int(raw))
     except ValueError:
         return DEFAULT_REVIEW_MAX_BATCH_CHARS
+
+
+def review_batch_timeout_s() -> float:
+    raw = os.getenv("REVIEW_BATCH_TIMEOUT_S", "").strip()
+    if not raw:
+        return DEFAULT_REVIEW_BATCH_TIMEOUT_S
+    try:
+        return max(8.0, float(raw))
+    except ValueError:
+        return DEFAULT_REVIEW_BATCH_TIMEOUT_S
+
+
+def review_total_budget_s() -> float:
+    raw = os.getenv("REVIEW_TOTAL_BUDGET_S", "").strip()
+    if not raw:
+        return DEFAULT_REVIEW_TOTAL_BUDGET_S
+    try:
+        return max(15.0, float(raw))
+    except ValueError:
+        return DEFAULT_REVIEW_TOTAL_BUDGET_S
+
+
+def review_max_batches() -> int:
+    raw = os.getenv("REVIEW_MAX_BATCHES", "").strip()
+    if not raw:
+        return DEFAULT_REVIEW_MAX_BATCHES
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_REVIEW_MAX_BATCHES
 
 
 def chunk_review_items(
@@ -619,23 +654,45 @@ class TranscriptReviewAgent:
         id_to_text = {item["id"]: item["text"] for item in items_payload}
         reviewed_map: dict[str, str] = {}
         batches = chunk_review_items(items_payload, review_max_batch_chars())
+        max_batches = review_max_batches()
+        if len(batches) > max_batches:
+            logger.warning(
+                "STT polish truncating batches %d → %d to keep finalize responsive",
+                len(batches),
+                max_batches,
+            )
+            batches = batches[:max_batches]
         _, batch_prompt = _load_polish_prompts()
+        batch_timeout = review_batch_timeout_s()
+        total_budget = review_total_budget_s()
+        started = time.monotonic()
 
         if len(batches) > 1:
             logger.info(
-                "STT polish map: %d unique texts → %d LLM batches (budget=%d)",
+                "STT polish map: %d unique texts → %d LLM batches "
+                "(char_budget=%d batch_timeout=%.0fs total_budget=%.0fs)",
                 len(items_payload),
                 len(batches),
                 review_max_batch_chars(),
+                batch_timeout,
+                total_budget,
             )
 
         for batch_idx, batch in enumerate(batches, start=1):
+            elapsed = time.monotonic() - started
+            if elapsed >= total_budget:
+                logger.warning(
+                    "STT polish total budget exhausted (%.1fs); skipping remaining %d batches",
+                    elapsed,
+                    len(batches) - batch_idx + 1,
+                )
+                break
             batch_ids = {item["id"] for item in batch}
             batch_id_to_text = {i: id_to_text[i] for i in batch_ids}
             try:
                 approx_chars = sum(len(t) for t in batch_id_to_text.values())
                 max_tokens = min(
-                    8192, max(1024, approx_chars // 2 + 250 * len(batch))
+                    4096, max(512, approx_chars // 3 + 120 * len(batch))
                 )
                 messages = [
                     {"role": "system", "content": batch_prompt},
@@ -649,10 +706,12 @@ class TranscriptReviewAgent:
                         ),
                     },
                 ]
+                remaining = max(5.0, total_budget - elapsed)
                 raw = await self.llm.complete(
                     messages,
                     temperature=0.0,
                     max_tokens=max_tokens,
+                    timeout=min(batch_timeout, remaining),
                 )
                 data = _parse_review_json(raw) or {}
                 items = data.get("items") or []
@@ -675,7 +734,11 @@ class TranscriptReviewAgent:
                     len(batches),
                     exc,
                 )
-                # Keep heuristic text for this batch; continue other batches.
+                # Keep heuristic text for this batch; continue other batches
+                # unless the call timed out — then stop to finish stop() sooner.
+                if "timeout" in str(exc).lower() or "Timeout" in type(exc).__name__:
+                    logger.warning("STT polish stopping early after timeout")
+                    break
                 continue
 
         out: List[TranscriptSegment] = []

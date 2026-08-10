@@ -82,7 +82,7 @@ class DistillClient {
     this._promptQueue = [];
     this._promptShowing = false;
     this._fallbackPromptShown = false;
-    this._fallbackPromptShown = false;
+    this._speakersContinueBusy = false;
 
     this.reviewWizard = document.getElementById("reviewWizard");
     this.reviewStepDots = this.reviewWizard
@@ -274,13 +274,11 @@ class DistillClient {
       });
     }
     if (this.speakersContinueBtn) {
-      // mousedown+preventDefault avoids the input-blur race that can swallow the click
-      // (blur runs confirmSpeakerName and may briefly disable this button before click fires).
-      this.speakersContinueBtn.addEventListener("mousedown", (ev) => {
-        if (this.speakersContinueBtn.disabled) return;
-        ev.preventDefault();
-      });
-      this.speakersContinueBtn.addEventListener("click", (ev) => {
+      // Use pointerdown (before input blur) so the blur→PATCH race cannot disable
+      // the button and swallow the action — common in deploy when PATCH is slow.
+      this.speakersContinueBtn.addEventListener("pointerdown", (ev) => {
+        if (ev.pointerType === "mouse" && ev.button !== 0) return;
+        if (this.speakersContinueBtn.disabled || this._speakersContinueBusy) return;
         ev.preventDefault();
         this.onSpeakersContinue().catch((err) => {
           console.error(err);
@@ -314,7 +312,15 @@ class DistillClient {
     if (this.speakerNamingList) {
       this.speakerNamingList.addEventListener("click", (ev) => {
         const btn = ev.target.closest(".speaker-play-btn");
-        if (btn) this.toggleSpeakerSample(btn);
+        if (btn) {
+          this.toggleSpeakerSample(btn).catch((err) => {
+            console.error(err);
+            this.showPrompt({
+              title: "پخش نمونه صدا",
+              message: `پخش نمونه صدا ناموفق بود.\n\n${err.message || err}`,
+            });
+          });
+        }
       });
     }
     if (this.reopenReviewBtn) {
@@ -749,6 +755,22 @@ class DistillClient {
     return text;
   }
 
+  async fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      return res;
+    } catch (err) {
+      if (err && (err.name === "AbortError" || err.code === 20)) {
+        throw new Error(`پاسخی از سرور در ${Math.round(timeoutMs / 1000)} ثانیه نیامد`);
+      }
+      throw err;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
   sessionLink() {
     if (!this.meetingId) return "";
     return `${window.location.origin}/assistant/${this.meetingId}`;
@@ -938,9 +960,12 @@ class DistillClient {
         this.setStatus("processing", "در حال پردازش…");
         let stopped = null;
         try {
-          const stopRes = await fetch(`/meetings/${this.meetingId}/stop`, {
-            method: "POST",
-          });
+          // Cap wait: server polish has its own budget; don't hang the wizard forever.
+          const stopRes = await this.fetchWithTimeout(
+            `/meetings/${this.meetingId}/stop`,
+            { method: "POST" },
+            120000
+          );
           if (stopRes.ok) {
             try {
               stopped = await stopRes.json();
@@ -1800,62 +1825,76 @@ class DistillClient {
     }
   }
 
-  toggleSpeakerSample(btn) {
+  async toggleSpeakerSample(btn) {
     const src = btn.getAttribute("data-audio-src");
     if (!src) return;
-    if (!btn._audio) {
-      const audio = new Audio();
-      audio.preload = "auto";
-      audio.addEventListener("timeupdate", () => {
-        const pct = audio.duration ? audio.currentTime / audio.duration : 0;
-        btn.style.setProperty("--progress", `${Math.min(1, Math.max(0, pct)) * 360}deg`);
-      });
-      audio.addEventListener("play", () => {
-        btn.classList.add("is-playing");
-      });
-      audio.addEventListener("pause", () => {
-        btn.classList.remove("is-playing");
-      });
-      audio.addEventListener("ended", () => {
-        btn.classList.remove("is-playing");
-        btn.style.setProperty("--progress", "0deg");
-      });
-      audio.addEventListener("error", () => {
-        btn.classList.remove("is-playing");
-        btn.style.setProperty("--progress", "0deg");
-        const detail =
-          audio.error && audio.error.message
-            ? audio.error.message
-            : "نمونه صدا در دسترس نیست (احتمالاً فایل ضبط پیدا نشد)";
-        console.error("speaker sample error", src, audio.error);
-        this.showPrompt({
-          title: "پخش نمونه صدا",
-          message: detail,
-        });
-      });
-      btn._audio = audio;
+    if (btn._loading) return;
+
+    if (btn._audio && !btn._audio.paused) {
+      btn._audio.pause();
+      return;
     }
-    const audio = btn._audio;
-    if (this._activeSpeakerAudio && this._activeSpeakerAudio !== audio) {
-      this._activeSpeakerAudio.pause();
+    if (this._activeSpeakerAudio && this._activeSpeakerAudio !== btn._audio) {
+      try {
+        this._activeSpeakerAudio.pause();
+      } catch (_) {}
     }
-    if (audio.paused) {
-      // Always (re)set src so a previous 404 does not permanently poison the element.
-      if (audio.src !== new URL(src, window.location.href).href) {
-        audio.src = src;
+
+    btn._loading = true;
+    btn.classList.add("is-loading");
+    try {
+      // Fetch as blob first so deployment 404/proxy errors surface clearly
+      // (native <audio src> often fails silently behind reverse proxies).
+      const res = await this.fetchWithTimeout(src, {}, 12000);
+      if (!res.ok) {
+        throw new Error(
+          res.status === 404
+            ? "نمونه صدا پیدا نشد (فایل ضبط یا بازه سخنگو در دسترس نیست)."
+            : `دریافت نمونه صدا ناموفق بود (کد ${res.status}).`
+        );
       }
-      audio.currentTime = audio.ended ? 0 : audio.currentTime;
-      audio.play().catch((err) => {
-        console.error(err);
-        btn.classList.remove("is-playing");
-        this.showPrompt({
-          title: "پخش نمونه صدا",
-          message: `پخش نمونه صدا ناموفق بود.\n\n${err.message || err}`,
+      const blob = await res.blob();
+      if (!blob || blob.size < 44) {
+        throw new Error("نمونه صدا خالی یا ناقص است.");
+      }
+      if (btn._objectUrl) {
+        try {
+          URL.revokeObjectURL(btn._objectUrl);
+        } catch (_) {}
+      }
+      const objectUrl = URL.createObjectURL(blob);
+      btn._objectUrl = objectUrl;
+
+      if (!btn._audio) {
+        const audio = new Audio();
+        audio.preload = "auto";
+        audio.addEventListener("timeupdate", () => {
+          const pct = audio.duration ? audio.currentTime / audio.duration : 0;
+          btn.style.setProperty("--progress", `${Math.min(1, Math.max(0, pct)) * 360}deg`);
         });
-      });
+        audio.addEventListener("play", () => btn.classList.add("is-playing"));
+        audio.addEventListener("pause", () => btn.classList.remove("is-playing"));
+        audio.addEventListener("ended", () => {
+          btn.classList.remove("is-playing");
+          btn.style.setProperty("--progress", "0deg");
+        });
+        btn._audio = audio;
+      }
+      const audio = btn._audio;
+      audio.src = objectUrl;
+      audio.currentTime = 0;
+      await audio.play();
       this._activeSpeakerAudio = audio;
-    } else {
-      audio.pause();
+    } catch (err) {
+      console.error(err);
+      btn.classList.remove("is-playing");
+      await this.showPrompt({
+        title: "پخش نمونه صدا",
+        message: `پخش نمونه صدا ناموفق بود.\n\n${err.message || err}`,
+      });
+    } finally {
+      btn._loading = false;
+      btn.classList.remove("is-loading");
     }
   }
 
@@ -1866,7 +1905,11 @@ class DistillClient {
     this.speakerNamingList.innerHTML = '<p class="review-hint">در حال بارگذاری سخنگوها…</p>';
     if (this.speakersContinueBtn) this.speakersContinueBtn.disabled = true;
     try {
-      const res = await fetch(`/meetings/${this.meetingId}/speakers`);
+      const res = await this.fetchWithTimeout(
+        `/meetings/${this.meetingId}/speakers`,
+        {},
+        12000
+      );
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       this._speakerList = data.speakers || [];
@@ -1875,6 +1918,11 @@ class DistillClient {
       console.error(err);
       this.speakerNamingList.innerHTML =
         '<p class="review-hint">دریافت لیست سخنگوها ناموفق بود.</p>';
+      await this.showPrompt({
+        title: "خطا در بارگذاری سخنگوها",
+        message: `لیست سخنگوها دریافت نشد.\n\n${err.message || err}`,
+      });
+      if (this.speakersContinueBtn) this.speakersContinueBtn.disabled = false;
     }
   }
 
@@ -1917,6 +1965,7 @@ class DistillClient {
       if (spk.custom_label) {
         card.classList.add("is-confirmed");
         this._confirmedSpeakers.add(spk.id);
+        this.speakerMap[spk.id] = spk.custom_label;
       }
       const input = card.querySelector(".speaker-naming-name");
       input.addEventListener("keydown", (ev) => {
@@ -1943,13 +1992,27 @@ class DistillClient {
       this.updateSpeakersContinueState();
       return;
     }
+    // Skip redundant PATCH when already confirmed with the same label.
+    if (
+      this._confirmedSpeakers.has(speakerId) &&
+      (this.speakerMap[speakerId] || "") === value
+    ) {
+      card.classList.add("is-confirmed");
+      if (statusEl) statusEl.textContent = "ثبت شد";
+      this.updateSpeakersContinueState();
+      return;
+    }
     try {
-      const res = await fetch(`/meetings/${this.meetingId}/speakers`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [speakerId]: value }),
-      });
-      if (!res.ok) throw new Error(await res.text());
+      const res = await this.fetchWithTimeout(
+        `/meetings/${this.meetingId}/speakers`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [speakerId]: value }),
+        },
+        10000
+      );
+      if (!res.ok) throw new Error(this.formatErrorDetail(await res.text()) || `کد ${res.status}`);
       const meeting = await res.json();
       this.speakerMap = { ...(meeting.speaker_map || {}) };
       this._confirmedSpeakers.add(speakerId);
@@ -1959,41 +2022,72 @@ class DistillClient {
     } catch (err) {
       console.error(err);
       if (statusEl) statusEl.textContent = "خطا در ذخیره";
+      throw err;
+    } finally {
+      this.updateSpeakersContinueState();
     }
-    this.updateSpeakersContinueState();
   }
 
   updateSpeakersContinueState() {
-    if (!this.speakersContinueBtn) return;
+    if (!this.speakersContinueBtn || this._speakersContinueBusy) return;
     const allConfirmed = this._speakerList.every((s) => this._confirmedSpeakers.has(s.id));
     this.speakersContinueBtn.disabled = !allConfirmed;
   }
 
   async onSpeakersContinue() {
-    // Persist every name field before advancing (covers the mousedown-preventDefault path
-    // where the focused input never blurred).
-    const cards = this.speakerNamingList
-      ? Array.from(this.speakerNamingList.querySelectorAll(".speaker-naming-card"))
-      : [];
-    await Promise.all(
-      cards.map((card) => {
+    if (this._speakersContinueBusy) return;
+    this._speakersContinueBusy = true;
+    const btn = this.speakersContinueBtn;
+    const prevLabel = btn ? btn.textContent : "";
+    try {
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "در حال ادامه…";
+      }
+      const cards = this.speakerNamingList
+        ? Array.from(this.speakerNamingList.querySelectorAll(".speaker-naming-card"))
+        : [];
+      const results = await Promise.allSettled(
+        cards.map((card) => {
+          const input = card.querySelector(".speaker-naming-name");
+          const id = card.dataset.speakerId;
+          if (!input || !id) return Promise.resolve();
+          return this.confirmSpeakerName(id, input, card);
+        })
+      );
+      const failed = results.filter((r) => r.status === "rejected");
+      this.updateSpeakersContinueState();
+      if (failed.length) {
+        await this.showPrompt({
+          title: "ذخیره نام سخنگوها",
+          message:
+            "ذخیره بعضی نام‌ها ناموفق بود یا سرور پاسخ نداد.\n\n" +
+            (failed[0].reason?.message || String(failed[0].reason || "")),
+        });
+        return;
+      }
+      // Local confirmation is enough to proceed even if button state raced.
+      const allNamed = cards.every((card) => {
         const input = card.querySelector(".speaker-naming-name");
-        const id = card.dataset.speakerId;
-        if (!input || !id) return Promise.resolve();
-        return this.confirmSpeakerName(id, input, card);
-      })
-    );
-    this.updateSpeakersContinueState();
-    if (this.speakersContinueBtn?.disabled) {
-      await this.showPrompt({
-        title: "نام‌گذاری ناقص است",
-        message: "لطفاً برای همه سخنگوها نام ثبت کنید تا بتوانید ادامه دهید.",
+        return !!(input && (input.value || "").trim());
       });
-      return;
+      if (!allNamed || (this._speakerList.length && !this._speakerList.every((s) => this._confirmedSpeakers.has(s.id)))) {
+        await this.showPrompt({
+          title: "نام‌گذاری ناقص است",
+          message: "لطفاً برای همه سخنگوها نام ثبت کنید تا بتوانید ادامه دهید.",
+        });
+        return;
+      }
+      this.stopSpeakerSamplePlayback();
+      this.setReviewStep("transcript");
+      await this.loadTranscriptReviewStep();
+    } finally {
+      this._speakersContinueBusy = false;
+      if (btn) {
+        btn.textContent = prevLabel || "ادامه و بازبینی متن جلسه";
+        this.updateSpeakersContinueState();
+      }
     }
-    this.stopSpeakerSamplePlayback();
-    this.setReviewStep("transcript");
-    await this.loadTranscriptReviewStep();
   }
 
   async loadTranscriptReviewStep() {
@@ -2102,9 +2196,12 @@ class DistillClient {
     if (!this.meetingId) return;
     this.showMinutesLoading(true);
     try {
-      const res = await fetch(`/meetings/${this.meetingId}/minutes/generate`, {
-        method: "POST",
-      });
+      // Slightly above server minutes LLM budget so we surface API errors, not silent hangs.
+      const res = await this.fetchWithTimeout(
+        `/meetings/${this.meetingId}/minutes/generate`,
+        { method: "POST" },
+        75000
+      );
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       this.renderMinutesForm(data, { fromAgent: true });
@@ -3125,7 +3222,11 @@ class DistillClient {
 
   async refreshTranscript() {
     if (!this.meetingId) return;
-    const res = await fetch(`/meetings/${this.meetingId}/transcript`);
+    const res = await this.fetchWithTimeout(
+      `/meetings/${this.meetingId}/transcript`,
+      {},
+      15000
+    );
     if (!res.ok) return;
     const data = await res.json();
     this.replaceTranscript(data.segments || []);
