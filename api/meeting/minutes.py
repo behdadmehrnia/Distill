@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -12,12 +13,12 @@ from .models import MeetingMinutes, MinutesDecision, TranscriptSegment
 
 logger = logging.getLogger(__name__)
 
-# Approximate context budget for the transcript body (chars ≈ crude token proxy).
-# Leave headroom for system prompt, attendees list, and model output.
-DEFAULT_MAX_TRANSCRIPT_CHARS = 60_000
-# Cap each minutes LLM call; connect failures should fail faster via LLM_CONNECT_TIMEOUT_S.
-DEFAULT_MINUTES_LLM_TIMEOUT_S = 60.0
-DEFAULT_LLM_TIMEOUT_S = 60.0
+# Split earlier so each LLM call stays fast on mid-size remote models.
+DEFAULT_MAX_TRANSCRIPT_CHARS = 12_000
+DEFAULT_MINUTES_MAX_CHUNKS = 4
+DEFAULT_MINUTES_PARALLEL = 2
+DEFAULT_MINUTES_LLM_TIMEOUT_S = 45.0
+DEFAULT_MINUTES_MAX_TOKENS = 1024
 
 MINUTES_SYSTEM_PROMPT = """You are Distill, producing a formal Persian meeting minutes document (صورت جلسه).
 Given a speaker-labeled transcript and the list of confirmed attendee names, extract structured minutes.
@@ -133,15 +134,39 @@ def minutes_llm_timeout_s() -> float:
     return max(10.0, value)
 
 
-def minutes_llm_timeout_s() -> float:
-    raw = os.getenv("MINUTES_LLM_TIMEOUT_S", "").strip()
+def minutes_max_chunks() -> int:
+    raw = os.getenv("MINUTES_MAX_CHUNKS", "").strip()
     if not raw:
-        return DEFAULT_LLM_TIMEOUT_S
+        return DEFAULT_MINUTES_MAX_CHUNKS
     try:
-        value = float(raw)
+        return max(1, int(raw))
     except ValueError:
-        return DEFAULT_LLM_TIMEOUT_S
-    return max(10.0, value)
+        return DEFAULT_MINUTES_MAX_CHUNKS
+
+
+def minutes_parallel() -> int:
+    raw = os.getenv("MINUTES_PARALLEL", "").strip()
+    if not raw:
+        return DEFAULT_MINUTES_PARALLEL
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_MINUTES_PARALLEL
+
+
+def minutes_max_tokens() -> int:
+    raw = os.getenv("MINUTES_MAX_TOKENS", "").strip()
+    if not raw:
+        return DEFAULT_MINUTES_MAX_TOKENS
+    try:
+        return max(256, int(raw))
+    except ValueError:
+        return DEFAULT_MINUTES_MAX_TOKENS
+
+
+def minutes_use_llm_merge() -> bool:
+    raw = os.getenv("MINUTES_LLM_MERGE", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def split_transcript(text: str, max_chars: int) -> List[str]:
@@ -183,6 +208,82 @@ def split_transcript(text: str, max_chars: int) -> List[str]:
     return chunks or [text]
 
 
+def cap_chunks(chunks: List[str], max_chunks: int) -> List[str]:
+    """Keep at most max_chunks by folding overflow into the last chunk."""
+    if max_chunks <= 0 or len(chunks) <= max_chunks:
+        return chunks
+    head = chunks[: max_chunks - 1]
+    tail = "\n".join(chunks[max_chunks - 1 :])
+    return head + [tail]
+
+
+def merge_partials_local(
+    partials: List[dict], attendee_names: List[str]
+) -> dict:
+    """Deterministic merge — avoids an extra slow LLM round-trip."""
+    subject = ""
+    meeting_date = ""
+    location = ""
+    summaries: List[str] = []
+    decisions: List[dict] = []
+    seen_desc: set[str] = set()
+
+    for partial in partials:
+        if not isinstance(partial, dict):
+            continue
+        if not subject:
+            subject = str(
+                partial.get("subject_hint") or partial.get("subject") or ""
+            ).strip()
+        if not meeting_date:
+            meeting_date = str(partial.get("meeting_date") or "").strip()
+        if not location:
+            location = str(partial.get("location") or "").strip()
+        summary = str(partial.get("summary") or "").strip()
+        if summary:
+            summaries.append(summary)
+        raw_decisions = partial.get("decisions")
+        if not isinstance(raw_decisions, list):
+            continue
+        for item in raw_decisions:
+            if not isinstance(item, dict):
+                continue
+            description = str(item.get("description") or "").strip()
+            if not description:
+                continue
+            key = description.casefold()
+            if key in seen_desc:
+                continue
+            seen_desc.add(key)
+            executor = str(item.get("executor") or "").strip()
+            if executor and executor not in attendee_names:
+                executor = ""
+            decisions.append(
+                {
+                    "description": description,
+                    "executor": executor,
+                    "due_date": str(item.get("due_date") or "").strip(),
+                    "status": str(item.get("status") or "pending").strip()
+                    or "pending",
+                }
+            )
+
+    summary = " ".join(summaries).strip()
+    if len(summary) > 1200:
+        summary = summary[:1197].rstrip() + "…"
+
+    return {
+        "subject": subject,
+        "meeting_date": meeting_date,
+        "location": location,
+        "attendees": list(attendee_names),
+        "absentees": [],
+        "secretary": "",
+        "summary": summary,
+        "decisions": decisions,
+    }
+
+
 class MeetingMinutesGenerator:
     def __init__(self, llm, max_chars: Optional[int] = None):
         self.llm = llm
@@ -214,25 +315,55 @@ class MeetingMinutesGenerator:
                 summary=_NOISE_ONLY_SUMMARY,
             )
 
-        chunks = split_transcript(transcript, self.max_chars)
+        chunks = cap_chunks(
+            split_transcript(transcript, self.max_chars), minutes_max_chunks()
+        )
         if len(chunks) <= 1:
-            data = await self._extract_full(chunks[0] if chunks else transcript, attendee_names)
+            data = await self._extract_full(
+                chunks[0] if chunks else transcript, attendee_names
+            )
         else:
             logger.info(
-                "Minutes map-reduce: transcript_chars=%d chunks=%d budget=%d",
+                "Minutes map-reduce: transcript_chars=%d chunks=%d budget=%d parallel=%d",
                 len(transcript),
                 len(chunks),
                 self.max_chars,
+                minutes_parallel(),
             )
-            partials: List[dict] = []
-            for idx, chunk in enumerate(chunks, start=1):
-                partial = await self._extract_partial(
-                    chunk, attendee_names, part=idx, total=len(chunks)
-                )
-                partials.append(partial)
-            data = await self._merge_partials(partials, attendee_names)
+            partials = await self._extract_partials_parallel(chunks, attendee_names)
+            if minutes_use_llm_merge():
+                data = await self._merge_partials_llm(partials, attendee_names)
+            else:
+                data = merge_partials_local(partials, attendee_names)
 
         return self._to_minutes(meeting_id, data, attendee_names)
+
+    async def _extract_partials_parallel(
+        self, chunks: List[str], attendee_names: List[str]
+    ) -> List[dict]:
+        sem = asyncio.Semaphore(minutes_parallel())
+        total = len(chunks)
+
+        async def one(idx: int, chunk: str) -> dict:
+            async with sem:
+                try:
+                    return await self._extract_partial(
+                        chunk, attendee_names, part=idx, total=total
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Minutes partial extract failed (part %d/%d): %s",
+                        idx,
+                        total,
+                        exc,
+                    )
+                    return {"summary": "", "decisions": []}
+
+        return list(
+            await asyncio.gather(
+                *[one(i, chunk) for i, chunk in enumerate(chunks, start=1)]
+            )
+        )
 
     async def _extract_full(self, transcript: str, attendee_names: List[str]) -> dict:
         messages = [
@@ -250,7 +381,7 @@ class MeetingMinutesGenerator:
         raw = await self.llm.complete(
             messages,
             temperature=0.2,
-            max_tokens=2048,
+            max_tokens=minutes_max_tokens(),
             timeout=minutes_llm_timeout_s(),
         )
         return _parse_json_response(raw)
@@ -278,7 +409,7 @@ class MeetingMinutesGenerator:
         raw = await self.llm.complete(
             messages,
             temperature=0.2,
-            max_tokens=1536,
+            max_tokens=min(768, minutes_max_tokens()),
             timeout=minutes_llm_timeout_s(),
         )
         data = _parse_json_response(raw)
@@ -286,18 +417,22 @@ class MeetingMinutesGenerator:
             return {"summary": "", "decisions": []}
         return data
 
-    async def _merge_partials(
+    async def _merge_partials_llm(
         self, partials: List[dict], attendee_names: List[str]
     ) -> dict:
         compact = []
         for p in partials:
             compact.append(
                 {
-                    "subject_hint": str(p.get("subject_hint") or p.get("subject") or "").strip(),
+                    "subject_hint": str(
+                        p.get("subject_hint") or p.get("subject") or ""
+                    ).strip(),
                     "meeting_date": str(p.get("meeting_date") or "").strip(),
                     "location": str(p.get("location") or "").strip(),
                     "summary": str(p.get("summary") or "").strip(),
-                    "decisions": p.get("decisions") if isinstance(p.get("decisions"), list) else [],
+                    "decisions": p.get("decisions")
+                    if isinstance(p.get("decisions"), list)
+                    else [],
                 }
             )
         messages = [
@@ -316,7 +451,7 @@ class MeetingMinutesGenerator:
         raw = await self.llm.complete(
             messages,
             temperature=0.2,
-            max_tokens=2048,
+            max_tokens=minutes_max_tokens(),
             timeout=minutes_llm_timeout_s(),
         )
         return _parse_json_response(raw)

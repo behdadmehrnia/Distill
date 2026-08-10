@@ -19,12 +19,14 @@ from .models import TranscriptSegment
 
 logger = logging.getLogger(__name__)
 
-# Keep each polish LLM call under a crude context budget (chars of segment text).
-DEFAULT_REVIEW_MAX_BATCH_CHARS = 40_000
-# Keep finalize polish from blocking stop() forever in slow deployments.
-DEFAULT_REVIEW_BATCH_TIMEOUT_S = 25.0
-DEFAULT_REVIEW_TOTAL_BUDGET_S = 50.0
-DEFAULT_REVIEW_MAX_BATCHES = 3
+# Keep each polish LLM call small — large prompts + huge max_tokens make
+# remote Gemma-class models crawl and often time out.
+DEFAULT_REVIEW_MAX_BATCH_CHARS = 10_000
+DEFAULT_REVIEW_BATCH_TIMEOUT_S = 18.0
+DEFAULT_REVIEW_TOTAL_BUDGET_S = 28.0
+DEFAULT_REVIEW_MAX_BATCHES = 2
+DEFAULT_REVIEW_MAX_ITEMS = 24
+DEFAULT_REVIEW_MAX_TOKENS = 768
 
 
 def review_max_batch_chars() -> int:
@@ -52,7 +54,7 @@ def review_total_budget_s() -> float:
     if not raw:
         return DEFAULT_REVIEW_TOTAL_BUDGET_S
     try:
-        return max(15.0, float(raw))
+        return max(12.0, float(raw))
     except ValueError:
         return DEFAULT_REVIEW_TOTAL_BUDGET_S
 
@@ -65,6 +67,55 @@ def review_max_batches() -> int:
         return max(1, int(raw))
     except ValueError:
         return DEFAULT_REVIEW_MAX_BATCHES
+
+
+def review_max_items() -> int:
+    raw = os.getenv("REVIEW_MAX_ITEMS", "").strip()
+    if not raw:
+        return DEFAULT_REVIEW_MAX_ITEMS
+    try:
+        return max(4, int(raw))
+    except ValueError:
+        return DEFAULT_REVIEW_MAX_ITEMS
+
+
+def review_max_tokens() -> int:
+    raw = os.getenv("REVIEW_MAX_TOKENS", "").strip()
+    if not raw:
+        return DEFAULT_REVIEW_MAX_TOKENS
+    try:
+        return max(256, int(raw))
+    except ValueError:
+        return DEFAULT_REVIEW_MAX_TOKENS
+
+
+def needs_llm_polish(score: float, reasons: Sequence[str]) -> bool:
+    """Only spend LLM budget on segments heuristics already flagged as shaky."""
+    if score < 0.92:
+        return True
+    markers = (
+        "word_run",
+        "latin",
+        "char_loop",
+        "low_unique",
+        "wrong_script",
+        "collapsed",
+        "tiny_vocab",
+        "no_persian",
+    )
+    for reason in reasons or ():
+        r = str(reason)
+        if any(m in r for m in markers):
+            return True
+    return False
+
+
+def polish_max_tokens_for_batch(batch: Sequence[Dict[str, str]]) -> int:
+    """Cap generation size: polish should echo input, not write essays."""
+    approx_chars = sum(len(item.get("text") or "") for item in batch)
+    # Rough upper bound on JSON echo + small reasons.
+    estimate = approx_chars // 2 + 48 * len(batch) + 64
+    return max(256, min(review_max_tokens(), estimate))
 
 
 def chunk_review_items(
@@ -96,6 +147,27 @@ def chunk_review_items(
     if current:
         batches.append(current)
     return batches
+
+
+def select_polish_items(
+    texts_with_meta: List[tuple[str, float, Sequence[str]]],
+    *,
+    max_items: Optional[int] = None,
+) -> List[str]:
+    """Pick unique texts that need polish, worst score first, capped."""
+    limit = review_max_items() if max_items is None else max_items
+    candidates: List[tuple[float, str]] = []
+    seen: set[str] = set()
+    for text, score, reasons in texts_with_meta:
+        cleaned = (text or "").strip()
+        if not cleaned or cleaned in seen:
+            continue
+        if not needs_llm_polish(score, reasons):
+            continue
+        seen.add(cleaned)
+        candidates.append((score, cleaned))
+    candidates.sort(key=lambda x: x[0])  # worst first
+    return [text for _, text in candidates[: max(1, limit)]] if candidates else []
 
 ReviewAction = Literal["keep", "fix", "drop"]
 
@@ -575,7 +647,9 @@ class TranscriptReviewAgent:
                     ),
                 },
             ]
-            raw = await self.llm.complete(messages, temperature=0.0, max_tokens=800)
+            raw = await self.llm.complete(
+                messages, temperature=0.0, max_tokens=min(512, review_max_tokens())
+            )
             data = _parse_review_json(raw) or {}
             action = str(data.get("action") or "keep").lower()
             out_text, action = _apply_llm_edit(
@@ -613,6 +687,7 @@ class TranscriptReviewAgent:
 
         # First pass: heuristics (always)
         gated: List[TranscriptSegment] = []
+        gate_meta: List[tuple[float, List[str]]] = []
         for seg in segments:
             result = gate_stt_text(seg.text, language=language)
             if not result.accepted:
@@ -636,20 +711,24 @@ class TranscriptReviewAgent:
                     overlap_speakers=list(seg.overlap_speakers or []),
                 )
             )
+            gate_meta.append((result.score, list(result.reasons or [])))
 
         if not gated or not self.enabled:
             return gated
 
-        # Batch LLM review for unique texts (overlap rows share text).
-        # Long meetings are split into several LLM calls under a char budget so
-        # the polish step does not blow the model context / hang stop().
-        unique_texts: dict[str, str] = {}
-        for seg in gated:
-            unique_texts.setdefault(seg.text, seg.text)
+        # Only polish shaky unique texts — clean heuristic output skips the LLM.
+        polish_texts = select_polish_items(
+            [(seg.text, meta[0], meta[1]) for seg, meta in zip(gated, gate_meta)]
+        )
+        if not polish_texts:
+            logger.info(
+                "STT polish skipped LLM (%d segments already clean after heuristics)",
+                len(gated),
+            )
+            return gated
 
         items_payload = [
-            {"id": f"t{i}", "text": text}
-            for i, text in enumerate(unique_texts.keys())
+            {"id": f"t{i}", "text": text} for i, text in enumerate(polish_texts)
         ]
         id_to_text = {item["id"]: item["text"] for item in items_payload}
         reviewed_map: dict[str, str] = {}
@@ -661,22 +740,24 @@ class TranscriptReviewAgent:
                 len(batches),
                 max_batches,
             )
+            # Prefer worst-first items already ordered in select_polish_items.
             batches = batches[:max_batches]
         _, batch_prompt = _load_polish_prompts()
         batch_timeout = review_batch_timeout_s()
         total_budget = review_total_budget_s()
         started = time.monotonic()
 
-        if len(batches) > 1:
-            logger.info(
-                "STT polish map: %d unique texts → %d LLM batches "
-                "(char_budget=%d batch_timeout=%.0fs total_budget=%.0fs)",
-                len(items_payload),
-                len(batches),
-                review_max_batch_chars(),
-                batch_timeout,
-                total_budget,
-            )
+        logger.info(
+            "STT polish: %d/%d unique texts → %d LLM batch(es) "
+            "(char_budget=%d max_tokens≤%d batch_timeout=%.0fs total_budget=%.0fs)",
+            len(items_payload),
+            len({s.text for s in gated}),
+            len(batches),
+            review_max_batch_chars(),
+            review_max_tokens(),
+            batch_timeout,
+            total_budget,
+        )
 
         for batch_idx, batch in enumerate(batches, start=1):
             elapsed = time.monotonic() - started
@@ -690,10 +771,7 @@ class TranscriptReviewAgent:
             batch_ids = {item["id"] for item in batch}
             batch_id_to_text = {i: id_to_text[i] for i in batch_ids}
             try:
-                approx_chars = sum(len(t) for t in batch_id_to_text.values())
-                max_tokens = min(
-                    4096, max(512, approx_chars // 3 + 120 * len(batch))
-                )
+                max_tokens = polish_max_tokens_for_batch(batch)
                 messages = [
                     {"role": "system", "content": batch_prompt},
                     {
@@ -734,10 +812,16 @@ class TranscriptReviewAgent:
                     len(batches),
                     exc,
                 )
-                # Keep heuristic text for this batch; continue other batches
-                # unless the call timed out — then stop to finish stop() sooner.
-                if "timeout" in str(exc).lower() or "Timeout" in type(exc).__name__:
-                    logger.warning("STT polish stopping early after timeout")
+                # Keep heuristic text; abort remaining batches on timeout/unreachable LLM.
+                msg = str(exc).lower()
+                if (
+                    "timeout" in msg
+                    or "Timeout" in type(exc).__name__
+                    or "در دسترس نیست" in str(exc)
+                    or "cannot connect" in msg
+                    or "زمان پاسخ" in str(exc)
+                ):
+                    logger.warning("STT polish stopping early after LLM failure")
                     break
                 continue
 
