@@ -170,7 +170,11 @@ def test_speakers_list_and_sample_audio(tmp_path):
         assert len(speakers) == 1
         assert speakers[0]["id"] == "SPEAKER_00"
         assert speakers[0]["label"] == "سخنگوی ۱"
-        assert speakers[0]["has_sample"] is True
+        # Playback requires a real recording on disk — span alone is not enough.
+        assert speakers[0]["has_sample"] is False
+        assert speakers[0]["has_recording"] is False
+        assert speakers[0]["sample_start_ms"] == 0
+        assert speakers[0]["sample_end_ms"] == 2000
 
         audio_dir = tmp_path / "audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
@@ -183,6 +187,12 @@ def test_speakers_list_and_sample_audio(tmp_path):
         meeting = store.get_meeting(meeting_id)
         meeting.audio_path = str(wav_path)
         store.save_meeting(meeting)
+
+        with_audio = client.get(f"/meetings/{meeting_id}/speakers")
+        assert with_audio.status_code == 200
+        speakers_ready = with_audio.json()["speakers"]
+        assert speakers_ready[0]["has_recording"] is True
+        assert speakers_ready[0]["has_sample"] is True
 
         sample = client.get(f"/meetings/{meeting_id}/speakers/SPEAKER_00/audio")
         assert sample.status_code == 200
@@ -240,6 +250,37 @@ def test_minutes_generate_get_put(tmp_path):
         assert fetched.status_code == 200
         assert fetched.json()["subject"] == "بررسی بودجه"
         assert fetched.json()["decisions"][0]["description"] == "تهیه گزارش مالی"
+
+
+def test_minutes_generate_returns_502_when_llm_unreachable(tmp_path):
+    from api.meeting.models import TranscriptSegment
+
+    class BoomMinutes:
+        async def generate(self, *args, **kwargs):
+            raise RuntimeError(
+                "سرور مدل زبانی (LLM) در 81.29.248.136 در دسترس نیست. "
+                "LLM_ENDPOINT و شبکه/فایروال را بررسی کنید."
+            )
+
+    with _make_client(tmp_path) as client:
+        client.app.state.minutes = BoomMinutes()
+        created = client.post("/meetings", json={"title": "صورتجلسه", "start": False})
+        meeting_id = created.json()["id"]
+        store = client.app.state.manager.store
+        store.save_segment(
+            TranscriptSegment.create(
+                meeting_id=meeting_id,
+                speaker_id="SPEAKER_00",
+                start_ms=0,
+                end_ms=1000,
+                text="سلام، امروز جلسه برگزار شد.",
+                provisional=False,
+            )
+        )
+        resp = client.post(f"/meetings/{meeting_id}/minutes/generate")
+        assert resp.status_code == 502
+        detail = resp.json()["detail"]
+        assert "در دسترس نیست" in detail
 
 
 def test_recording_endpoint_and_restart(tmp_path):

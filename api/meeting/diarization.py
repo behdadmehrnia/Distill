@@ -270,12 +270,24 @@ class SpeakerDiarizer:
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)
         if self._load.get("mode") == "remote" and self.remote_endpoint:
             try:
-                return self._diarize_remote(audio, sr)
+                intervals = self._diarize_remote(audio, sr)
+                # Empty remote result on energetic audio → heuristic (tests + edge cases).
+                if intervals:
+                    return intervals
+                logger.info(
+                    "remote diarization returned no speakers; using fallback diarization"
+                )
             except Exception as exc:
                 logger.warning("remote diarization failed, falling back: %s", exc)
         elif self._pipeline is not None:
             try:
-                return self._diarize_pyannote(audio, sr)
+                intervals = self._diarize_pyannote(audio, sr)
+                # Synthetic tones / VAD misses often yield []; keep pipeline usable.
+                if intervals:
+                    return intervals
+                logger.info(
+                    "pyannote returned no speakers; using fallback diarization"
+                )
             except Exception as exc:
                 logger.warning("pyannote diarization failed, falling back: %s", exc)
 
