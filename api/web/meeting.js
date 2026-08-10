@@ -25,6 +25,10 @@ class DistillClient {
     this._minutesDecisions = [];
     this._minutesSaveTimer = null;
     this._activeSpeakerAudio = null;
+    this._captureSource = null; // "live" | "upload" | null
+    this._jalaliValue = null; // {jy,jm,jd,hour,minute} or null
+    this._jalaliView = null; // {jy,jm} for calendar month view
+    this._jalaliOpen = false;
     this._reduceMotion =
       typeof window !== "undefined" &&
       window.matchMedia &&
@@ -95,6 +99,14 @@ class DistillClient {
     this.minutesForm = document.getElementById("minutesForm");
     this.minutesSubject = document.getElementById("minutesSubject");
     this.minutesDate = document.getElementById("minutesDate");
+    this.minutesDateLabel = document.getElementById("minutesDateLabel");
+    this.minutesDatePopover = document.getElementById("minutesDatePopover");
+    this.jalaliMonthLabel = document.getElementById("jalaliMonthLabel");
+    this.jalaliDays = document.getElementById("jalaliDays");
+    this.jalaliHour = document.getElementById("jalaliHour");
+    this.jalaliMinute = document.getElementById("jalaliMinute");
+    this.jalaliTodayBtn = document.getElementById("jalaliTodayBtn");
+    this.jalaliConfirmBtn = document.getElementById("jalaliConfirmBtn");
     this.minutesLocation = document.getElementById("minutesLocation");
     this.minutesSecretary = document.getElementById("minutesSecretary");
     this.minutesAttendeesList = document.getElementById("minutesAttendeesList");
@@ -316,6 +328,7 @@ class DistillClient {
     if (minutesRegenerate) {
       minutesRegenerate.addEventListener("click", () => this.generateMinutes());
     }
+    this.initJalaliPicker();
   }
 
   async loadTuning() {
@@ -748,6 +761,7 @@ class DistillClient {
       this.meetingId = meeting.id;
       this.meetingStatus = "recording";
       this.speakerMap = { ...(meeting.speaker_map || {}) };
+      this._captureSource = "live";
       this.setHasRecording(false);
       this.setMeetingMeta();
       this.setSessionUrl(meeting.id);
@@ -1859,14 +1873,35 @@ class DistillClient {
       status: d.status || "pending",
     }));
     if (this.minutesSubject) this.minutesSubject.value = data.subject || "";
-    if (this.minutesDate) this.minutesDate.value = data.meeting_date || "";
     if (this.minutesLocation) this.minutesLocation.value = data.location || "";
-    if (this.minutesSecretary) this.minutesSecretary.value = data.secretary || "";
     if (this.minutesSummary) this.minutesSummary.value = data.summary || "";
+
+    let dateValue = (data.meeting_date || "").trim();
+    if (!dateValue && this._captureSource === "live") {
+      dateValue = this.formatJalaliDateTime(this.nowAsJalali());
+    }
+    this.setJalaliDateValue(dateValue);
+
     this.renderMinutesChipList("attendees");
     this.renderMinutesChipList("absentees");
+    this.refreshSecretaryOptions(data.secretary || "");
     this.renderMinutesDecisions();
     if (this.minutesSaveStatus) this.minutesSaveStatus.classList.add("hidden");
+  }
+
+  refreshSecretaryOptions(selected) {
+    if (!this.minutesSecretary) return;
+    const current = selected != null ? selected : this.minutesSecretary.value;
+    const names = [...this._minutesAttendees];
+    if (current && !names.includes(current)) names.unshift(current);
+    this.minutesSecretary.innerHTML =
+      '<option value="">انتخاب از حاضرین</option>' +
+      names
+        .map(
+          (name) =>
+            `<option value="${this.escape(name)}"${name === current ? " selected" : ""}>${this.escape(name)}</option>`
+        )
+        .join("");
   }
 
   renderMinutesChipList(kind) {
@@ -1881,6 +1916,7 @@ class DistillClient {
       chip.querySelector("button").addEventListener("click", () => {
         arr.splice(idx, 1);
         this.renderMinutesChipList(kind);
+        if (kind === "attendees") this.refreshSecretaryOptions();
       });
       listEl.appendChild(chip);
     });
@@ -1894,6 +1930,348 @@ class DistillClient {
     if (!arr.includes(value)) arr.push(value);
     if (inputEl) inputEl.value = "";
     this.renderMinutesChipList(kind);
+    if (kind === "attendees") this.refreshSecretaryOptions();
+  }
+
+  initJalaliPicker() {
+    if (!this.minutesDate || !this.minutesDatePopover) return;
+    if (this.jalaliHour && !this.jalaliHour.options.length) {
+      for (let h = 0; h < 24; h++) {
+        const opt = document.createElement("option");
+        opt.value = String(h);
+        opt.textContent = this.toPersianDigits(String(h).padStart(2, "0"));
+        this.jalaliHour.appendChild(opt);
+      }
+    }
+    if (this.jalaliMinute && !this.jalaliMinute.options.length) {
+      for (let m = 0; m < 60; m += 5) {
+        const opt = document.createElement("option");
+        opt.value = String(m);
+        opt.textContent = this.toPersianDigits(String(m).padStart(2, "0"));
+        this.jalaliMinute.appendChild(opt);
+      }
+    }
+
+    this.minutesDate.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.toggleJalaliPicker();
+    });
+    this.minutesDatePopover.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const nav = ev.target.closest("[data-jalali-nav]");
+      if (!nav) return;
+      ev.preventDefault();
+      const dir = nav.getAttribute("data-jalali-nav") === "prev" ? -1 : 1;
+      this.shiftJalaliMonth(dir);
+    });
+    this.jalaliDays?.addEventListener("click", (ev) => {
+      const dayBtn = ev.target.closest("[data-day]");
+      if (!dayBtn || dayBtn.disabled) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const day = Number(dayBtn.getAttribute("data-day"));
+      if (!this._jalaliView) return;
+      this._jalaliValue = {
+        jy: this._jalaliView.jy,
+        jm: this._jalaliView.jm,
+        jd: day,
+        hour: Number(this.jalaliHour?.value ?? this._jalaliValue?.hour ?? 0),
+        minute: Number(this.jalaliMinute?.value ?? this._jalaliValue?.minute ?? 0),
+      };
+      this.updateJalaliDateLabel();
+      this.renderJalaliCalendar();
+    });
+    this.jalaliHour?.addEventListener("change", () => {
+      if (!this._jalaliValue) this._jalaliValue = { ...this.nowAsJalali() };
+      this._jalaliValue.hour = Number(this.jalaliHour.value);
+      this.updateJalaliDateLabel();
+    });
+    this.jalaliMinute?.addEventListener("change", () => {
+      if (!this._jalaliValue) this._jalaliValue = { ...this.nowAsJalali() };
+      this._jalaliValue.minute = Number(this.jalaliMinute.value);
+      this.updateJalaliDateLabel();
+    });
+    this.jalaliTodayBtn?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this._jalaliValue = this.nowAsJalali();
+      this._jalaliView = { jy: this._jalaliValue.jy, jm: this._jalaliValue.jm };
+      this.syncJalaliTimeSelects();
+      this.updateJalaliDateLabel();
+      this.renderJalaliCalendar();
+    });
+    this.jalaliConfirmBtn?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!this._jalaliValue) this._jalaliValue = this.nowAsJalali();
+      this._jalaliValue.hour = Number(this.jalaliHour?.value || this._jalaliValue.hour || 0);
+      this._jalaliValue.minute = Number(this.jalaliMinute?.value || this._jalaliValue.minute || 0);
+      this.updateJalaliDateLabel();
+      this.closeJalaliPicker();
+    });
+    // Use pointerdown so the target is still attached (day re-render happens on click).
+    document.addEventListener("pointerdown", (ev) => {
+      if (!this._jalaliOpen) return;
+      const root = document.getElementById("minutesDatePicker");
+      if (!root) return;
+      const path = typeof ev.composedPath === "function" ? ev.composedPath() : [];
+      if (path.includes(root) || root.contains(ev.target)) return;
+      this.closeJalaliPicker();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && this._jalaliOpen) this.closeJalaliPicker();
+    });
+  }
+
+  toggleJalaliPicker() {
+    if (this._jalaliOpen) this.closeJalaliPicker();
+    else this.openJalaliPicker();
+  }
+
+  openJalaliPicker() {
+    if (!this.minutesDatePopover) return;
+    if (!this._jalaliValue) this._jalaliValue = this.nowAsJalali();
+    this._jalaliView = { jy: this._jalaliValue.jy, jm: this._jalaliValue.jm };
+    this.syncJalaliTimeSelects();
+    this.renderJalaliCalendar();
+    this.minutesDatePopover.classList.remove("hidden");
+    this.minutesDate?.setAttribute("aria-expanded", "true");
+    this._jalaliOpen = true;
+  }
+
+  closeJalaliPicker() {
+    if (!this.minutesDatePopover) return;
+    this.minutesDatePopover.classList.add("hidden");
+    this.minutesDate?.setAttribute("aria-expanded", "false");
+    this._jalaliOpen = false;
+  }
+
+  shiftJalaliMonth(delta) {
+    if (!this._jalaliView) return;
+    let { jy, jm } = this._jalaliView;
+    jm += delta;
+    if (jm < 1) {
+      jm = 12;
+      jy -= 1;
+    } else if (jm > 12) {
+      jm = 1;
+      jy += 1;
+    }
+    this._jalaliView = { jy, jm };
+    this.renderJalaliCalendar();
+  }
+
+  syncJalaliTimeSelects() {
+    if (!this._jalaliValue) return;
+    if (this.jalaliHour) this.jalaliHour.value = String(this._jalaliValue.hour || 0);
+    if (this.jalaliMinute) {
+      const snapped = Math.round((this._jalaliValue.minute || 0) / 5) * 5;
+      this.jalaliMinute.value = String(Math.min(55, snapped));
+      this._jalaliValue.minute = Number(this.jalaliMinute.value);
+    }
+  }
+
+  renderJalaliCalendar() {
+    if (!this.jalaliDays || !this._jalaliView) return;
+    const monthNames = [
+      "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+      "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند",
+    ];
+    if (this.jalaliMonthLabel) {
+      this.jalaliMonthLabel.textContent = `${monthNames[this._jalaliView.jm - 1]} ${this.toPersianDigits(this._jalaliView.jy)}`;
+    }
+
+    const today = this.nowAsJalali();
+    const daysInMonth = this.jalaliMonthLength(this._jalaliView.jy, this._jalaliView.jm);
+    const firstWeekday = this.jalaliWeekday(this._jalaliView.jy, this._jalaliView.jm, 1); // 0=Sat
+
+    this.jalaliDays.innerHTML = "";
+    for (let i = 0; i < firstWeekday; i++) {
+      const empty = document.createElement("button");
+      empty.type = "button";
+      empty.className = "jalali-day";
+      empty.disabled = true;
+      empty.textContent = "";
+      this.jalaliDays.appendChild(empty);
+    }
+    for (let day = 1; day <= daysInMonth; day++) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "jalali-day";
+      btn.dataset.day = String(day);
+      btn.textContent = this.toPersianDigits(day);
+      const isSelected =
+        this._jalaliValue &&
+        this._jalaliValue.jy === this._jalaliView.jy &&
+        this._jalaliValue.jm === this._jalaliView.jm &&
+        this._jalaliValue.jd === day;
+      const isToday =
+        today.jy === this._jalaliView.jy &&
+        today.jm === this._jalaliView.jm &&
+        today.jd === day;
+      if (isSelected) btn.classList.add("is-selected");
+      if (isToday) btn.classList.add("is-today");
+      this.jalaliDays.appendChild(btn);
+    }
+  }
+
+  setJalaliDateValue(text) {
+    this._jalaliValue = this.parseJalaliDateTime(text);
+    this.updateJalaliDateLabel();
+  }
+
+  updateJalaliDateLabel() {
+    if (!this.minutesDateLabel) return;
+    if (!this._jalaliValue) {
+      this.minutesDateLabel.textContent = "انتخاب تاریخ و زمان";
+      this.minutesDateLabel.classList.add("is-placeholder");
+      return;
+    }
+    this.minutesDateLabel.textContent = this.formatJalaliDateTime(this._jalaliValue);
+    this.minutesDateLabel.classList.remove("is-placeholder");
+  }
+
+  getJalaliDateValue() {
+    return this._jalaliValue ? this.formatJalaliDateTime(this._jalaliValue) : "";
+  }
+
+  nowAsJalali() {
+    const now = new Date();
+    const [jy, jm, jd] = this.gregorianToJalali(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      now.getDate()
+    );
+    return {
+      jy,
+      jm,
+      jd,
+      hour: now.getHours(),
+      minute: Math.round(now.getMinutes() / 5) * 5 % 60,
+    };
+  }
+
+  formatJalaliDateTime(v) {
+    const y = this.toPersianDigits(String(v.jy));
+    const m = this.toPersianDigits(String(v.jm).padStart(2, "0"));
+    const d = this.toPersianDigits(String(v.jd).padStart(2, "0"));
+    const hh = this.toPersianDigits(String(v.hour ?? 0).padStart(2, "0"));
+    const mm = this.toPersianDigits(String(v.minute ?? 0).padStart(2, "0"));
+    return `${y}/${m}/${d} ${hh}:${mm}`;
+  }
+
+  parseJalaliDateTime(text) {
+    const raw = String(text || "")
+      .trim()
+      .replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d));
+    if (!raw) return null;
+    const match = raw.match(
+      /(\d{3,4})\s*[\/\-]\s*(\d{1,2})\s*[\/\-]\s*(\d{1,2})(?:\s+(\d{1,2})\s*[:：]\s*(\d{1,2}))?/
+    );
+    if (!match) return null;
+    return {
+      jy: Number(match[1]),
+      jm: Number(match[2]),
+      jd: Number(match[3]),
+      hour: Number(match[4] || 0),
+      minute: Number(match[5] || 0),
+    };
+  }
+
+  jalaliMonthLength(jy, jm) {
+    if (jm <= 6) return 31;
+    if (jm <= 11) return 30;
+    return this.isJalaliLeap(jy) ? 30 : 29;
+  }
+
+  isJalaliLeap(jy) {
+    const breaks = [
+      -61, 9, 38, 199, 426, 686, 756, 818, 1111, 1181, 1210, 1635, 2060, 2097,
+      2192, 2262, 2324, 2394, 2456, 3178,
+    ];
+    const bl = breaks.length;
+    let jp = breaks[0];
+    let jump = 0;
+    for (let i = 1; i < bl; i++) {
+      const jm = breaks[i];
+      jump = jm - jp;
+      if (jy < jm) break;
+      jp = jm;
+    }
+    let n = jy - jp;
+    if (jump - n < 6) n = n - jump + Math.floor((jump + 4) / 33) * 33;
+    let leap = ((((n + 1) % 33) - 1) % 4);
+    if (leap === -1) leap = 4;
+    return leap === 0;
+  }
+
+  jalaliWeekday(jy, jm, jd) {
+    const [gy, gm, gd] = this.jalaliToGregorian(jy, jm, jd);
+    // JS: 0=Sun ... 6=Sat → convert to 0=Sat
+    const dow = new Date(gy, gm - 1, gd).getDay();
+    return (dow + 1) % 7;
+  }
+
+  gregorianToJalali(gy, gm, gd) {
+    const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let jy = gy <= 1600 ? 0 : 979;
+    gy -= gy <= 1600 ? 621 : 1600;
+    const gy2 = gm > 2 ? gy + 1 : gy;
+    let days =
+      365 * gy +
+      Math.floor((gy2 + 3) / 4) -
+      Math.floor((gy2 + 99) / 100) +
+      Math.floor((gy2 + 399) / 400) -
+      80 +
+      gd +
+      g_d_m[gm - 1];
+    jy += 33 * Math.floor(days / 12053);
+    days %= 12053;
+    jy += 4 * Math.floor(days / 1461);
+    days %= 1461;
+    if (days > 365) {
+      jy += Math.floor((days - 1) / 365);
+      days = (days - 1) % 365;
+    }
+    const jm = days < 186 ? 1 + Math.floor(days / 31) : 7 + Math.floor((days - 186) / 30);
+    const jd = 1 + (days < 186 ? days % 31 : (days - 186) % 30);
+    return [jy, jm, jd];
+  }
+
+  jalaliToGregorian(jy, jm, jd) {
+    let gy = jy <= 979 ? 621 : 1600;
+    jy -= jy <= 979 ? 0 : 979;
+    const days =
+      365 * jy +
+      Math.floor(jy / 33) * 8 +
+      Math.floor(((jy % 33) + 3) / 4) +
+      78 +
+      jd +
+      (jm < 7 ? (jm - 1) * 31 : (jm - 7) * 30 + 186);
+    gy += 400 * Math.floor(days / 146097);
+    let rem = days % 146097;
+    if (rem >= 36525) {
+      rem--;
+      gy += 100 * Math.floor(rem / 36524);
+      rem %= 36524;
+      if (rem >= 365) rem++;
+    }
+    gy += 4 * Math.floor(rem / 1461);
+    rem %= 1461;
+    if (rem >= 366) {
+      rem--;
+      gy += Math.floor(rem / 365);
+      rem %= 365;
+    }
+    const sal_a = [
+      0, 31,
+      (gy % 4 === 0 && gy % 100 !== 0) || gy % 400 === 0 ? 29 : 28,
+      31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    let gm = 0;
+    for (gm = 0; gm < 13 && rem >= sal_a[gm]; gm++) rem -= sal_a[gm];
+    return [gy, gm, rem + 1];
   }
 
   renderMinutesDecisions() {
@@ -1948,7 +2326,7 @@ class DistillClient {
     if (!this.meetingId) return;
     const payload = {
       subject: (this.minutesSubject?.value || "").trim(),
-      meeting_date: (this.minutesDate?.value || "").trim(),
+      meeting_date: this.getJalaliDateValue(),
       location: (this.minutesLocation?.value || "").trim(),
       secretary: (this.minutesSecretary?.value || "").trim(),
       summary: (this.minutesSummary?.value || "").trim(),
@@ -2082,6 +2460,7 @@ class DistillClient {
       this.meetingId = meeting.id;
       this.meetingStatus = meeting.status || "stopped";
       this.speakerMap = { ...(meeting.speaker_map || {}) };
+      this._captureSource = "upload";
       this.setMeetingMeta();
       this.setSessionUrl(meeting.id);
       this.clearTimeline(true);

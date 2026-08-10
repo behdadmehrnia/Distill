@@ -1166,7 +1166,8 @@
     }
 
     .minutes-field input,
-    .minutes-field textarea {
+    .minutes-field textarea,
+    .minutes-field select {
       width: 100%;
       background: #1a1a1a;
       border: 1px solid #333;
@@ -1179,7 +1180,177 @@
     }
 
     .minutes-field input:focus,
-    .minutes-field textarea:focus { border-color: #f9d423; }
+    .minutes-field textarea:focus,
+    .minutes-field select:focus { border-color: #f9d423; }
+
+    .jalali-picker {
+      position: relative;
+    }
+
+    .jalali-picker-trigger {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.6rem;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      color: #e0e0e0;
+      padding: 0.6rem 0.7rem;
+      font: inherit;
+      cursor: pointer;
+      text-align: right;
+      outline: none;
+    }
+
+    .jalali-picker-trigger:hover,
+    .jalali-picker-trigger[aria-expanded="true"] {
+      border-color: #f9d423;
+    }
+
+    .jalali-picker-label.is-placeholder {
+      color: #777;
+    }
+
+    .jalali-picker-icon {
+      color: #999;
+      flex-shrink: 0;
+    }
+
+    .jalali-popover {
+      position: absolute;
+      top: calc(100% + 0.4rem);
+      inset-inline-start: 0;
+      z-index: 60;
+      width: min(300px, calc(100vw - 2rem));
+      background: #1f1f1f;
+      border: 1px solid #3a3a3a;
+      border-radius: 12px;
+      padding: 0.75rem;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+    }
+
+    .jalali-popover.hidden { display: none !important; }
+
+    .jalali-popover-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.4rem;
+    }
+
+    .jalali-month-label {
+      color: #f9d423;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+
+    .jalali-nav-btn {
+      width: 2rem;
+      height: 2rem;
+      border-radius: 8px;
+      border: 1px solid #333;
+      background: #151515;
+      color: #e0e0e0;
+      cursor: pointer;
+      font: inherit;
+      font-size: 1.1rem;
+      line-height: 1;
+    }
+
+    .jalali-nav-btn:hover {
+      border-color: #f9d423;
+      color: #f9d423;
+    }
+
+    .jalali-weekdays,
+    .jalali-days {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.2rem;
+      text-align: center;
+    }
+
+    .jalali-weekdays span {
+      color: #777;
+      font-size: 0.72rem;
+      padding: 0.25rem 0;
+    }
+
+    .jalali-day {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: #e0e0e0;
+      border-radius: 8px;
+      height: 2rem;
+      font: inherit;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+
+    .jalali-day:hover:not(:disabled) {
+      background: rgba(249, 212, 35, 0.12);
+      color: #f9d423;
+    }
+
+    .jalali-day.is-selected {
+      background: #f9d423;
+      color: #1a1a1a;
+      font-weight: 700;
+    }
+
+    .jalali-day.is-today:not(.is-selected) {
+      box-shadow: inset 0 0 0 1px rgba(249, 212, 35, 0.55);
+    }
+
+    .jalali-day:disabled {
+      color: #444;
+      cursor: default;
+    }
+
+    .jalali-time-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+    }
+
+    .jalali-time-row label {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      font-size: 0.72rem;
+      color: #888;
+    }
+
+    .jalali-time-row select {
+      width: 100%;
+      background: #151515;
+      border: 1px solid #333;
+      border-radius: 8px;
+      color: #e0e0e0;
+      padding: 0.4rem 0.5rem;
+      font: inherit;
+      outline: none;
+    }
+
+    .jalali-time-row select:focus { border-color: #f9d423; }
+
+    .jalali-popover-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+
+    .jalali-confirm-btn {
+      width: auto;
+      padding: 0.45rem 1rem;
+    }
 
     .minutes-chip-field {
       display: flex;
@@ -1648,8 +1819,41 @@
               <input id="minutesSubject" type="text" autocomplete="off" />
             </div>
             <div class="minutes-field">
-              <label for="minutesDate">تاریخ جلسه</label>
-              <input id="minutesDate" type="text" autocomplete="off" placeholder="مثلاً ۱۴۰۴/۰۵/۱۸" />
+              <label for="minutesDate">تاریخ و زمان جلسه</label>
+              <div class="jalali-picker" id="minutesDatePicker">
+                <button type="button" id="minutesDate" class="jalali-picker-trigger" aria-haspopup="dialog" aria-expanded="false">
+                  <span id="minutesDateLabel" class="jalali-picker-label is-placeholder">انتخاب تاریخ و زمان</span>
+                  <svg class="jalali-picker-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <rect x="3" y="5" width="18" height="16" rx="2"/>
+                    <path d="M3 10h18M8 3v4M16 3v4"/>
+                  </svg>
+                </button>
+                <div id="minutesDatePopover" class="jalali-popover hidden" role="dialog" aria-label="انتخاب تاریخ و زمان شمسی">
+                  <div class="jalali-popover-head">
+                    <button type="button" class="jalali-nav-btn" data-jalali-nav="prev" aria-label="ماه قبل">‹</button>
+                    <div class="jalali-month-label" id="jalaliMonthLabel"></div>
+                    <button type="button" class="jalali-nav-btn" data-jalali-nav="next" aria-label="ماه بعد">›</button>
+                  </div>
+                  <div class="jalali-weekdays">
+                    <span>ش</span><span>ی</span><span>د</span><span>س</span><span>چ</span><span>پ</span><span>ج</span>
+                  </div>
+                  <div class="jalali-days" id="jalaliDays"></div>
+                  <div class="jalali-time-row">
+                    <label>
+                      ساعت
+                      <select id="jalaliHour"></select>
+                    </label>
+                    <label>
+                      دقیقه
+                      <select id="jalaliMinute"></select>
+                    </label>
+                  </div>
+                  <div class="jalali-popover-actions">
+                    <button type="button" class="linkish" id="jalaliTodayBtn">امروز</button>
+                    <button type="button" class="btn btn-primary jalali-confirm-btn" id="jalaliConfirmBtn">تأیید</button>
+                  </div>
+                </div>
+              </div>
             </div>
             <div class="minutes-field">
               <label for="minutesLocation">محل برگزاری</label>
@@ -1657,7 +1861,9 @@
             </div>
             <div class="minutes-field">
               <label for="minutesSecretary">دبیر جلسه</label>
-              <input id="minutesSecretary" type="text" autocomplete="off" />
+              <select id="minutesSecretary">
+                <option value="">انتخاب از حاضرین</option>
+              </select>
             </div>
           </div>
 
