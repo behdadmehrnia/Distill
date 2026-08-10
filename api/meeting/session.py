@@ -517,6 +517,7 @@ class MeetingSession:
             )
             duration_ms = self.ingest.duration_ms
 
+        review_input: Optional[List[TranscriptSegment]] = None
         async with self._transcript_lock:
             self._speaker_intervals = intervals
             self._last_diarize_ms = duration_ms
@@ -549,18 +550,39 @@ class MeetingSession:
                         self.tuning.get("dedupe_time_overlap", 0.35)
                     ),
                 )
-                if not provisional:
-                    if review_phase:
-                        await self._emit_phase(review_phase)
-                    segments = await self._finalize_review(segments)
-                self.store.replace_meeting_segments(self.meeting_id, segments)
-                await self._emit(
-                    {
-                        "type": "transcript",
-                        "meeting_id": self.meeting_id,
-                        "segments": [s.to_dict() for s in segments],
-                    }
-                )
+                if provisional:
+                    self.store.replace_meeting_segments(self.meeting_id, segments)
+                    await self._emit(
+                        {
+                            "type": "transcript",
+                            "meeting_id": self.meeting_id,
+                            "segments": [s.to_dict() for s in segments],
+                        }
+                    )
+                else:
+                    # Review outside the lock — LLM polish can take a long time.
+                    review_input = segments
+
+        if review_input is None:
+            return
+
+        if review_phase:
+            await self._emit_phase(review_phase)
+        try:
+            reviewed = await self._finalize_review(review_input)
+        except Exception as exc:
+            logger.exception("Finalize review failed; keeping unpolished text: %s", exc)
+            reviewed = review_input
+
+        async with self._transcript_lock:
+            self.store.replace_meeting_segments(self.meeting_id, reviewed)
+            await self._emit(
+                {
+                    "type": "transcript",
+                    "meeting_id": self.meeting_id,
+                    "segments": [s.to_dict() for s in reviewed],
+                }
+            )
 
     async def _emit_phase(self, phase: str) -> None:
         await self._emit(
@@ -605,7 +627,12 @@ class MeetingSession:
             self._worker_tasks = []
 
             await self._emit_phase("diarize")
-            await self._refresh_diarization(provisional=False, review_phase="review")
+            try:
+                await self._refresh_diarization(
+                    provisional=False, review_phase="review"
+                )
+            except Exception as exc:
+                logger.exception("Final diarize/review failed during stop: %s", exc)
 
             self._running = False
             self.record.status = MeetingStatus.STOPPED
@@ -739,7 +766,12 @@ class MeetingSession:
             similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
             min_time_overlap_ratio=float(self.tuning.get("dedupe_time_overlap", 0.35)),
         )
-        segments = await self._finalize_review(segments)
+        try:
+            segments = await self._finalize_review(segments)
+        except Exception as exc:
+            logger.exception(
+                "Finalize review failed on upload; keeping unpolished text: %s", exc
+            )
         self.store.replace_meeting_segments(self.meeting_id, segments)
         await self._emit(
             {

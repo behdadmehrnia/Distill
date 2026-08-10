@@ -8,14 +8,59 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from .models import TranscriptSegment
 
 logger = logging.getLogger(__name__)
+
+# Keep each polish LLM call under a crude context budget (chars of segment text).
+DEFAULT_REVIEW_MAX_BATCH_CHARS = 40_000
+
+
+def review_max_batch_chars() -> int:
+    raw = os.getenv("REVIEW_MAX_BATCH_CHARS", "").strip()
+    if not raw:
+        return DEFAULT_REVIEW_MAX_BATCH_CHARS
+    try:
+        return max(2_000, int(raw))
+    except ValueError:
+        return DEFAULT_REVIEW_MAX_BATCH_CHARS
+
+
+def chunk_review_items(
+    items: List[Dict[str, str]], max_chars: int
+) -> List[List[Dict[str, str]]]:
+    """Split polish payload items so each batch's text stays within max_chars."""
+    if not items:
+        return []
+    if max_chars <= 0:
+        return [items]
+
+    batches: List[List[Dict[str, str]]] = []
+    current: List[Dict[str, str]] = []
+    size = 0
+    for item in items:
+        text_len = len(item.get("text") or "")
+        # JSON key/overhead fudge so the prompt stays under budget.
+        piece = text_len + 48
+        if current and size + piece > max_chars:
+            batches.append(current)
+            current = []
+            size = 0
+        if text_len > max_chars and not current:
+            # Single oversized item: still send alone (better than dropping).
+            batches.append([item])
+            continue
+        current.append(item)
+        size += piece
+    if current:
+        batches.append(current)
+    return batches
 
 ReviewAction = Literal["keep", "fix", "drop"]
 
@@ -560,7 +605,9 @@ class TranscriptReviewAgent:
         if not gated or not self.enabled:
             return gated
 
-        # Batch LLM review for unique texts (overlap rows share text)
+        # Batch LLM review for unique texts (overlap rows share text).
+        # Long meetings are split into several LLM calls under a char budget so
+        # the polish step does not blow the model context / hang stop().
         unique_texts: dict[str, str] = {}
         for seg in gated:
             unique_texts.setdefault(seg.text, seg.text)
@@ -571,45 +618,65 @@ class TranscriptReviewAgent:
         ]
         id_to_text = {item["id"]: item["text"] for item in items_payload}
         reviewed_map: dict[str, str] = {}
+        batches = chunk_review_items(items_payload, review_max_batch_chars())
+        _, batch_prompt = _load_polish_prompts()
 
-        try:
-            # Budget for full near-literal texts in JSON (avoid forced summarization)
-            approx_chars = sum(len(t) for t in id_to_text.values())
-            max_tokens = min(8192, max(1024, approx_chars // 2 + 250 * len(items_payload)))
-            _, batch_prompt = _load_polish_prompts()
-            messages = [
-                {"role": "system", "content": batch_prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Language hint: {language}\n"
-                        "Return keep/fix/drop per item. Never summarize.\n"
-                        f"Segments JSON:\n{json.dumps(items_payload, ensure_ascii=False)}"
-                    ),
-                },
-            ]
-            raw = await self.llm.complete(
-                messages,
-                temperature=0.0,
-                max_tokens=max_tokens,
+        if len(batches) > 1:
+            logger.info(
+                "STT polish map: %d unique texts → %d LLM batches (budget=%d)",
+                len(items_payload),
+                len(batches),
+                review_max_batch_chars(),
             )
-            data = _parse_review_json(raw) or {}
-            items = data.get("items") or []
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                sid = str(item.get("id") or "")
-                action = str(item.get("action") or "keep").lower()
-                original = id_to_text.get(sid)
-                if original is None:
-                    continue
-                fixed, _eff = _apply_llm_edit(
-                    original, action, str(item.get("text") or "")
+
+        for batch_idx, batch in enumerate(batches, start=1):
+            batch_ids = {item["id"] for item in batch}
+            batch_id_to_text = {i: id_to_text[i] for i in batch_ids}
+            try:
+                approx_chars = sum(len(t) for t in batch_id_to_text.values())
+                max_tokens = min(
+                    8192, max(1024, approx_chars // 2 + 250 * len(batch))
                 )
-                reviewed_map[original] = fixed
-        except Exception as exc:
-            logger.warning("Batch LLM STT review failed: %s", exc)
-            return gated
+                messages = [
+                    {"role": "system", "content": batch_prompt},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Language hint: {language}\n"
+                            f"Batch {batch_idx}/{len(batches)}. "
+                            "Return keep/fix/drop per item. Never summarize.\n"
+                            f"Segments JSON:\n{json.dumps(batch, ensure_ascii=False)}"
+                        ),
+                    },
+                ]
+                raw = await self.llm.complete(
+                    messages,
+                    temperature=0.0,
+                    max_tokens=max_tokens,
+                )
+                data = _parse_review_json(raw) or {}
+                items = data.get("items") or []
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    sid = str(item.get("id") or "")
+                    action = str(item.get("action") or "keep").lower()
+                    original = batch_id_to_text.get(sid)
+                    if original is None:
+                        continue
+                    fixed, _eff = _apply_llm_edit(
+                        original, action, str(item.get("text") or "")
+                    )
+                    reviewed_map[original] = fixed
+            except Exception as exc:
+                logger.warning(
+                    "Batch LLM STT review failed (batch %d/%d): %s",
+                    batch_idx,
+                    len(batches),
+                    exc,
+                )
+                # Keep heuristic text for this batch; continue other batches.
+                continue
 
         out: List[TranscriptSegment] = []
         seen_overlap: set[tuple] = set()

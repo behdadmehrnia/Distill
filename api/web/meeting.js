@@ -824,32 +824,58 @@ class DistillClient {
       // Only stop via HTTP — avoid double-stop race with WS "stop"
       if (this.meetingId) {
         this.setStatus("processing", "در حال پردازش…");
-        const stopRes = await fetch(`/meetings/${this.meetingId}/stop`, { method: "POST" });
         let stopped = null;
-        if (stopRes.ok) {
-          try {
-            stopped = await stopRes.json();
-          } catch (_) {}
+        try {
+          const stopRes = await fetch(`/meetings/${this.meetingId}/stop`, {
+            method: "POST",
+          });
+          if (stopRes.ok) {
+            try {
+              stopped = await stopRes.json();
+            } catch (_) {}
+          } else {
+            console.error("stop failed", stopRes.status, await stopRes.text());
+          }
+        } catch (stopErr) {
+          console.error(stopErr);
         }
         this.meetingStatus = "stopped";
         this.setHasRecording(!!(stopped && stopped.has_recording));
-        await this.refreshTranscript();
-        await this.refreshDebug();
+        try {
+          await this.refreshTranscript();
+        } catch (err) {
+          console.error(err);
+        }
+        try {
+          await this.refreshDebug();
+        } catch (_) {}
         const hasText = this.hasTranscriptContext();
         if (!hasText) {
           this.setStatus("connected", "متوقف شد — متنی دریافت نشد (STT)");
         } else {
           this.setStatus("connected", "متوقف شد — آماده تحلیل");
         }
-        if (hasText) {
+        try {
           await this.advanceToSpeakerStep();
-        } else {
-          this.closeReviewWizard(true);
+        } catch (err) {
+          console.error(err);
+          if (!hasText) this.closeReviewWizard(true);
         }
       }
     } catch (err) {
       console.error(err);
       this.setStatus("disconnected", "خطا در توقف");
+      // Prefer continuing the wizard if we already have transcript context.
+      try {
+        if (this._reviewWizardOpen && this.meetingId) {
+          await this.refreshTranscript().catch(() => {});
+          if (this.hasTranscriptContext()) {
+            this.meetingStatus = "stopped";
+            await this.advanceToSpeakerStep();
+            return;
+          }
+        }
+      } catch (_) {}
       this.closeReviewWizard(true);
     } finally {
       if (this.ws) {
