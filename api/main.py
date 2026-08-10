@@ -15,7 +15,6 @@ logger = logging.getLogger("distill")
 
 
 def main() -> None:
-    # Limit native thread pools before torch can ever be imported (lazy diarize).
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -32,8 +31,6 @@ def main() -> None:
         settings.host,
         settings.port,
     )
-    # factory=True: create_app() runs in the server process after uvicorn starts,
-    # and must stay free of torch/pyannote imports.
     uvicorn.run(
         "api.app:create_app",
         factory=True,
@@ -41,7 +38,6 @@ def main() -> None:
         port=settings.port,
         log_level="info",
         access_log=True,
-        # lifespan still runs, but our startup is a no-op so bind is immediate.
         timeout_keep_alive=5,
     )
 

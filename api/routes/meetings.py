@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -19,7 +20,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, Response
 
 from api.meeting.ingest import AudioIngest
-from api.meeting.models import MeetingMinutes, MinutesDecision
+from api.meeting.models import MeetingMinutes, MeetingStatus, MinutesDecision
 from api.realtime import broadcast
 
 logger = logging.getLogger(__name__)
@@ -171,6 +172,10 @@ async def get_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
     meeting = request.app.state.manager.store.get_meeting(meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="meeting not found")
+    # Heal stale "recording"/"processing" left behind when the capture process
+    # died (or stop was cancelled) and nothing is actually running.
+    if meeting.status in (MeetingStatus.RECORDING, MeetingStatus.PROCESSING):
+        meeting = request.app.state.manager.heal_orphaned_recording(meeting)
     settings = request.app.state.settings
     path = _resolve_recording_path(
         meeting.id,
@@ -224,9 +229,16 @@ async def start_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
     session = app.state.manager.get_or_restore(meeting_id, on_event=on_event)
     if not session:
         raise HTTPException(status_code=404, detail="meeting not found")
-    if session.record.status.value == "recording":
+    if session._running:
         raise HTTPException(status_code=409, detail="already recording")
-    if session.record.status.value == "processing":
+    if session.record.status in (
+        MeetingStatus.RECORDING,
+        MeetingStatus.PROCESSING,
+    ):
+        # Stale DB/status after crash or missed stop — not a live capture.
+        # No-op when a live stop is still in progress (_running/_stopping).
+        app.state.manager.heal_orphaned_recording(session.record)
+    if session.record.status == MeetingStatus.PROCESSING:
         raise HTTPException(status_code=409, detail="meeting is still processing")
 
     settings = app.state.settings
@@ -674,7 +686,25 @@ async def audio_ws(websocket: WebSocket, meeting_id: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        app.state.ws_by_meeting.get(meeting_id, set()).discard(websocket)
+        sockets = app.state.ws_by_meeting.get(meeting_id, set())
+        sockets.discard(websocket)
+        # Tab close / refresh never hits POST /stop. Finalize in a detached
+        # task: awaiting stop() here is cancelled with the WebSocket ASGI task
+        # and would leave the meeting stuck as processing/recording.
+        if not sockets and session._running:
+            asyncio.create_task(
+                _auto_stop_after_disconnect(session, meeting_id),
+                name=f"auto-stop-{meeting_id}",
+            )
+
+
+async def _auto_stop_after_disconnect(session, meeting_id: str) -> None:
+    try:
+        await session.stop()
+    except Exception:
+        logger.exception(
+            "Auto-stop after WebSocket disconnect failed for %s", meeting_id
+        )
 
 
 async def _handle_ws_message(session, ws: WebSocket, payload: dict) -> None:

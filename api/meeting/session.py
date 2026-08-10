@@ -296,6 +296,7 @@ class MeetingSession:
             return
         if reset:
             self.clear_for_rerecord()
+        self._stopping = False
         self._running = True
         self._active_tuning = dict(self.tuning)
         self.record.status = MeetingStatus.RECORDING
@@ -638,49 +639,62 @@ class MeetingSession:
             if self._stopping or not self._running:
                 return self.record
             self._stopping = True
-
-            self.record.status = MeetingStatus.PROCESSING
-            self.store.save_meeting(self.record)
-            await self._emit(
-                {"type": "status", "status": "processing", "meeting_id": self.meeting_id}
-            )
-
-            await self._emit_phase("save_audio")
             try:
-                path = self.ingest.save_wav()
-                self.record.audio_path = path
+                self.record.status = MeetingStatus.PROCESSING
                 self.store.save_meeting(self.record)
-            except Exception as exc:
-                logger.warning("Could not save WAV: %s", exc)
-
-            await self._emit_phase("flush_stt")
-            rem = self.chunker.flush_remainder(self.ingest.get_buffer())
-            if rem is not None:
-                await self._stt_queue.put(rem)
-
-            n_workers = len(self._worker_tasks) or 1
-            for _ in range(n_workers):
-                await self._stt_queue.put(None)
-            if self._worker_tasks:
-                await asyncio.gather(*self._worker_tasks)
-            self._worker_tasks = []
-
-            await self._emit_phase("diarize")
-            try:
-                await self._refresh_diarization(
-                    provisional=False, review_phase="review"
+                await self._emit(
+                    {
+                        "type": "status",
+                        "status": "processing",
+                        "meeting_id": self.meeting_id,
+                    }
                 )
-            except Exception as exc:
-                logger.exception("Final diarize/review failed during stop: %s", exc)
 
-            self._running = False
-            self.record.status = MeetingStatus.STOPPED
-            self.record.stopped_at = time.time()
-            self.store.save_meeting(self.record)
-            await self._emit(
-                {"type": "status", "status": "stopped", "meeting_id": self.meeting_id}
-            )
-            return self.record
+                await self._emit_phase("save_audio")
+                try:
+                    path = self.ingest.save_wav()
+                    self.record.audio_path = path
+                    self.store.save_meeting(self.record)
+                except Exception as exc:
+                    logger.warning("Could not save WAV: %s", exc)
+
+                await self._emit_phase("flush_stt")
+                rem = self.chunker.flush_remainder(self.ingest.get_buffer())
+                if rem is not None:
+                    await self._stt_queue.put(rem)
+
+                n_workers = len(self._worker_tasks) or 1
+                for _ in range(n_workers):
+                    await self._stt_queue.put(None)
+                if self._worker_tasks:
+                    await asyncio.gather(*self._worker_tasks)
+                self._worker_tasks = []
+
+                await self._emit_phase("diarize")
+                try:
+                    await self._refresh_diarization(
+                        provisional=False, review_phase="review"
+                    )
+                except Exception as exc:
+                    logger.exception("Final diarize/review failed during stop: %s", exc)
+
+                self._running = False
+                self.record.status = MeetingStatus.STOPPED
+                self.record.stopped_at = time.time()
+                self.store.save_meeting(self.record)
+                await self._emit(
+                    {
+                        "type": "status",
+                        "status": "stopped",
+                        "meeting_id": self.meeting_id,
+                    }
+                )
+                return self.record
+            except BaseException:
+                # Cancellation mid-stop must not sticky-lock the session forever.
+                if self._running:
+                    self._stopping = False
+                raise
 
     async def process_uploaded_file(self, path: str) -> List[TranscriptSegment]:
         """Offline path: load file → diarize → windowed STT → align → store."""
@@ -899,6 +913,22 @@ class MeetingManager:
     def get(self, meeting_id: str) -> Optional[MeetingSession]:
         return self._sessions.get(meeting_id)
 
+    def heal_orphaned_recording(self, record: MeetingRecord) -> MeetingRecord:
+        """Mark a non-live recording/processing meeting as stopped so clients can restart."""
+        if record.status not in (MeetingStatus.RECORDING, MeetingStatus.PROCESSING):
+            return record
+        live = self._sessions.get(record.id)
+        if live is not None and (live._running or live._stopping):
+            return record
+        record.status = MeetingStatus.STOPPED
+        if record.stopped_at is None:
+            record.stopped_at = time.time()
+        self.store.save_meeting(record)
+        if live is not None and live.record is not record:
+            live.record.status = record.status
+            live.record.stopped_at = record.stopped_at
+        return record
+
     def get_or_restore(
         self, meeting_id: str, on_event: Optional[EventCallback] = None
     ) -> Optional[MeetingSession]:
@@ -910,6 +940,9 @@ class MeetingManager:
         record = self.store.get_meeting(meeting_id)
         if not record:
             return None
+        if record.status in (MeetingStatus.RECORDING, MeetingStatus.PROCESSING):
+            # In-memory capture is gone; status alone would block /start forever.
+            self.heal_orphaned_recording(record)
         session = MeetingSession(
             record=record,
             store=self.store,

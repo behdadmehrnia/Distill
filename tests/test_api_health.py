@@ -329,3 +329,59 @@ def test_recording_endpoint_and_restart(tmp_path):
         stopped = client.post(f"/meetings/{meeting_id}/stop")
         assert stopped.status_code == 200
 
+
+def test_websocket_disconnect_auto_stops_recording(tmp_path):
+    """Closing the audio WS without POST /stop must not leave 'already recording'."""
+    import time
+
+    with _make_client(tmp_path) as client:
+        created = client.post("/meetings", json={"title": "تب بسته", "start": True})
+        assert created.status_code == 201
+        meeting_id = created.json()["id"]
+        assert created.json()["status"] == "recording"
+
+        with client.websocket_connect(f"/meetings/{meeting_id}/audio") as ws:
+            hello = ws.receive_json()
+            assert hello["status"] == "recording"
+            ws.send_bytes(b"\x00\x00" * 160)
+
+        status = None
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            meta = client.get(f"/meetings/{meeting_id}")
+            assert meta.status_code == 200
+            status = meta.json()["status"]
+            if status == "stopped":
+                break
+            time.sleep(0.05)
+        assert status == "stopped"
+
+        again = client.post(f"/meetings/{meeting_id}/start", json={"reset": True})
+        assert again.status_code == 200
+        assert again.json()["status"] == "recording"
+
+        client.post(f"/meetings/{meeting_id}/stop")
+
+
+def test_orphaned_recording_status_allows_restart(tmp_path):
+    """Stale DB status=recording with no live capture must not block /start."""
+    from api.meeting.models import MeetingStatus
+
+    with _make_client(tmp_path) as client:
+        created = client.post("/meetings", json={"title": "یتیم", "start": False})
+        meeting_id = created.json()["id"]
+
+        meeting = client.app.state.manager.store.get_meeting(meeting_id)
+        meeting.status = MeetingStatus.RECORDING
+        client.app.state.manager.store.save_meeting(meeting)
+
+        stuck = client.get(f"/meetings/{meeting_id}")
+        assert stuck.status_code == 200
+        assert stuck.json()["status"] == "stopped"
+
+        started = client.post(f"/meetings/{meeting_id}/start", json={})
+        assert started.status_code == 200
+        assert started.json()["status"] == "recording"
+
+        client.post(f"/meetings/{meeting_id}/stop")
+

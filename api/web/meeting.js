@@ -186,18 +186,42 @@ class DistillClient {
     this.meetingStatus = status;
     if (status === "recording") {
       this.setStatus("recording", "جلسه در حال ضبط (تاریخچه بارگذاری شد)");
+      this.setRecordingControls({ recording: true });
     } else if (status === "processing") {
       this.setStatus("processing", "در حال پردازش");
+      this.setRecordingControls({ processing: true });
     } else {
       this.setStatus("connected", "تاریخچه جلسه بارگذاری شد");
     }
     this.updateReviewAvailability();
   }
 
+  onPageHide(ev) {
+    // bfcache (back/forward) — page may return; do not finalize.
+    if (ev && ev.persisted) return;
+    if (!this.isRecording || !this.meetingId) return;
+    const meetingId = this.meetingId;
+    this.isRecording = false;
+    try {
+      if (this.ws) {
+        this.ws.onclose = null;
+        this.ws.close();
+      }
+    } catch (_) {}
+    this.ws = null;
+    try {
+      fetch(`/meetings/${meetingId}/stop`, { method: "POST", keepalive: true });
+    } catch (_) {}
+  }
+
   bindEvents() {
     this.startBtn.addEventListener("click", () => this.startLive());
     this.stopBtn.addEventListener("click", () => this.stopLive());
     this.uploadBtn.addEventListener("click", () => this.uploadRecording());
+    // Tab close does not reliably run async stopLive — ping the server so the
+    // meeting is not left stuck in "recording" / "already recording".
+    window.addEventListener("pagehide", (ev) => this.onPageHide(ev));
+    window.addEventListener("beforeunload", () => this.onPageHide());
     if (this.confirmCancelBtn) {
       this.confirmCancelBtn.addEventListener("click", () => this.resolveConfirm(false));
     }

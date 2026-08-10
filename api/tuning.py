@@ -6,7 +6,6 @@ from copy import deepcopy
 from typing import Any, Dict, List
 
 
-# Defaults match current production-ish behavior
 DEFAULT_TUNING: Dict[str, Any] = {
     "window_ms": 8000,
     "hop_ms": 6000,
@@ -27,7 +26,6 @@ DEFAULT_TUNING: Dict[str, Any] = {
     "stt_min_quality": 0.35,
 }
 
-# Metadata for the settings panel (Persian labels)
 TUNING_SCHEMA: List[Dict[str, Any]] = [
     {
         "key": "window_ms",
