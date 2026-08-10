@@ -308,7 +308,12 @@
       cursor: not-allowed;
     }
 
-    .btn.is-processing:disabled {
+    .btn.is-muted {
+      opacity: 0.55;
+    }
+
+    .btn.is-processing:disabled,
+    .btn.is-processing {
       opacity: 1;
       cursor: wait;
     }
@@ -1121,6 +1126,7 @@
       position: relative;
       z-index: 1;
       fill: #f9d423;
+      pointer-events: none;
     }
 
     .speaker-play-btn .pause-icon { display: none; }
@@ -1563,7 +1569,7 @@
     }
 
     #confirmPanel.tuning-overlay {
-      z-index: 80;
+      z-index: 200;
     }
 
     .tuning-overlay.hidden { display: none !important; }
@@ -1862,11 +1868,11 @@
 
       <div id="reviewStepSpeakers" class="review-step">
         <p class="review-hint">
-          برای هر سخنگو یک نام وارد کنید (نمونه صدا را برای اطمینان پخش کنید) تا دکمه ادامه فعال شود.
+          برای هر سخنگو یک نام وارد کنید. پخش نمونه صدا اختیاری است و برای اطمینان بیشتر است.
         </p>
         <div id="speakerNamingList" class="speaker-naming-list"></div>
         <div class="review-step-actions">
-          <button id="speakersContinueBtn" class="btn btn-primary" type="button" disabled>
+          <button id="speakersContinueBtn" class="btn btn-primary is-muted" type="button" aria-disabled="true">
             ادامه و بازبینی متن جلسه
           </button>
         </div>
@@ -2035,6 +2041,6 @@
     <span id="copyToastText">لینک جلسه کپی شد</span>
   </div>
 
-  <script src="/meeting.js"></script>
+  <script src="/meeting.js?v=naming-fix-2"></script>
 </body>
 </html>

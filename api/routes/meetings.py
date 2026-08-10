@@ -412,7 +412,15 @@ async def get_speaker_sample_audio(
     if not wav_bytes:
         raise HTTPException(status_code=404, detail="empty audio sample")
 
-    return Response(content=wav_bytes, media_type="audio/wav")
+    return Response(
+        content=wav_bytes,
+        media_type="audio/wav",
+        headers={
+            "Cache-Control": "no-store",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(len(wav_bytes)),
+        },
+    )
 
 
 @router.post("/meetings/{meeting_id}/stop")

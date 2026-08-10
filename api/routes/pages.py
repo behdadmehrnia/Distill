@@ -28,10 +28,14 @@ def _web_path(request: Request, name: str) -> Path:
 def _web_file(request: Request, name: str) -> Response:
     path = _web_path(request, name)
     media_type = _CONTENT_TYPES.get(path.suffix, "application/octet-stream")
+    headers = {}
     if path.suffix in {".html", ".css", ".js"}:
+        # Avoid sticky CDN/browser caches for UI logic during deploys.
+        headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return Response(
             content=path.read_text(encoding="utf-8"),
             media_type=media_type,
+            headers=headers,
         )
     return FileResponse(path, media_type=media_type)
 

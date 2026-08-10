@@ -274,12 +274,12 @@ class DistillClient {
       });
     }
     if (this.speakersContinueBtn) {
-      // Use pointerdown (before input blur) so the blur→PATCH race cannot disable
-      // the button and swallow the action — common in deploy when PATCH is slow.
-      this.speakersContinueBtn.addEventListener("pointerdown", (ev) => {
-        if (ev.pointerType === "mouse" && ev.button !== 0) return;
-        if (this.speakersContinueBtn.disabled || this._speakersContinueBusy) return;
-        ev.preventDefault();
+      const fireContinue = (ev) => {
+        if (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+        if (this._speakersContinueBusy) return;
         this.onSpeakersContinue().catch((err) => {
           console.error(err);
           this.showPrompt({
@@ -287,7 +287,11 @@ class DistillClient {
             message: `ادامه به مرحله بازبینی متن ناموفق بود.\n\n${err.message || err}`,
           });
         });
-      });
+      };
+      // Keep the button HTML-enabled forever; otherwise mobile WebViews swallow clicks.
+      this.speakersContinueBtn.disabled = false;
+      this.speakersContinueBtn.removeAttribute("disabled");
+      this.speakersContinueBtn.addEventListener("click", fireContinue);
     }
     if (this.transcriptContinueBtn) {
       this.transcriptContinueBtn.addEventListener("click", () => {
@@ -312,15 +316,18 @@ class DistillClient {
     if (this.speakerNamingList) {
       this.speakerNamingList.addEventListener("click", (ev) => {
         const btn = ev.target.closest(".speaker-play-btn");
-        if (btn) {
-          this.toggleSpeakerSample(btn).catch((err) => {
-            console.error(err);
-            this.showPrompt({
-              title: "پخش نمونه صدا",
-              message: `پخش نمونه صدا ناموفق بود.\n\n${err.message || err}`,
-            });
+        if (!btn || !this.speakerNamingList.contains(btn)) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.toggleSpeakerSample(btn).catch((err) => {
+          console.error(err);
+          this.showPrompt({
+            title: "پخش نمونه صدا",
+            message: `پخش نمونه صدا ناموفق بود.\n\n${err.message || err}`,
+          }).catch(() => {
+            window.alert(`پخش نمونه صدا ناموفق بود.\n\n${err.message || err}`);
           });
-        }
+        });
       });
     }
     if (this.reopenReviewBtn) {
@@ -1902,8 +1909,14 @@ class DistillClient {
     if (!this.meetingId || !this.speakerNamingList) return;
     this.stopSpeakerSamplePlayback();
     this._confirmedSpeakers = new Set();
+    this._speakersContinueBusy = false;
     this.speakerNamingList.innerHTML = '<p class="review-hint">در حال بارگذاری سخنگوها…</p>';
-    if (this.speakersContinueBtn) this.speakersContinueBtn.disabled = true;
+    if (this.speakersContinueBtn) {
+      this.speakersContinueBtn.disabled = false;
+      this.speakersContinueBtn.removeAttribute("disabled");
+      this.speakersContinueBtn.classList.add("is-muted");
+      this.speakersContinueBtn.setAttribute("aria-disabled", "true");
+    }
     try {
       const res = await this.fetchWithTimeout(
         `/meetings/${this.meetingId}/speakers`,
@@ -1922,7 +1935,7 @@ class DistillClient {
         title: "خطا در بارگذاری سخنگوها",
         message: `لیست سخنگوها دریافت نشد.\n\n${err.message || err}`,
       });
-      if (this.speakersContinueBtn) this.speakersContinueBtn.disabled = false;
+      this.updateSpeakersContinueState();
     }
   }
 
@@ -1932,13 +1945,13 @@ class DistillClient {
     if (!this._speakerList.length) {
       this.speakerNamingList.innerHTML =
         '<p class="review-hint">سخنگویی شناسایی نشد؛ می‌توانید مستقیم ادامه دهید.</p>';
-      if (this.speakersContinueBtn) this.speakersContinueBtn.disabled = false;
+      this.updateSpeakersContinueState();
       return;
     }
     this._speakerList.forEach((spk) => {
       const card = document.createElement("div");
       card.className = "speaker-naming-card";
-      card.dataset.speakerId = spk.id;
+      card.dataset.speakerId = String(spk.id);
       const color = this.speakerColor(spk.id);
       const audioSrc = `/meetings/${this.meetingId}/speakers/${encodeURIComponent(spk.id)}/audio`;
       const audioHtml = spk.has_sample
@@ -1964,7 +1977,7 @@ class DistillClient {
       `;
       if (spk.custom_label) {
         card.classList.add("is-confirmed");
-        this._confirmedSpeakers.add(spk.id);
+        this._confirmedSpeakers.add(String(spk.id));
         this.speakerMap[spk.id] = spk.custom_label;
       }
       const input = card.querySelector(".speaker-naming-name");
@@ -1974,8 +1987,24 @@ class DistillClient {
           input.blur();
         }
       });
+      input.addEventListener("input", () => {
+        const value = (input.value || "").trim();
+        const statusEl = card.querySelector(".speaker-naming-status");
+        if (value) {
+          this._confirmedSpeakers.add(String(spk.id));
+          card.classList.add("is-confirmed");
+          if (statusEl) statusEl.textContent = "آماده";
+        } else {
+          this._confirmedSpeakers.delete(String(spk.id));
+          card.classList.remove("is-confirmed");
+          if (statusEl) statusEl.textContent = "در انتظار نام";
+        }
+        this.updateSpeakersContinueState();
+      });
       input.addEventListener("blur", () => {
-        this.confirmSpeakerName(spk.id, input, card);
+        this.confirmSpeakerName(String(spk.id), input, card).catch((err) => {
+          console.error(err);
+        });
       });
       this.speakerNamingList.appendChild(card);
     });
@@ -1985,21 +2014,22 @@ class DistillClient {
   async confirmSpeakerName(speakerId, input, card) {
     const value = (input.value || "").trim();
     const statusEl = card.querySelector(".speaker-naming-status");
+    const sid = String(speakerId);
     if (!value) {
-      this._confirmedSpeakers.delete(speakerId);
+      this._confirmedSpeakers.delete(sid);
       card.classList.remove("is-confirmed");
       if (statusEl) statusEl.textContent = "در انتظار نام";
       this.updateSpeakersContinueState();
       return;
     }
-    // Skip redundant PATCH when already confirmed with the same label.
-    if (
-      this._confirmedSpeakers.has(speakerId) &&
-      (this.speakerMap[speakerId] || "") === value
-    ) {
-      card.classList.add("is-confirmed");
-      if (statusEl) statusEl.textContent = "ثبت شد";
-      this.updateSpeakersContinueState();
+    // Optimistic local confirm so Continue never depends on a slow PATCH.
+    this._confirmedSpeakers.add(sid);
+    this.speakerMap[sid] = value;
+    card.classList.add("is-confirmed");
+    if (statusEl) statusEl.textContent = "ثبت شد";
+    this.updateSpeakersContinueState();
+
+    if ((this.speakerMap[sid] || "") === value && card.dataset.savedLabel === value) {
       return;
     }
     try {
@@ -2008,15 +2038,14 @@ class DistillClient {
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ [speakerId]: value }),
+          body: JSON.stringify({ [sid]: value }),
         },
         10000
       );
       if (!res.ok) throw new Error(this.formatErrorDetail(await res.text()) || `کد ${res.status}`);
       const meeting = await res.json();
       this.speakerMap = { ...(meeting.speaker_map || {}) };
-      this._confirmedSpeakers.add(speakerId);
-      card.classList.add("is-confirmed");
+      card.dataset.savedLabel = value;
       if (statusEl) statusEl.textContent = "ثبت شد";
       this.renderTimeline();
     } catch (err) {
@@ -2028,25 +2057,57 @@ class DistillClient {
     }
   }
 
+  speakerNamingCardsHaveNames() {
+    if (!this.speakerNamingList) return !this._speakerList.length;
+    const cards = Array.from(this.speakerNamingList.querySelectorAll(".speaker-naming-card"));
+    if (!cards.length) return !this._speakerList.length;
+    return cards.every((card) => {
+      const input = card.querySelector(".speaker-naming-name");
+      return !!(input && (input.value || "").trim());
+    });
+  }
+
   updateSpeakersContinueState() {
     if (!this.speakersContinueBtn || this._speakersContinueBusy) return;
-    const allConfirmed = this._speakerList.every((s) => this._confirmedSpeakers.has(s.id));
-    this.speakersContinueBtn.disabled = !allConfirmed;
+    const ready = this.speakerNamingCardsHaveNames();
+    // Keep the control enabled so clicks always fire; mute when incomplete.
+    this.speakersContinueBtn.disabled = false;
+    this.speakersContinueBtn.removeAttribute("disabled");
+    this.speakersContinueBtn.classList.toggle("is-muted", !ready);
+    this.speakersContinueBtn.setAttribute("aria-disabled", ready ? "false" : "true");
   }
 
   async onSpeakersContinue() {
     if (this._speakersContinueBusy) return;
+    if (!this.speakerNamingCardsHaveNames()) {
+      await this.showPrompt({
+        title: "نام‌گذاری ناقص است",
+        message: "لطفاً برای همه سخنگوها نام وارد کنید تا بتوانید ادامه دهید.",
+      });
+      return;
+    }
     this._speakersContinueBusy = true;
     const btn = this.speakersContinueBtn;
     const prevLabel = btn ? btn.textContent : "";
     try {
       if (btn) {
-        btn.disabled = true;
         btn.textContent = "در حال ادامه…";
+        btn.classList.add("is-processing");
       }
       const cards = this.speakerNamingList
         ? Array.from(this.speakerNamingList.querySelectorAll(".speaker-naming-card"))
         : [];
+      // Sync local map first so UI can advance even if one PATCH flakes.
+      cards.forEach((card) => {
+        const input = card.querySelector(".speaker-naming-name");
+        const id = card.dataset.speakerId;
+        if (!input || !id) return;
+        const value = (input.value || "").trim();
+        if (!value) return;
+        this._confirmedSpeakers.add(String(id));
+        this.speakerMap[id] = value;
+      });
+
       const results = await Promise.allSettled(
         cards.map((card) => {
           const input = card.querySelector(".speaker-naming-name");
@@ -2056,27 +2117,14 @@ class DistillClient {
         })
       );
       const failed = results.filter((r) => r.status === "rejected");
-      this.updateSpeakersContinueState();
       if (failed.length) {
+        // Names are already in local speakerMap — warn but continue the wizard.
         await this.showPrompt({
-          title: "ذخیره نام سخنگوها",
+          title: "ذخیره روی سرور ناقص بود",
           message:
-            "ذخیره بعضی نام‌ها ناموفق بود یا سرور پاسخ نداد.\n\n" +
+            "بعضی نام‌ها روی سرور ذخیره نشد، ولی با نام‌های واردشده ادامه می‌دهیم.\n\n" +
             (failed[0].reason?.message || String(failed[0].reason || "")),
         });
-        return;
-      }
-      // Local confirmation is enough to proceed even if button state raced.
-      const allNamed = cards.every((card) => {
-        const input = card.querySelector(".speaker-naming-name");
-        return !!(input && (input.value || "").trim());
-      });
-      if (!allNamed || (this._speakerList.length && !this._speakerList.every((s) => this._confirmedSpeakers.has(s.id)))) {
-        await this.showPrompt({
-          title: "نام‌گذاری ناقص است",
-          message: "لطفاً برای همه سخنگوها نام ثبت کنید تا بتوانید ادامه دهید.",
-        });
-        return;
       }
       this.stopSpeakerSamplePlayback();
       this.setReviewStep("transcript");
@@ -2085,6 +2133,7 @@ class DistillClient {
       this._speakersContinueBusy = false;
       if (btn) {
         btn.textContent = prevLabel || "ادامه و بازبینی متن جلسه";
+        btn.classList.remove("is-processing");
         this.updateSpeakersContinueState();
       }
     }
