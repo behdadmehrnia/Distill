@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -9,6 +11,10 @@ from .insights import _parse_json_response, format_transcript_for_llm, has_meani
 from .models import MeetingMinutes, MinutesDecision, TranscriptSegment
 
 logger = logging.getLogger(__name__)
+
+# Approximate context budget for the transcript body (chars ≈ crude token proxy).
+# Leave headroom for system prompt, attendees list, and model output.
+DEFAULT_MAX_TRANSCRIPT_CHARS = 60_000
 
 MINUTES_SYSTEM_PROMPT = """You are Distill, producing a formal Persian meeting minutes document (صورت جلسه).
 Given a speaker-labeled transcript and the list of confirmed attendee names, extract structured minutes.
@@ -40,16 +46,122 @@ Rules:
 - All free-text fields must be in Persian.
 """
 
+PARTIAL_SYSTEM_PROMPT = """You are Distill. You are analyzing ONE PART of a long Persian meeting transcript.
+Extract only what is supported by this part. Respond ONLY with valid JSON:
+{
+  "subject_hint": "موضوع احتمالی این بخش اگر مشخص است، وگرنه خالی",
+  "meeting_date": "تاریخ اگر در این بخش ذکر شده، وگرنه خالی",
+  "location": "محل اگر در این بخش ذکر شده، وگرنه خالی",
+  "summary": "1-3 جمله خلاصه همین بخش به فارسی",
+  "decisions": [
+    {
+      "description": "شرح مصوبه یا پیگیری",
+      "executor": "نام مجری اگر مشخص و در لیست حاضرین است، وگرنه خالی",
+      "due_date": "سررسید اگر مشخص است، وگرنه خالی",
+      "status": "pending"
+    }
+  ]
+}
+Rules:
+- Only include decisions supported by THIS part.
+- Do not invent people or facts.
+- executor must be empty or one of the provided attendee names.
+- All free-text fields must be in Persian.
+"""
+
+MERGE_SYSTEM_PROMPT = """You are Distill. You will receive partial minutes extracts from consecutive parts of one long meeting.
+Merge them into a single formal Persian meeting minutes JSON. Respond ONLY with valid JSON using this schema:
+{
+  "subject": "موضوع جلسه به فارسی",
+  "meeting_date": "تاریخ جلسه اگر در partialها آمده، وگرنه خالی",
+  "location": "محل برگزاری اگر آمده، وگرنه خالی",
+  "attendees": ["نام حاضر ۱", "..."],
+  "absentees": [],
+  "secretary": "",
+  "summary": "2-4 جمله خلاصه کل جلسه به فارسی",
+  "decisions": [
+    {
+      "description": "شرح مصوبه یا پیگیری",
+      "executor": "نام مجری اگر مشخص است، وگرنه خالی",
+      "due_date": "سررسید اگر مشخص است، وگرنه خالی",
+      "status": "pending"
+    }
+  ]
+}
+Rules:
+- attendees MUST be exactly the provided confirmed attendee names.
+- absentees MUST always be [].
+- secretary MUST be empty or one of the attendees.
+- Deduplicate near-identical decisions; keep distinct action items.
+- Do not invent people, facts, or decisions not present in the partials.
+- All free-text fields must be in Persian.
+"""
+
 _EMPTY_SUMMARY = "متن پیاده‌شده‌ای برای تحلیل وجود ندارد."
 _NOISE_ONLY_SUMMARY = (
     "متن معناداری برای تحلیل وجود ندارد "
     "(فقط نشانه‌های غیرکلامی یا صدای محیط ثبت شده است)."
 )
+_FALLBACK_SUMMARY = (
+    "تحلیل محتوایی کافی برای تنظیم صورت جلسه استخراج نشد. "
+    "می‌توانید فیلدها را دستی تکمیل کنید."
+)
+
+
+def max_transcript_chars() -> int:
+    raw = os.getenv("MINUTES_MAX_TRANSCRIPT_CHARS", "").strip()
+    if not raw:
+        return DEFAULT_MAX_TRANSCRIPT_CHARS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_TRANSCRIPT_CHARS
+    return max(2_000, value)
+
+
+def split_transcript(text: str, max_chars: int) -> List[str]:
+    """Split transcript on line boundaries so each chunk fits max_chars."""
+    text = text or ""
+    if not text:
+        return []
+    if max_chars <= 0 or len(text) <= max_chars:
+        return [text]
+
+    lines = text.split("\n")
+    chunks: List[str] = []
+    current: List[str] = []
+    current_len = 0
+
+    def flush() -> None:
+        nonlocal current, current_len
+        if current:
+            chunks.append("\n".join(current))
+            current = []
+            current_len = 0
+
+    for line in lines:
+        # +1 for the newline rejoined between lines (except first in chunk)
+        add = len(line) + (1 if current else 0)
+        if current and current_len + add > max_chars:
+            flush()
+            add = len(line)
+        if len(line) > max_chars:
+            # Rare: a single line longer than budget — hard-split it.
+            flush()
+            for i in range(0, len(line), max_chars):
+                chunks.append(line[i : i + max_chars])
+            continue
+        current.append(line)
+        current_len += add
+
+    flush()
+    return chunks or [text]
 
 
 class MeetingMinutesGenerator:
-    def __init__(self, llm):
+    def __init__(self, llm, max_chars: Optional[int] = None):
         self.llm = llm
+        self.max_chars = max_chars if max_chars is not None else max_transcript_chars()
 
     async def generate(
         self,
@@ -77,6 +189,27 @@ class MeetingMinutesGenerator:
                 summary=_NOISE_ONLY_SUMMARY,
             )
 
+        chunks = split_transcript(transcript, self.max_chars)
+        if len(chunks) <= 1:
+            data = await self._extract_full(chunks[0] if chunks else transcript, attendee_names)
+        else:
+            logger.info(
+                "Minutes map-reduce: transcript_chars=%d chunks=%d budget=%d",
+                len(transcript),
+                len(chunks),
+                self.max_chars,
+            )
+            partials: List[dict] = []
+            for idx, chunk in enumerate(chunks, start=1):
+                partial = await self._extract_partial(
+                    chunk, attendee_names, part=idx, total=len(chunks)
+                )
+                partials.append(partial)
+            data = await self._merge_partials(partials, attendee_names)
+
+        return self._to_minutes(meeting_id, data, attendee_names)
+
+    async def _extract_full(self, transcript: str, attendee_names: List[str]) -> dict:
         messages = [
             {"role": "system", "content": MINUTES_SYSTEM_PROMPT},
             {
@@ -90,8 +223,71 @@ class MeetingMinutesGenerator:
             },
         ]
         raw = await self.llm.complete(messages, temperature=0.2, max_tokens=2048)
-        data = _parse_json_response(raw)
+        return _parse_json_response(raw)
 
+    async def _extract_partial(
+        self,
+        transcript_part: str,
+        attendee_names: List[str],
+        *,
+        part: int,
+        total: int,
+    ) -> dict:
+        messages = [
+            {"role": "system", "content": PARTIAL_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"حاضرین تأییدشده: {', '.join(attendee_names) or '(نامشخص)'}\n"
+                    f"این بخش {part} از {total} متن جلسه است.\n"
+                    "فقط JSON برگردان.\n\n"
+                    f"{transcript_part}"
+                ),
+            },
+        ]
+        raw = await self.llm.complete(messages, temperature=0.2, max_tokens=1536)
+        data = _parse_json_response(raw)
+        if not isinstance(data, dict):
+            return {"summary": "", "decisions": []}
+        return data
+
+    async def _merge_partials(
+        self, partials: List[dict], attendee_names: List[str]
+    ) -> dict:
+        compact = []
+        for p in partials:
+            compact.append(
+                {
+                    "subject_hint": str(p.get("subject_hint") or p.get("subject") or "").strip(),
+                    "meeting_date": str(p.get("meeting_date") or "").strip(),
+                    "location": str(p.get("location") or "").strip(),
+                    "summary": str(p.get("summary") or "").strip(),
+                    "decisions": p.get("decisions") if isinstance(p.get("decisions"), list) else [],
+                }
+            )
+        messages = [
+            {"role": "system", "content": MERGE_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"حاضرین تأییدشده (فقط همین‌ها را در attendees بگذار؛ absentees را همیشه [] بگذار):\n"
+                    f"{', '.join(attendee_names) or '(نامشخص)'}\n\n"
+                    "partial extracts JSON:\n"
+                    f"{json.dumps(compact, ensure_ascii=False)}\n\n"
+                    "آن‌ها را در یک صورت جلسه واحد ادغام کن و فقط JSON برگردان."
+                ),
+            },
+        ]
+        raw = await self.llm.complete(messages, temperature=0.2, max_tokens=2048)
+        return _parse_json_response(raw)
+
+    def _to_minutes(
+        self,
+        meeting_id: str,
+        data: dict,
+        attendee_names: List[str],
+    ) -> MeetingMinutes:
+        data = data if isinstance(data, dict) else {}
         decisions_raw = data.get("decisions")
         decisions: List[MinutesDecision] = []
         if isinstance(decisions_raw, list):
@@ -114,8 +310,6 @@ class MeetingMinutesGenerator:
                     )
                 )
 
-        # Never trust the model for attendance: attendees = registered speakers,
-        # absentees always empty for the user to fill later.
         attendees = list(attendee_names)
         absentees: List[str] = []
         secretary = str(data.get("secretary") or "").strip()
@@ -123,10 +317,7 @@ class MeetingMinutesGenerator:
             secretary = ""
         summary = str(data.get("summary") or "").strip()
         if not summary and not decisions:
-            summary = (
-                "تحلیل محتوایی کافی برای تنظیم صورت جلسه استخراج نشد. "
-                "می‌توانید فیلدها را دستی تکمیل کنید."
-            )
+            summary = _FALLBACK_SUMMARY
 
         now = time.time()
         return MeetingMinutes(
