@@ -1095,6 +1095,7 @@
       border-radius: 50%;
       background: #1a1a1a;
       transition: background 0.15s ease;
+      pointer-events: none;
     }
 
     .speaker-play-btn:hover::before {
@@ -1116,6 +1117,12 @@
       color: #666;
       min-width: 4.2rem;
       text-align: center;
+    }
+
+    .speaker-naming-nosample {
+      font-size: 0.72rem;
+      color: #777;
+      white-space: nowrap;
     }
 
     .speaker-naming-card.is-confirmed .speaker-naming-status {
@@ -1540,7 +1547,20 @@
       overflow: auto;
     }
 
+    #confirmPanel.tuning-overlay {
+      z-index: 80;
+    }
+
     .tuning-overlay.hidden { display: none !important; }
+
+    .confirm-panel.is-alert .confirm-actions {
+      justify-content: flex-end;
+    }
+
+    .confirm-panel.is-alert .confirm-actions .btn {
+      flex: 0 1 auto;
+      min-width: 8rem;
+    }
 
     .confirm-panel {
       width: min(420px, 100%);
@@ -1567,6 +1587,7 @@
       color: #d4d4d4;
       line-height: 1.75;
       font-size: 0.92rem;
+      white-space: pre-line;
     }
 
     .confirm-actions {

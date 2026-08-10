@@ -78,6 +78,11 @@ class DistillClient {
     this.confirmOkBtn = document.getElementById("confirmOkBtn");
     this.confirmCancelBtn = document.getElementById("confirmCancelBtn");
     this._confirmResolver = null;
+    this._confirmAlertOnly = false;
+    this._promptQueue = [];
+    this._promptShowing = false;
+    this._fallbackPromptShown = false;
+    this._fallbackPromptShown = false;
 
     this.reviewWizard = document.getElementById("reviewWizard");
     this.reviewStepDots = this.reviewWizard
@@ -201,12 +206,14 @@ class DistillClient {
     }
     if (this.confirmPanel) {
       this.confirmPanel.addEventListener("click", (ev) => {
-        if (ev.target === this.confirmPanel) this.resolveConfirm(false);
+        if (ev.target === this.confirmPanel) {
+          this.resolveConfirm(this._confirmAlertOnly ? true : false);
+        }
       });
     }
     document.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && this.confirmPanel && !this.confirmPanel.classList.contains("hidden")) {
-        this.resolveConfirm(false);
+        this.resolveConfirm(this._confirmAlertOnly ? true : false);
       }
     });
     const debugBtn = document.getElementById("debugBtn");
@@ -267,10 +274,33 @@ class DistillClient {
       });
     }
     if (this.speakersContinueBtn) {
-      this.speakersContinueBtn.addEventListener("click", () => this.onSpeakersContinue());
+      // mousedown+preventDefault avoids the input-blur race that can swallow the click
+      // (blur runs confirmSpeakerName and may briefly disable this button before click fires).
+      this.speakersContinueBtn.addEventListener("mousedown", (ev) => {
+        if (this.speakersContinueBtn.disabled) return;
+        ev.preventDefault();
+      });
+      this.speakersContinueBtn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        this.onSpeakersContinue().catch((err) => {
+          console.error(err);
+          this.showPrompt({
+            title: "خطا در ادامه",
+            message: `ادامه به مرحله بازبینی متن ناموفق بود.\n\n${err.message || err}`,
+          });
+        });
+      });
     }
     if (this.transcriptContinueBtn) {
-      this.transcriptContinueBtn.addEventListener("click", () => this.onTranscriptContinue());
+      this.transcriptContinueBtn.addEventListener("click", () => {
+        this.onTranscriptContinue().catch((err) => {
+          console.error(err);
+          this.showPrompt({
+            title: "خطا",
+            message: `ادامه به صورت جلسه ناموفق بود.\n\n${err.message || err}`,
+          });
+        });
+      });
     }
     if (this.transcriptReviewList) {
       this.transcriptReviewList.addEventListener("click", (ev) => {
@@ -619,16 +649,38 @@ class DistillClient {
     } catch (_) {}
   }
 
-  askConfirm({ title, message, confirmLabel = "تأیید" }) {
+  askConfirm({
+    title,
+    message,
+    confirmLabel = "تأیید",
+    cancelLabel = "انصراف",
+    alertOnly = false,
+  }) {
     return new Promise((resolve) => {
       if (!this.confirmPanel) {
-        resolve(window.confirm(message));
+        if (alertOnly) {
+          window.alert(message);
+          resolve(true);
+        } else {
+          resolve(window.confirm(message));
+        }
         return;
       }
       this._confirmResolver = resolve;
-      if (this.confirmTitle) this.confirmTitle.textContent = title || "تأیید";
+      this._confirmAlertOnly = !!alertOnly;
+      if (this.confirmTitle) this.confirmTitle.textContent = title || (alertOnly ? "توجه" : "تأیید");
       if (this.confirmMessage) this.confirmMessage.textContent = message || "";
-      if (this.confirmOkBtn) this.confirmOkBtn.textContent = confirmLabel;
+      if (this.confirmOkBtn) {
+        this.confirmOkBtn.textContent = confirmLabel || (alertOnly ? "متوجه شدم" : "تأیید");
+        this.confirmOkBtn.classList.toggle("btn-danger", !alertOnly);
+        this.confirmOkBtn.classList.toggle("btn-primary", !!alertOnly);
+      }
+      if (this.confirmCancelBtn) {
+        this.confirmCancelBtn.textContent = cancelLabel || "انصراف";
+        this.confirmCancelBtn.classList.toggle("hidden", !!alertOnly);
+      }
+      const panel = this.confirmPanel.querySelector(".confirm-panel");
+      if (panel) panel.classList.toggle("is-alert", !!alertOnly);
       this.confirmPanel.classList.remove("hidden");
       if (this.confirmOkBtn) this.confirmOkBtn.focus();
     });
@@ -638,8 +690,63 @@ class DistillClient {
     if (!this._confirmResolver) return;
     const resolve = this._confirmResolver;
     this._confirmResolver = null;
+    this._confirmAlertOnly = false;
     if (this.confirmPanel) this.confirmPanel.classList.add("hidden");
+    const panel = this.confirmPanel?.querySelector(".confirm-panel");
+    if (panel) panel.classList.remove("is-alert");
+    if (this.confirmCancelBtn) this.confirmCancelBtn.classList.remove("hidden");
+    if (this.confirmOkBtn) {
+      this.confirmOkBtn.classList.add("btn-danger");
+      this.confirmOkBtn.classList.remove("btn-primary");
+    }
     resolve(!!ok);
+    this._drainPromptQueue();
+  }
+
+  /** In-app prompt (single OK). Queued so overlapping errors don't stack. */
+  showPrompt({ title = "توجه", message, okLabel = "متوجه شدم" }) {
+    const text = String(message || "").trim() || "خطای نامشخص رخ داد.";
+    return new Promise((resolve) => {
+      this._promptQueue.push({ title, message: text, okLabel, resolve });
+      this._drainPromptQueue();
+    });
+  }
+
+  _drainPromptQueue() {
+    if (this._promptShowing || this._confirmResolver) return;
+    const next = this._promptQueue.shift();
+    if (!next) return;
+    this._promptShowing = true;
+    this.askConfirm({
+      title: next.title,
+      message: next.message,
+      confirmLabel: next.okLabel,
+      alertOnly: true,
+    })
+      .then((ok) => {
+        this._promptShowing = false;
+        next.resolve(ok);
+        this._drainPromptQueue();
+      })
+      .catch(() => {
+        this._promptShowing = false;
+        next.resolve(true);
+        this._drainPromptQueue();
+      });
+  }
+
+  formatErrorDetail(raw, maxLen = 400) {
+    let text = String(raw || "").trim();
+    if (!text) return "";
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object") {
+        text = String(parsed.detail || parsed.message || parsed.error || text);
+      }
+    } catch (_) {}
+    text = text.replace(/\s+/g, " ").trim();
+    if (text.length > maxLen) text = `${text.slice(0, maxLen)}…`;
+    return text;
   }
 
   sessionLink() {
@@ -806,11 +913,16 @@ class DistillClient {
       const micHint = this.micUnavailableReason();
       const message = micHint || err.message || String(err);
       this.setStatus("disconnected", "خطا در شروع");
-      alert(`شروع جلسه ناموفق بود:\n${message}`);
+      await this.showPrompt({
+        title: "شروع جلسه ناموفق",
+        message: String(message),
+      });
     }
   }
 
   async stopLive() {
+    const snapshotHadText = this.hasTranscriptContext();
+    let processError = null;
     try {
       this.isRecording = false;
       this.meetingStatus = "processing";
@@ -834,10 +946,17 @@ class DistillClient {
               stopped = await stopRes.json();
             } catch (_) {}
           } else {
-            console.error("stop failed", stopRes.status, await stopRes.text());
+            const detail = this.formatErrorDetail(await stopRes.text());
+            processError =
+              `پردازش جلسه ناموفق بود (کد ${stopRes.status}).` +
+              (detail ? `\n\n${detail}` : "");
+            console.error("stop failed", stopRes.status, detail);
           }
         } catch (stopErr) {
           console.error(stopErr);
+          processError = `ارتباط با سرور هنگام توقف جلسه برقرار نشد.\n\n${
+            stopErr.message || stopErr
+          }`;
         }
         this.meetingStatus = "stopped";
         this.setHasRecording(!!(stopped && stopped.has_recording));
@@ -846,36 +965,70 @@ class DistillClient {
         } catch (err) {
           console.error(err);
         }
+        // If server returned empty but we had live text, keep the local snapshot.
+        if (!this.hasTranscriptContext() && snapshotHadText) {
+          console.warn(
+            "Post-stop transcript empty while live text existed; keeping local segments"
+          );
+        }
         try {
           await this.refreshDebug();
         } catch (_) {}
-        const hasText = this.hasTranscriptContext();
+        const hasText = this.hasTranscriptContext() || snapshotHadText;
         if (!hasText) {
           this.setStatus("connected", "متوقف شد — متنی دریافت نشد (STT)");
+          if (!processError) {
+            processError =
+              "پردازش تمام شد، ولی متن قابل‌اتکایی از STT به‌دست نیامد.\n\n" +
+              "می‌توانید نام‌گذاری را ادامه دهید، دوباره ضبط کنید، یا از دیباگ وضعیت سرویس را بررسی کنید.";
+          }
         } else {
           this.setStatus("connected", "متوقف شد — آماده تحلیل");
         }
+
+        if (processError) {
+          await this.showPrompt({
+            title: "خطا در پردازش جلسه",
+            message: processError,
+            okLabel: "متوجه شدم",
+          });
+        }
+
+        // Always continue the wizard when a meeting was processed — never dump
+        // the user back to the idle screen just because STT came back empty.
         try {
           await this.advanceToSpeakerStep();
         } catch (err) {
           console.error(err);
-          if (!hasText) this.closeReviewWizard(true);
+          await this.showPrompt({
+            title: "خطا در ادامه ویزارد",
+            message: `پردازش انجام شد، ولی ورود به مرحله بعد ناموفق بود.\n\n${
+              err.message || err
+            }`,
+          });
         }
       }
     } catch (err) {
       console.error(err);
       this.setStatus("disconnected", "خطا در توقف");
-      // Prefer continuing the wizard if we already have transcript context.
+      await this.showPrompt({
+        title: "خطا در توقف جلسه",
+        message: `یک خطای غیرمنتظره هنگام توقف/پردازش رخ داد.\n\n${err.message || err}`,
+      });
       try {
         if (this._reviewWizardOpen && this.meetingId) {
           await this.refreshTranscript().catch(() => {});
-          if (this.hasTranscriptContext()) {
-            this.meetingStatus = "stopped";
-            await this.advanceToSpeakerStep();
-            return;
-          }
+          this.meetingStatus = "stopped";
+          await this.advanceToSpeakerStep();
+          return;
         }
       } catch (_) {}
+      if (this._reviewWizardOpen) {
+        try {
+          await this.advanceToSpeakerStep();
+          return;
+        } catch (_) {}
+      }
       this.closeReviewWizard(true);
     } finally {
       if (this.ws) {
@@ -1028,10 +1181,26 @@ class DistillClient {
         console.warn(msg.message || msg.code);
         if (msg.code === "fallback_diarization") {
           this.setStatus("processing", "هشدار: diarization ساده (بدون pyannote)");
+          if (this._reviewWizardOpen && !this._fallbackPromptShown) {
+            this._fallbackPromptShown = true;
+            this.showPrompt({
+              title: "هشدار شناسایی سخنگو",
+              message:
+                "مدل diarization اصلی در دسترس نیست و حالت ساده (fallback) فعال شده.\n\n" +
+                "نام‌گذاری سخنگوها ممکن است دقیق نباشد، ولی می‌توانید ادامه دهید.",
+            }).catch(() => {});
+          }
         }
       } else if (msg.type === "error") {
         console.error(msg.message);
-        this.setStatus("processing", `خطا: ${String(msg.message || "").slice(0, 80)}`);
+        const errText = String(msg.message || "خطای ناشناخته از سرور");
+        this.setStatus("processing", `خطا: ${errText.slice(0, 80)}`);
+        if (this._reviewWizardOpen || this.meetingStatus === "processing") {
+          this.showPrompt({
+            title: "خطا در پردازش",
+            message: errText,
+          }).catch(() => {});
+        }
       }
     } catch (err) {
       console.error(err);
@@ -1039,14 +1208,23 @@ class DistillClient {
   }
 
   replaceTranscript(segments) {
+    const nextList = (segments || []).filter((s) => (s.text || "").trim());
+    // During/after stop processing, an empty WS payload (failed polish wipe, race)
+    // must not erase the live transcript the user already saw.
+    if (
+      !nextList.length &&
+      this.segments.size > 0 &&
+      (this._reviewWizardOpen || this.meetingStatus === "processing")
+    ) {
+      console.warn("Ignoring empty transcript update that would wipe existing segments");
+      return;
+    }
     if (this._editingSegmentId) {
       // Avoid wiping an in-progress edit; sync after blur/save.
-      const nextList = (segments || []).filter((s) => (s.text || "").trim());
       this.segments.clear();
       nextList.forEach((s) => this.segments.set(s.id, s));
       return;
     }
-    const nextList = (segments || []).filter((s) => (s.text || "").trim());
     const nextGroups = this.buildTimelineGroups(nextList);
     const mergeFx = this.detectMergePolish(this._prevGroupSnapshot, nextGroups);
     const shouldMergeAnim =
@@ -1542,6 +1720,7 @@ class DistillClient {
   openReviewWizard() {
     if (!this.reviewWizard) return;
     this._reviewWizardOpen = true;
+    this._fallbackPromptShown = false;
     this.reviewWizard.classList.remove("hidden");
     this.resetProcessingPhases();
     this.setReviewStep("processing");
@@ -1625,8 +1804,8 @@ class DistillClient {
     const src = btn.getAttribute("data-audio-src");
     if (!src) return;
     if (!btn._audio) {
-      const audio = new Audio(src);
-      audio.preload = "none";
+      const audio = new Audio();
+      audio.preload = "auto";
       audio.addEventListener("timeupdate", () => {
         const pct = audio.duration ? audio.currentTime / audio.duration : 0;
         btn.style.setProperty("--progress", `${Math.min(1, Math.max(0, pct)) * 360}deg`);
@@ -1641,6 +1820,19 @@ class DistillClient {
         btn.classList.remove("is-playing");
         btn.style.setProperty("--progress", "0deg");
       });
+      audio.addEventListener("error", () => {
+        btn.classList.remove("is-playing");
+        btn.style.setProperty("--progress", "0deg");
+        const detail =
+          audio.error && audio.error.message
+            ? audio.error.message
+            : "نمونه صدا در دسترس نیست (احتمالاً فایل ضبط پیدا نشد)";
+        console.error("speaker sample error", src, audio.error);
+        this.showPrompt({
+          title: "پخش نمونه صدا",
+          message: detail,
+        });
+      });
       btn._audio = audio;
     }
     const audio = btn._audio;
@@ -1648,8 +1840,19 @@ class DistillClient {
       this._activeSpeakerAudio.pause();
     }
     if (audio.paused) {
+      // Always (re)set src so a previous 404 does not permanently poison the element.
+      if (audio.src !== new URL(src, window.location.href).href) {
+        audio.src = src;
+      }
       audio.currentTime = audio.ended ? 0 : audio.currentTime;
-      audio.play().catch((err) => console.error(err));
+      audio.play().catch((err) => {
+        console.error(err);
+        btn.classList.remove("is-playing");
+        this.showPrompt({
+          title: "پخش نمونه صدا",
+          message: `پخش نمونه صدا ناموفق بود.\n\n${err.message || err}`,
+        });
+      });
       this._activeSpeakerAudio = audio;
     } else {
       audio.pause();
@@ -1695,7 +1898,11 @@ class DistillClient {
             <svg class="play-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
             <svg class="pause-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
           </button>`
-        : '<span class="speaker-naming-status">نمونه صدایی موجود نیست</span>';
+        : `<span class="speaker-naming-nosample">${
+            spk.has_recording === false
+              ? "فایل صدا نیست"
+              : "نمونه صدایی موجود نیست"
+          }</span>`;
       card.innerHTML = `
         <span class="speaker-naming-dot" style="background:${color}"></span>
         <input
@@ -1763,12 +1970,36 @@ class DistillClient {
   }
 
   async onSpeakersContinue() {
+    // Persist every name field before advancing (covers the mousedown-preventDefault path
+    // where the focused input never blurred).
+    const cards = this.speakerNamingList
+      ? Array.from(this.speakerNamingList.querySelectorAll(".speaker-naming-card"))
+      : [];
+    await Promise.all(
+      cards.map((card) => {
+        const input = card.querySelector(".speaker-naming-name");
+        const id = card.dataset.speakerId;
+        if (!input || !id) return Promise.resolve();
+        return this.confirmSpeakerName(id, input, card);
+      })
+    );
+    this.updateSpeakersContinueState();
+    if (this.speakersContinueBtn?.disabled) {
+      await this.showPrompt({
+        title: "نام‌گذاری ناقص است",
+        message: "لطفاً برای همه سخنگوها نام ثبت کنید تا بتوانید ادامه دهید.",
+      });
+      return;
+    }
+    this.stopSpeakerSamplePlayback();
     this.setReviewStep("transcript");
     await this.loadTranscriptReviewStep();
   }
 
   async loadTranscriptReviewStep() {
-    if (!this.transcriptReviewList) return;
+    if (!this.transcriptReviewList) {
+      throw new Error("بخش بازبینی متن در صفحه پیدا نشد");
+    }
     this.transcriptReviewList.innerHTML = '<p class="review-hint">در حال بارگذاری متن…</p>';
     try {
       await this.refreshTranscript();
@@ -1879,7 +2110,12 @@ class DistillClient {
       this.renderMinutesForm(data, { fromAgent: true });
     } catch (err) {
       console.error(err);
-      alert(`تولید صورت جلسه ناموفق بود؛ فرم خالی برای تکمیل دستی نمایش داده می‌شود.\n${err.message}`);
+      await this.showPrompt({
+        title: "تولید صورت جلسه ناموفق",
+        message:
+          "تولید خودکار صورت جلسه انجام نشد؛ فرم خالی برای تکمیل دستی نمایش داده می‌شود.\n\n" +
+          this.formatErrorDetail(err.message || err),
+      });
       this.renderMinutesForm(
         {
           subject: "",

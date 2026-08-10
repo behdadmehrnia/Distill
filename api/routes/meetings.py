@@ -29,6 +29,8 @@ router = APIRouter(tags=["meetings"])
 _PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
 _MAX_SAMPLE_MS = 4000
 _MIN_SAMPLE_MS = 600
+# Fallback diarization often emits short turns; still allow a short clip.
+_MIN_SAMPLE_MS_RELAXED = 200
 
 
 def _to_persian_digits(value: int) -> str:
@@ -40,6 +42,46 @@ def _default_speaker_label(speaker_id: str) -> str:
     if not digits:
         return "سخنگو"
     return f"سخنگوی {_to_persian_digits(int(digits) + 1)}"
+
+
+def _pick_speaker_sample_span(
+    *,
+    speaker_id: str,
+    intervals,
+    segments,
+) -> tuple[Optional[int], Optional[int]]:
+    """Pick a playable [start,end) for speaker samples; tolerant of short fallback turns."""
+    for min_ms in (_MIN_SAMPLE_MS, _MIN_SAMPLE_MS_RELAXED, 1):
+        candidates = [
+            iv
+            for iv in intervals
+            if iv.speaker_id == speaker_id
+            and not iv.is_overlap
+            and (iv.end_ms - iv.start_ms) >= min_ms
+        ]
+        if candidates:
+            best = max(candidates, key=lambda iv: iv.end_ms - iv.start_ms)
+            start_ms = best.start_ms
+            end_ms = min(best.end_ms, best.start_ms + _MAX_SAMPLE_MS)
+            if end_ms > start_ms:
+                return start_ms, end_ms
+
+    for min_ms in (_MIN_SAMPLE_MS, _MIN_SAMPLE_MS_RELAXED, 1):
+        seg_candidates = [
+            s
+            for s in segments
+            if s.speaker_id == speaker_id
+            and not getattr(s, "is_overlap", False)
+            and (s.end_ms - s.start_ms) >= min_ms
+        ]
+        if seg_candidates:
+            best_seg = max(seg_candidates, key=lambda s: s.end_ms - s.start_ms)
+            start_ms = best_seg.start_ms
+            end_ms = min(best_seg.end_ms, best_seg.start_ms + _MAX_SAMPLE_MS)
+            if end_ms > start_ms:
+                return start_ms, end_ms
+
+    return None, None
 
 
 def _resolve_recording_path(
@@ -274,45 +316,37 @@ async def list_speakers(request: Request, meeting_id: str) -> Dict[str, Any]:
     if not meeting:
         raise HTTPException(status_code=404, detail="meeting not found")
 
+    settings = request.app.state.settings
+    has_recording = (
+        _resolve_recording_path(
+            meeting_id,
+            meeting.audio_path,
+            audio_dir=settings.audio_dir,
+            upload_dir=settings.upload_dir,
+        )
+        is not None
+    )
+
     segments = store.get_segments(meeting_id)
     final_segments = [s for s in segments if not s.provisional]
     intervals = store.get_speaker_intervals(meeting_id)
 
     speaker_ids = set()
     for s in final_segments:
-        speaker_ids.add(s.speaker_id)
-        speaker_ids.update(s.overlap_speakers or [])
+        if s.speaker_id:
+            speaker_ids.add(s.speaker_id)
+        speaker_ids.update(x for x in (s.overlap_speakers or []) if x)
     for iv in intervals:
-        speaker_ids.add(iv.speaker_id)
+        if iv.speaker_id:
+            speaker_ids.add(iv.speaker_id)
 
     out = []
     for spk in sorted(speaker_ids):
-        sample_start_ms: Optional[int] = None
-        sample_end_ms: Optional[int] = None
-
-        candidates = [
-            iv
-            for iv in intervals
-            if iv.speaker_id == spk
-            and not iv.is_overlap
-            and (iv.end_ms - iv.start_ms) >= _MIN_SAMPLE_MS
-        ]
-        if candidates:
-            best = max(candidates, key=lambda iv: iv.end_ms - iv.start_ms)
-            sample_start_ms = best.start_ms
-            sample_end_ms = min(best.end_ms, best.start_ms + _MAX_SAMPLE_MS)
-        else:
-            seg_candidates = [
-                s
-                for s in final_segments
-                if s.speaker_id == spk and not s.is_overlap
-            ]
-            if seg_candidates:
-                best_seg = max(seg_candidates, key=lambda s: s.end_ms - s.start_ms)
-                sample_start_ms = best_seg.start_ms
-                sample_end_ms = min(
-                    best_seg.end_ms, best_seg.start_ms + _MAX_SAMPLE_MS
-                )
+        sample_start_ms, sample_end_ms = _pick_speaker_sample_span(
+            speaker_id=spk,
+            intervals=intervals,
+            segments=final_segments,
+        )
 
         out.append(
             {
@@ -321,7 +355,11 @@ async def list_speakers(request: Request, meeting_id: str) -> Dict[str, Any]:
                 "custom_label": meeting.speaker_map.get(spk),
                 "sample_start_ms": sample_start_ms,
                 "sample_end_ms": sample_end_ms,
-                "has_sample": sample_start_ms is not None,
+                # Only advertise playback when both a span AND the WAV exist.
+                "has_sample": bool(
+                    has_recording and sample_start_ms is not None and sample_end_ms is not None
+                ),
+                "has_recording": has_recording,
             }
         )
     return {"meeting_id": meeting_id, "speakers": out}
@@ -350,26 +388,18 @@ async def get_speaker_sample_audio(
     intervals = [
         iv
         for iv in store.get_speaker_intervals(meeting_id)
-        if iv.speaker_id == speaker_id
-        and not iv.is_overlap
-        and (iv.end_ms - iv.start_ms) >= _MIN_SAMPLE_MS
+        if iv.speaker_id == speaker_id and not iv.is_overlap
     ]
-    start_ms: Optional[int] = None
-    end_ms: Optional[int] = None
-    if intervals:
-        best = max(intervals, key=lambda iv: iv.end_ms - iv.start_ms)
-        start_ms = best.start_ms
-        end_ms = min(best.end_ms, best.start_ms + _MAX_SAMPLE_MS)
-    else:
-        segments = [
-            s
-            for s in store.get_segments(meeting_id)
-            if s.speaker_id == speaker_id and not s.provisional and not s.is_overlap
-        ]
-        if segments:
-            best_seg = max(segments, key=lambda s: s.end_ms - s.start_ms)
-            start_ms = best_seg.start_ms
-            end_ms = min(best_seg.end_ms, best_seg.start_ms + _MAX_SAMPLE_MS)
+    segments = [
+        s
+        for s in store.get_segments(meeting_id)
+        if s.speaker_id == speaker_id and not s.provisional and not s.is_overlap
+    ]
+    start_ms, end_ms = _pick_speaker_sample_span(
+        speaker_id=speaker_id,
+        intervals=intervals,
+        segments=segments,
+    )
 
     if start_ms is None or end_ms is None:
         raise HTTPException(status_code=404, detail="no sample available for speaker")
@@ -378,6 +408,9 @@ async def get_speaker_sample_audio(
         wav_bytes = AudioIngest.slice_wav_file(path, start_ms, end_ms)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"could not slice audio: {exc}") from exc
+
+    if not wav_bytes:
+        raise HTTPException(status_code=404, detail="empty audio sample")
 
     return Response(content=wav_bytes, media_type="audio/wav")
 

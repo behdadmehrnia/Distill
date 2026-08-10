@@ -704,4 +704,11 @@ class TranscriptReviewAgent:
                     overlap_speakers=list(seg.overlap_speakers or []),
                 )
             )
+        # Never wipe a non-empty transcript because the LLM dropped everything.
+        if not out and gated:
+            logger.warning(
+                "STT polish dropped all %d segments; keeping heuristic-gated text",
+                len(gated),
+            )
+            return gated
         return out

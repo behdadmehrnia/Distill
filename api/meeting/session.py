@@ -508,7 +508,14 @@ class MeetingSession:
     async def _refresh_diarization(
         self, provisional: bool = True, review_phase: Optional[str] = None
     ) -> None:
+        # Ignore late live-diarize tasks once stop() has started — they can race
+        # the final pass and wipe/replace the transcript mid-processing.
+        if provisional and self._stopping:
+            return
+
         async with self._diarize_lock:
+            if provisional and self._stopping:
+                return
             audio = self.ingest.get_buffer()
             if len(audio) < self.sample_rate:
                 return
@@ -519,6 +526,8 @@ class MeetingSession:
 
         review_input: Optional[List[TranscriptSegment]] = None
         async with self._transcript_lock:
+            if provisional and self._stopping:
+                return
             self._speaker_intervals = intervals
             self._last_diarize_ms = duration_ms
             if not provisional:
@@ -533,10 +542,11 @@ class MeetingSession:
                 }
             )
 
-            if self._pending_stt:
+            pending = list(self._pending_stt)
+            if pending:
                 segments = align_stt_with_diarization(
                     self.meeting_id,
-                    list(self._pending_stt),
+                    pending,
                     intervals,
                     provisional=provisional,
                     **self._align_kwargs(),
@@ -550,7 +560,29 @@ class MeetingSession:
                         self.tuning.get("dedupe_time_overlap", 0.35)
                     ),
                 )
-                if provisional:
+            elif not provisional:
+                # Final pass without pending STT: keep whatever is already stored.
+                segments = [
+                    TranscriptSegment(
+                        id=s.id,
+                        meeting_id=s.meeting_id,
+                        speaker_id=s.speaker_id,
+                        start_ms=s.start_ms,
+                        end_ms=s.end_ms,
+                        text=s.text,
+                        provisional=False,
+                        is_overlap=s.is_overlap,
+                        overlap_speakers=list(s.overlap_speakers or []),
+                        created_at=s.created_at,
+                    )
+                    for s in self.store.get_segments(self.meeting_id)
+                    if (s.text or "").strip()
+                ]
+            else:
+                segments = []
+
+            if provisional:
+                if segments:
                     self.store.replace_meeting_segments(self.meeting_id, segments)
                     await self._emit(
                         {
@@ -559,9 +591,8 @@ class MeetingSession:
                             "segments": [s.to_dict() for s in segments],
                         }
                     )
-                else:
-                    # Review outside the lock — LLM polish can take a long time.
-                    review_input = segments
+            else:
+                review_input = segments
 
         if review_input is None:
             return
@@ -572,6 +603,14 @@ class MeetingSession:
             reviewed = await self._finalize_review(review_input)
         except Exception as exc:
             logger.exception("Finalize review failed; keeping unpolished text: %s", exc)
+            reviewed = review_input
+
+        # Safety: never persist an empty wipe over a non-empty transcript.
+        if not reviewed and review_input:
+            logger.warning(
+                "Finalize review returned 0 segments from %d; keeping pre-review text",
+                len(review_input),
+            )
             reviewed = review_input
 
         async with self._transcript_lock:
