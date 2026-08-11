@@ -9,4 +9,4 @@
 # the commands above pin the official CPU wheel index.
 
 soundfile
-pyannote.audio
+pyannote.audio==3.3.2
