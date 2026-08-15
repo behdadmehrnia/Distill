@@ -62,6 +62,7 @@ class Settings:
     hf_token: str | None = None
     diarization_endpoint: str | None = None
     diarization_timeout_s: float = 120.0
+    diarization_allow_fallback: bool | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -72,6 +73,16 @@ class Settings:
             diarization_timeout_s = float(timeout_raw) if timeout_raw else 120.0
         except ValueError:
             diarization_timeout_s = 120.0
+
+        allow_raw = (_env_str("DIARIZATION_ALLOW_FALLBACK") or "").strip().lower()
+        if allow_raw in {"0", "false", "no", "off"}:
+            diarization_allow_fallback: bool | None = False
+        elif allow_raw in {"1", "true", "yes", "on"}:
+            diarization_allow_fallback = True
+        else:
+            # None → SpeakerDiarizer defaults (no fallback when sidecar is set)
+            diarization_allow_fallback = None
+
         return cls(
             host=_env_str("MEETING_HOST", "0.0.0.0") or "0.0.0.0",
             port=port,
@@ -98,6 +109,7 @@ class Settings:
             or _env_str("HUGGING_FACE_HUB_TOKEN"),
             diarization_endpoint=_env_str("DIARIZATION_ENDPOINT"),
             diarization_timeout_s=diarization_timeout_s,
+            diarization_allow_fallback=diarization_allow_fallback,
         )
 
     def ensure_dirs(self) -> None:

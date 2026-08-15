@@ -1,31 +1,50 @@
-# Local pyannote sidecar — independent of the root Distill docker-compose.
-# Usage (from this directory):
-#   docker compose up -d --build
-# Then point the API at it:
+# Local pyannote / NeMo sidecar — independent of the root Distill docker-compose.
+# Prefer: ./runtime/scripts/start.sh
+#
+#   cd diarize && docker compose up -d --build
 #   DIARIZATION_ENDPOINT=http://127.0.0.1:8090
 
 services:
   diarize:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_NEMO: ${INSTALL_NEMO:-1}
     image: distill-diarize:latest
     container_name: distill-diarize
     ports:
       - "${DIARIZE_PORT:-8090}:8090"
     env_file:
-      - ../.env
+      - path: ../.env
+        required: false
+      - path: ../runtime/.env
+        required: false
     environment:
       DIARIZE_HOST: "0.0.0.0"
       DIARIZE_PORT: "8090"
-      CUDA_VISIBLE_DEVICES: ""
+      DIARIZATION_BACKEND: ${DIARIZATION_BACKEND:-nemo}
+      DIARIZATION_DEVICE: ${DIARIZATION_DEVICE:-cpu}
       HF_HOME: /data/hf_cache
       TORCH_HOME: /data/torch_cache
       XDG_CACHE_HOME: /data/cache
-      # If huggingface.co is unreachable, set in ../.env:
-      #   HF_ENDPOINT=https://hf-mirror.com
       HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
     volumes:
       - diarize-cache:/data
+      - ./models:/app/models:ro
     restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,json,sys; d=json.load(urllib.request.urlopen('http://127.0.0.1:8090/health')); sys.exit(0 if d.get('ready') else 1)",
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 30
+      start_period: 300s
 
 volumes:
   diarize-cache:

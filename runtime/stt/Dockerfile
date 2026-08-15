@@ -1,0 +1,35 @@
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    STT_HOST=0.0.0.0 \
+    STT_PORT=8080 \
+    WHISPER_MODEL=large-v3 \
+    WHISPER_DEVICE=auto \
+    WHISPER_COMPUTE_TYPE=auto \
+    HF_HOME=/data/hf_cache
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        libsndfile1 \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+COPY server.py ./
+
+RUN mkdir -p /data/hf_cache
+VOLUME ["/data"]
+
+EXPOSE 8080
+HEALTHCHECK --interval=20s --timeout=5s --start-period=120s --retries=8 \
+    CMD curl -fsS http://127.0.0.1:8080/health || exit 1
+
+CMD ["python", "server.py"]

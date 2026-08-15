@@ -17,9 +17,50 @@ data/
 
 ## اجرا
 
+**Full guide (hybrid + full local):** [`docs/LOCAL_RUN.md`](docs/LOCAL_RUN.md)
+
+### A) Hybrid — local NeMo diarization + your STT/LLM API keys
+
+Keep existing `LLM_*` / `STT_*` in `.env`. Point diarization at the sidecar:
+
+```bash
+# .env
+DIARIZATION_ENDPOINT=http://127.0.0.1:8090
+DIARIZATION_ALLOW_FALLBACK=0
+DISTILL_ENABLE_PYANNOTE=0
+```
+
+Terminal 1 — **only** NeMo:
+
+```bash
+DIARIZATION_BACKEND=nemo ./runtime/scripts/run_diarize.sh
+# wait: curl -s http://127.0.0.1:8090/health   → ready:true, backend:nemo
+```
+
+Terminal 2 — API:
+
+```bash
+pip install -r requirements.txt
+python -m api
+```
+
+### B) Full local models (vLLM + Whisper + diarization)
+
+```bash
+cp runtime/.env.example runtime/.env
+./runtime/scripts/start.sh          # or: --native / --audio
+# Point root .env at :8001 / :8080 / :8090 (see docs/LOCAL_RUN.md)
+pip install -r requirements.txt
+python -m api
+```
+
+See `runtime/README.md` for GPU/CPU options and NeMo vs pyannote.
+
+### API only (cloud STT/LLM, no local models)
+
 ```bash
 cp .env.example .env
-# کلیدها و endpointها را در .env ویرایش کنید
+# set LLM_* and STT_* keys; optional DIARIZATION_ENDPOINT
 pip install -r requirements.txt
 python -m api
 # یا: python main.py
@@ -51,12 +92,22 @@ UI دستیار: `http://localhost:8000/assistant`
 
 ## Diarization
 
-- **Remote (recommended for light local API):** run the sidecar in `diarize/` and set `DIARIZATION_ENDPOINT=http://127.0.0.1:8090` (see `diarize/README.md`). The API stays torch-free.
-- **In-process:** `pip install -r requirements.optional.txt` و تنظیم `HF_TOKEN` برای pyannote.
-- **Fallback:** بدون pyannote هم pipeline کار می‌کند، ولی برچسب گوینده روی میک تکی ضعیف است. سرور در لاگ و رویداد `warning` این را اعلام می‌کند.
-- هر جلسه diarizer جدا (`fork`) دارد تا state گوینده بین جلسات قاطی نشود.
+Production path: **local sidecar** via `runtime/` (same pattern as [MA-runtime](https://github.com/BMDarkLight/MA-runtime)).
 
-در UI روی نام گوینده کلیک کنید تا به نام نمایشی (مثلاً «علی») نگاشت شود (`PATCH /meetings/{id}/speakers`).
+```bash
+./runtime/scripts/download_models.sh
+./runtime/scripts/start.sh
+# API .env:
+#   DIARIZATION_ENDPOINT=http://127.0.0.1:8090
+#   DIARIZATION_ALLOW_FALLBACK=0
+```
+
+- **PyAnnote** [`speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1) — offline weights preferred; Hub only if `HF_TOKEN` has gated access
+- **NVIDIA NeMo** — set `DIARIZATION_BACKEND=nemo` when pyannote weights/token are unavailable
+- **Fallback** heuristic is disabled in production (`DIARIZATION_ALLOW_FALLBACK=0`)
+- Each meeting gets a forked diarizer so speaker state does not bleed across sessions
+
+See `runtime/README.md` and `diarize/README.md`.
 
 ## Docker
 
@@ -124,9 +175,10 @@ pip install -r requirements.optional.txt
 | `STT_ENDPOINT` | — | آدرس STT |
 | `STT_API_KEY` | — | کلید STT |
 | `STT_MODEL` | — | مدل STT |
-| `HF_TOKEN` | — | توکن HuggingFace برای pyannote (in-process یا sidecar) |
-| `DIARIZATION_ENDPOINT` | — | آدرس سرویس remote diarize (مثلاً `http://127.0.0.1:8090`) |
+| `DIARIZATION_ENDPOINT` | — | آدرس سرویس local diarize (مثلاً `http://127.0.0.1:8090`) |
 | `DIARIZATION_TIMEOUT_S` | `120` | مهلت درخواست به sidecar |
+| `DIARIZATION_ALLOW_FALLBACK` | `1` بدون endpoint / `0` با endpoint | اجازهٔ heuristic ضعیف وقتی backend کیفیت fail شود |
+| `HF_TOKEN` | — | فقط برای دانلود یک‌بارهٔ وزن‌های gated pyannote |
 
 ## تست
 

@@ -320,15 +320,16 @@ class MeetingSession:
                 "diarization_backend": self.diarizer.backend,
             }
         )
-        if self.diarizer.backend != "pyannote":
+        if self.diarizer.backend not in {"pyannote", "nemo"}:
             await self._emit(
                 {
                     "type": "warning",
                     "meeting_id": self.meeting_id,
                     "code": "fallback_diarization",
                     "message": (
-                        "Diarization backend is fallback (not pyannote). "
-                        "Speaker labels may be unreliable on a single mic."
+                        "Diarization backend is fallback (not pyannote/nemo). "
+                        "Speaker labels may be unreliable on a single mic. "
+                        "Start runtime diarize and set DIARIZATION_ENDPOINT."
                     ),
                 }
             )
@@ -739,15 +740,16 @@ class MeetingSession:
         await self._emit(
             {"type": "status", "status": "processing", "meeting_id": self.meeting_id}
         )
-        if self.diarizer.backend != "pyannote":
+        if self.diarizer.backend not in {"pyannote", "nemo"}:
             await self._emit(
                 {
                     "type": "warning",
                     "meeting_id": self.meeting_id,
                     "code": "fallback_diarization",
                     "message": (
-                        "Diarization backend is fallback (not pyannote). "
-                        "Speaker labels may be unreliable on a single mic."
+                        "Diarization backend is fallback (not pyannote/nemo). "
+                        "Speaker labels may be unreliable on a single mic. "
+                        "Start runtime diarize and set DIARIZATION_ENDPOINT."
                     ),
                 }
             )

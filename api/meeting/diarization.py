@@ -5,7 +5,9 @@ import logging
 import os
 import tempfile
 import threading
+import time
 import wave
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
@@ -15,19 +17,32 @@ from .models import SpeakerInterval
 
 logger = logging.getLogger(__name__)
 
+# Retries when the local sidecar is still loading the model (HTTP 503).
+_REMOTE_READY_RETRIES = 8
+_REMOTE_READY_SLEEP_S = 2.5
+
 
 class SpeakerDiarizer:
     """
     Speaker diarization with overlap detection.
 
+    Production path (recommended): point DIARIZATION_ENDPOINT at the local
+    sidecar (`runtime/` or `diarize/`) so pyannote / NeMo run in a dedicated
+    process. The API stays torch-free.
+
     Priority:
-      1. Remote HTTP service when DIARIZATION_ENDPOINT is set (no local torch)
-      2. In-process pyannote.audio when available (HF_TOKEN)
-      3. Energy/spectral fallback
+      1. Remote HTTP sidecar when DIARIZATION_ENDPOINT is set
+      2. In-process pyannote when enabled + offline weights or valid HF token
+      3. Energy/spectral fallback (dev only — weak on mono mic)
+
+    Set DIARIZATION_ALLOW_FALLBACK=0 for production so a broken quality
+    backend surfaces as an error instead of silent heuristic labels.
 
     Pyannote/torch loading is deferred until the first diarize() call so the
     HTTP server can bind and pass readiness probes without OOM risk.
     """
+
+    _QUALITY_BACKENDS = frozenset({"pyannote", "nemo"})
 
     def __init__(
         self,
@@ -39,6 +54,7 @@ class SpeakerDiarizer:
         merge_short_ms: int = 400,
         remote_endpoint: Optional[str] = None,
         remote_timeout_s: float = 120.0,
+        allow_fallback: Optional[bool] = None,
     ):
         self.sample_rate = sample_rate
         self.min_speakers = min_speakers
@@ -60,12 +76,23 @@ class SpeakerDiarizer:
         self.remote_timeout_s = float(
             os.getenv("DIARIZATION_TIMEOUT_S") or remote_timeout_s
         )
+        if allow_fallback is None:
+            # Production default: no silent fallback when a sidecar is configured.
+            raw = (os.getenv("DIARIZATION_ALLOW_FALLBACK") or "").strip().lower()
+            if raw in {"0", "false", "no", "off"}:
+                allow_fallback = False
+            elif raw in {"1", "true", "yes", "on"}:
+                allow_fallback = True
+            else:
+                allow_fallback = self.remote_endpoint is None
+        self.allow_fallback = bool(allow_fallback)
         # Shared across fork() children so a late load is visible to all sessions.
         self._load: Dict[str, Any] = {
             "pipeline": None,
             "backend": "fallback",
             "mode": "fallback",  # remote | local | fallback
             "done": False,
+            "last_error": None,
         }
         self._load_lock = threading.Lock()
         self._label_map: Dict[int, str] = {}
@@ -102,6 +129,7 @@ class SpeakerDiarizer:
         child.hf_token = self.hf_token
         child.remote_endpoint = self.remote_endpoint
         child.remote_timeout_s = self.remote_timeout_s
+        child.allow_fallback = self.allow_fallback
         child._load = self._load
         child._load_lock = self._load_lock
         child._label_map = {}
@@ -135,7 +163,7 @@ class SpeakerDiarizer:
 
     @property
     def pyannote_enabled(self) -> bool:
-        """Whether high-quality diarization (remote or local pyannote) is configured."""
+        """Whether a quality diarization path (sidecar / pyannote / NeMo) is configured."""
         if self.remote_endpoint:
             return True
         flag = (os.getenv("DISTILL_ENABLE_PYANNOTE") or "auto").strip().lower()
@@ -143,8 +171,22 @@ class SpeakerDiarizer:
             return False
         if flag in {"1", "true", "yes", "on"}:
             return True
-        # auto: only when a HF token is present
-        return bool(self.hf_token)
+        # auto: HF token, or offline pyannote weights under diarize/models/
+        if self.hf_token:
+            return True
+        return self._offline_pyannote_available()
+
+    @staticmethod
+    def _offline_pyannote_available() -> bool:
+        root = Path(__file__).resolve().parents[2] / "diarize" / "models"
+        cfg = root / "pyannote_diarization_config.yaml"
+        seg = root / "pyannote_model_segmentation-3.0.bin"
+        emb = root / "pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
+        return cfg.is_file() and seg.is_file() and emb.is_file()
+
+    @property
+    def quality_ready(self) -> bool:
+        return self.ready and self.backend in self._QUALITY_BACKENDS
 
     def _try_bind_remote(self) -> None:
         """Prefer remote sidecar; never import torch in this process when endpoint is set."""
@@ -162,22 +204,28 @@ class SpeakerDiarizer:
             payload = resp.json() if resp.content else {}
             ready = bool(payload.get("ready"))
             err = payload.get("error")
-            self._load["backend"] = "pyannote"
+            backend = str(payload.get("backend") or "pyannote").lower()
+            if backend not in self._QUALITY_BACKENDS:
+                backend = "pyannote"
+            self._load["backend"] = backend
             if ready:
                 logger.info(
-                    "Using remote diarization at %s (model ready)",
+                    "Using remote diarization at %s (backend=%s, ready)",
                     self.remote_endpoint,
+                    backend,
                 )
             else:
                 logger.info(
-                    "Using remote diarization at %s (model still loading%s)",
+                    "Using remote diarization at %s (backend=%s, still loading%s)",
                     self.remote_endpoint,
+                    backend,
                     f": {err}" if err else "",
                 )
         except Exception as exc:
             # Still mark as remote so diarize() retries the HTTP call;
-            # heuristic fallback only if the request itself fails.
+            # heuristic fallback only if the request itself fails and allowed.
             self._load["backend"] = "pyannote"
+            self._load["last_error"] = str(exc)
             logger.warning(
                 "Remote diarization health check failed at %s (%s); "
                 "will retry on first diarize()",
@@ -188,8 +236,8 @@ class SpeakerDiarizer:
     def _try_load_pyannote(self) -> None:
         if not self.pyannote_enabled:
             logger.info(
-                "Pyannote disabled (DISTILL_ENABLE_PYANNOTE / no HF_TOKEN); "
-                "using fallback diarization"
+                "Quality diarization disabled (DISTILL_ENABLE_PYANNOTE / no token / "
+                "no offline weights); using fallback diarization"
             )
             self._load["pipeline"] = None
             self._load["backend"] = "fallback"
@@ -202,8 +250,7 @@ class SpeakerDiarizer:
             logger.warning(
                 "pyannote not installed (%s); using fallback diarization "
                 "(speaker labels will be weak on mono mic). "
-                "Install requirements.optional.txt + set HF_TOKEN, "
-                "or set DIARIZATION_ENDPOINT for a remote sidecar.",
+                "Prefer DIARIZATION_ENDPOINT=http://127.0.0.1:8090 with runtime/.",
                 exc,
             )
             self._load["pipeline"] = None
@@ -211,10 +258,45 @@ class SpeakerDiarizer:
             self._load["mode"] = "fallback"
             return
 
+        offline = None
+        if self._offline_pyannote_available():
+            root = Path(__file__).resolve().parents[2] / "diarize"
+            offline = str(
+                (root / "models" / "pyannote_diarization_config.yaml").resolve()
+            )
+
+        if offline:
+            try:
+                prev = os.getcwd()
+                try:
+                    os.chdir(str(Path(offline).parent.parent))
+                    pipeline = Pipeline.from_pretrained(offline)
+                finally:
+                    os.chdir(prev)
+                self._load["pipeline"] = pipeline
+                self._load["backend"] = "pyannote"
+                self._load["mode"] = "local"
+                logger.info("Loaded pyannote from offline weights")
+                return
+            except Exception as exc:
+                logger.warning("Offline pyannote load failed (%s); trying Hub", exc)
+
         if not self.hf_token:
             logger.warning(
-                "HF_TOKEN not set; pyannote available but unused — falling back to "
-                "heuristic diarization. Set HF_TOKEN or DIARIZATION_ENDPOINT."
+                "No offline pyannote weights and HF_TOKEN not set — falling back. "
+                "Run runtime/scripts/download_models.sh or set DIARIZATION_ENDPOINT."
+            )
+            self._load["pipeline"] = None
+            self._load["backend"] = "fallback"
+            self._load["mode"] = "fallback"
+            return
+
+        # Only hit Hub when the token actually has gated pyannote access.
+        if not self._hf_pyannote_access_ok():
+            logger.warning(
+                "HF_TOKEN present but no gated pyannote access — not downloading. "
+                "Accept model terms, place offline weights, use NeMo sidecar "
+                "(DIARIZATION_BACKEND=nemo), or set DIARIZATION_ENDPOINT."
             )
             self._load["pipeline"] = None
             self._load["backend"] = "fallback"
@@ -222,8 +304,6 @@ class SpeakerDiarizer:
             return
 
         try:
-            # pyannote.audio 4.x / huggingface_hub use `token=`;
-            # older releases still accept `use_auth_token=`.
             try:
                 pipeline = Pipeline.from_pretrained(
                     "pyannote/speaker-diarization-3.1",
@@ -237,7 +317,7 @@ class SpeakerDiarizer:
             self._load["pipeline"] = pipeline
             self._load["backend"] = "pyannote"
             self._load["mode"] = "local"
-            logger.info("Loaded pyannote speaker-diarization-3.1")
+            logger.info("Loaded pyannote speaker-diarization-3.1 from Hub")
         except MemoryError:
             raise
         except Exception as exc:
@@ -248,6 +328,34 @@ class SpeakerDiarizer:
             self._load["pipeline"] = None
             self._load["backend"] = "fallback"
             self._load["mode"] = "fallback"
+            self._load["last_error"] = str(exc)
+
+    def _hf_pyannote_access_ok(self) -> bool:
+        """True only when HF_TOKEN can reach gated pyannote repos."""
+        token = (self.hf_token or "").strip()
+        if not token:
+            return False
+        try:
+            # Prefer shared helper shipped with the diarize sidecar.
+            root = Path(__file__).resolve().parents[2]
+            helper = root / "diarize" / "hf_access.py"
+            if helper.is_file():
+                import importlib.util
+
+                spec = importlib.util.spec_from_file_location(
+                    "distill_hf_access", helper
+                )
+                if spec and spec.loader:
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    ok, reason = mod.validate_pyannote_access(token)
+                    if not ok:
+                        logger.warning("HF pyannote access check failed: %s", reason)
+                    return bool(ok)
+        except Exception as exc:
+            logger.warning("HF access helper failed (%s); refusing Hub download", exc)
+            return False
+        return False
 
     @property
     def _pipeline(self) -> Any:
@@ -268,30 +376,97 @@ class SpeakerDiarizer:
             return []
 
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+        last_err: Optional[str] = None
+
         if self._load.get("mode") == "remote" and self.remote_endpoint:
             try:
+                # Empty list is valid (silence / no speech) — do not fall back.
                 intervals = self._diarize_remote(audio, sr)
-                # Empty remote result on energetic audio → heuristic (tests + edge cases).
-                if intervals:
-                    return intervals
-                logger.info(
-                    "remote diarization returned no speakers; using fallback diarization"
-                )
+                return self._finalize_quality_intervals(intervals)
             except Exception as exc:
-                logger.warning("remote diarization failed, falling back: %s", exc)
+                last_err = str(exc)
+                self._load["last_error"] = last_err
+                logger.warning("remote diarization failed: %s", exc)
         elif self._pipeline is not None:
             try:
                 intervals = self._diarize_pyannote(audio, sr)
-                # Synthetic tones / VAD misses often yield []; keep pipeline usable.
-                if intervals:
-                    return intervals
-                logger.info(
-                    "pyannote returned no speakers; using fallback diarization"
-                )
+                return self._finalize_quality_intervals(intervals)
             except Exception as exc:
-                logger.warning("pyannote diarization failed, falling back: %s", exc)
+                last_err = str(exc)
+                self._load["last_error"] = last_err
+                logger.warning("pyannote diarization failed: %s", exc)
+
+        if not self.allow_fallback:
+            raise RuntimeError(
+                "Quality diarization failed and DIARIZATION_ALLOW_FALLBACK=0. "
+                f"Last error: {last_err or self._load.get('last_error') or 'unknown'}. "
+                "Start the local sidecar: ./runtime/scripts/start.sh "
+                "(or ./runtime/scripts/run_diarize.sh) and set DIARIZATION_ENDPOINT."
+            )
 
         return self._diarize_fallback(audio, sr)
+
+    def _finalize_quality_intervals(
+        self, intervals: List[SpeakerInterval]
+    ) -> List[SpeakerInterval]:
+        """Normalize, merge short fragments, persist labels across passes."""
+        if not intervals:
+            self._prev_intervals = []
+            return []
+        merged = self._merge_short_intervals(
+            sorted(intervals, key=lambda x: x.start_ms),
+            min_ms=self.merge_short_ms,
+        )
+        remapped = self._remap_quality_intervals(merged)
+        self._prev_intervals = list(remapped)
+        return remapped
+
+    def _remap_quality_intervals(
+        self, intervals: List[SpeakerInterval]
+    ) -> List[SpeakerInterval]:
+        """Keep SPEAKER_XX identity stable across provisional / final passes."""
+        if not self._prev_intervals or not intervals:
+            return intervals
+
+        used_old: set = set()
+        mapping: Dict[str, str] = {}
+        new_ids = sorted({iv.speaker_id for iv in intervals})
+
+        for new_id in new_ids:
+            best_old: Optional[str] = None
+            best_ov = 0
+            for old in self._prev_intervals:
+                if old.speaker_id in used_old:
+                    continue
+                ov = 0
+                for iv in intervals:
+                    if iv.speaker_id != new_id:
+                        continue
+                    ov += max(
+                        0,
+                        min(iv.end_ms, old.end_ms) - max(iv.start_ms, old.start_ms),
+                    )
+                if ov > best_ov:
+                    best_ov = ov
+                    best_old = old.speaker_id
+            if best_old is not None and best_ov > 0:
+                mapping[new_id] = best_old
+                used_old.add(best_old)
+
+        if not mapping:
+            return intervals
+
+        out: List[SpeakerInterval] = []
+        for iv in intervals:
+            out.append(
+                SpeakerInterval(
+                    speaker_id=mapping.get(iv.speaker_id, iv.speaker_id),
+                    start_ms=iv.start_ms,
+                    end_ms=iv.end_ms,
+                    is_overlap=iv.is_overlap,
+                )
+            )
+        return out
 
     @staticmethod
     def _float_audio_to_wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
@@ -316,14 +491,46 @@ class SpeakerDiarizer:
             "min_speakers": str(int(self.min_speakers)),
             "max_speakers": str(int(self.max_speakers)),
         }
-        files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
+
+        last_exc: Optional[Exception] = None
+        payload: Dict[str, Any] = {}
         with httpx.Client(timeout=self.remote_timeout_s) as client:
-            resp = client.post(url, data=data, files=files)
-            if resp.status_code == 503:
-                # Model still loading — surface clearly; caller may fall back.
-                raise RuntimeError(resp.text or "diarization model not ready")
-            resp.raise_for_status()
-            payload = resp.json()
+            for attempt in range(1, _REMOTE_READY_RETRIES + 1):
+                files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
+                try:
+                    resp = client.post(url, data=data, files=files)
+                except httpx.TransportError as exc:
+                    last_exc = exc
+                    if attempt >= _REMOTE_READY_RETRIES:
+                        raise
+                    logger.info(
+                        "Diarization sidecar unreachable (%s), retry %s/%s",
+                        exc,
+                        attempt,
+                        _REMOTE_READY_RETRIES,
+                    )
+                    time.sleep(_REMOTE_READY_SLEEP_S)
+                    continue
+
+                if resp.status_code == 503:
+                    last_exc = RuntimeError(resp.text or "diarization model not ready")
+                    if attempt >= _REMOTE_READY_RETRIES:
+                        raise last_exc
+                    logger.info(
+                        "Diarization sidecar not ready (503), retry %s/%s",
+                        attempt,
+                        _REMOTE_READY_RETRIES,
+                    )
+                    time.sleep(_REMOTE_READY_SLEEP_S)
+                    continue
+
+                resp.raise_for_status()
+                payload = resp.json()
+                last_exc = None
+                break
+
+        if last_exc is not None:
+            raise last_exc
 
         intervals: List[SpeakerInterval] = []
         for item in payload.get("intervals") or []:
@@ -335,6 +542,8 @@ class SpeakerDiarizer:
                 end_ms = int(item.get("end_ms", start_ms))
             except (TypeError, ValueError):
                 continue
+            if end_ms <= start_ms:
+                continue
             intervals.append(
                 SpeakerInterval(
                     speaker_id=self._normalize_speaker(speaker),
@@ -343,7 +552,10 @@ class SpeakerDiarizer:
                     is_overlap=bool(item.get("is_overlap", False)),
                 )
             )
-        self._load["backend"] = "pyannote"
+        backend = str(payload.get("backend") or "pyannote").lower()
+        if backend not in self._QUALITY_BACKENDS:
+            backend = "pyannote"
+        self._load["backend"] = backend
         return sorted(intervals, key=lambda x: x.start_ms)
 
     def _diarize_pyannote(self, audio: np.ndarray, sr: int) -> List[SpeakerInterval]:

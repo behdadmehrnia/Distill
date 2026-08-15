@@ -32,9 +32,12 @@ def test_health(tmp_path):
             "loading",
             "fallback",
             "pyannote",
+            "nemo",
         }
         assert "diarization_ready" in data
         assert data["diarization_quality"] in {"high", "fallback"}
+        assert "diarization_allow_fallback" in data
+        assert "diarization_endpoint" in data
 
 
 def test_create_meeting_without_start(tmp_path):

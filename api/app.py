@@ -61,6 +61,7 @@ def _build_services(settings: Settings) -> Dict[str, Any]:
         hf_token=settings.hf_token,
         remote_endpoint=settings.diarization_endpoint,
         remote_timeout_s=settings.diarization_timeout_s,
+        allow_fallback=settings.diarization_allow_fallback,
         min_speakers=int(tuning["min_speakers"]),
         max_speakers=int(tuning["max_speakers"]),
         energy_threshold=float(tuning["energy_threshold"]),
@@ -99,16 +100,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        # Keep startup empty so uvicorn can bind immediately.
-        # Pyannote loads lazily on first diarize() — never during lifespan.
+        # Keep startup empty of torch/pyannote. Optionally ping the local sidecar.
         diarizer = getattr(app.state.manager, "diarizer", None)
         backend_hint = "fallback"
         if diarizer is not None and getattr(diarizer, "remote_endpoint", None):
-            backend_hint = f"remote ({diarizer.remote_endpoint})"
+            backend_hint = f"sidecar ({diarizer.remote_endpoint})"
+            try:
+                # Cheap health bind — no model load in this process.
+                diarizer.ensure_loaded()
+            except Exception as exc:
+                logger.warning("Diarization sidecar bind deferred: %s", exc)
         elif diarizer is not None and getattr(diarizer, "pyannote_enabled", False):
-            backend_hint = "pyannote (lazy)"
+            backend_hint = "pyannote/nemo (lazy)"
         logger.info(
-            "Distill HTTP starting (diarization=%s; model not loaded yet)",
+            "Distill HTTP starting (diarization=%s; quality model not loaded in API)",
             backend_hint,
         )
         yield

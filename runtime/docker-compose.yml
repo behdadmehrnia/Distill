@@ -1,0 +1,129 @@
+# Distill local inference stack (LLM + STT + Diarization)
+# Pattern inspired by https://github.com/BMDarkLight/MA-runtime
+#
+#   cd runtime && cp .env.example .env && ./scripts/start.sh
+#
+# Ports (localhost):
+#   8001  vLLM  OpenAI chat completions
+#   8080  Whisper STT (/v1/audio/transcriptions)
+#   8090  Diarization (/v1/diarize)
+
+services:
+  llm:
+    image: vllm/vllm-openai:v0.8.5
+    container_name: distill-llm
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      CUDA_VISIBLE_DEVICES: ${LLM_GPU:-0}
+      PYTORCH_CUDA_ALLOC_CONF: max_split_size_mb:128
+    ports:
+      - "127.0.0.1:${VLLM_PORT:-8001}:8000"
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    command: >
+      --model ${LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}
+      --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.45}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-8192}
+      --max-num-seqs ${VLLM_MAX_NUM_SEQS:-8}
+      --dtype auto
+      --trust-remote-code
+      --host 0.0.0.0
+      --port 8000
+      --disable-log-requests
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    profiles: ["gpu", "full"]
+
+  stt:
+    build:
+      context: ./stt
+      dockerfile: Dockerfile
+    container_name: distill-stt
+    restart: unless-stopped
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cuda}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+      STT_HOST: "0.0.0.0"
+      STT_PORT: "8080"
+      HF_HOME: /data/hf_cache
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CUDA_VISIBLE_DEVICES: ${AUDIO_GPU:-0}
+    ports:
+      - "127.0.0.1:${STT_PORT:-8080}:8080"
+    volumes:
+      - hf_cache:/data/hf_cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    profiles: ["gpu", "full", "audio"]
+
+  diarize:
+    build:
+      context: ../diarize
+      dockerfile: Dockerfile
+      args:
+        # Set INSTALL_NEMO=1 when you have no HF_TOKEN / offline pyannote weights
+        INSTALL_NEMO: ${INSTALL_NEMO:-0}
+    container_name: distill-diarize
+    restart: unless-stopped
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      DIARIZE_HOST: "0.0.0.0"
+      DIARIZE_PORT: "8090"
+      DIARIZATION_BACKEND: ${DIARIZATION_BACKEND:-auto}
+      DIARIZATION_DEVICE: ${DIARIZATION_DEVICE:-cpu}
+      PYANNOTE_MODEL: ${DIARIZATION_MODEL:-pyannote/speaker-diarization-3.1}
+      HF_HOME: /data/hf_cache
+      TORCH_HOME: /data/torch_cache
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "127.0.0.1:${DIARIZE_PORT:-8090}:8090"
+    volumes:
+      - hf_cache:/data/hf_cache
+      - torch_cache:/data/torch_cache
+      - ../diarize/models:/app/models:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,json,sys; d=json.load(urllib.request.urlopen('http://127.0.0.1:8090/health')); sys.exit(0 if d.get('ready') else 1)",
+        ]
+      interval: 20s
+      timeout: 8s
+      retries: 12
+      start_period: 180s
+    profiles: ["gpu", "full", "audio", "cpu"]
+
+volumes:
+  hf_cache:
+  torch_cache:

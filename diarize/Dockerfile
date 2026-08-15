@@ -1,6 +1,10 @@
-# Standalone pyannote diarization HTTP service (CPU-only).
-# Not part of the main Distill API image — run separately on a machine with RAM.
+# Standalone diarization HTTP service (CPU by default).
+# INSTALL_NEMO=1 → NeMo only (no pyannote). INSTALL_NEMO=0 → pyannote only.
+ARG INSTALL_NEMO=0
+
 FROM python:3.12-slim-bookworm
+
+ARG INSTALL_NEMO=0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -8,7 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DIARIZE_HOST=0.0.0.0 \
     DIARIZE_PORT=8090 \
     PORT=8090 \
-    CUDA_VISIBLE_DEVICES="" \
+    DIARIZATION_BACKEND=auto \
     HF_HOME=/data/hf_cache \
     TORCH_HOME=/data/torch_cache \
     XDG_CACHE_HOME=/data/cache \
@@ -23,33 +27,58 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libsndfile1 \
         libgomp1 \
+        ffmpeg \
         curl \
         ca-certificates \
+        git \
+        build-essential \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
+COPY requirements.txt requirements.nemo.txt ./
 
-RUN pip install --upgrade pip \
+RUN pip install --upgrade pip setuptools wheel \
     && pip install --index-url https://download.pytorch.org/whl/cpu \
         torch \
         torchaudio \
-    && pip install -r requirements.txt \
+    && pip install \
+        "fastapi>=0.115,<1" \
+        "uvicorn[standard]>=0.30,<1" \
+        "python-multipart>=0.0.9" \
+        "numpy>=1.26,<3" \
+        soundfile \
+        "httpx>=0.27" \
     && pip install --index-url https://download.pytorch.org/whl/cpu \
         --force-reinstall --no-deps \
         torch \
         torchaudio \
     && python -c "import torch; assert torch.version.cuda is None, torch.version.cuda; print('torch', torch.__version__, 'cpu-only OK')"
 
-COPY server.py ./
+# Mutually exclusive backends to avoid Lightning / NeMo version fights.
+# setuptools>=82 drops pkg_resources; lightning_fabric 2.2 still needs it.
+RUN if [ "$INSTALL_NEMO" = "1" ]; then \
+      echo "Installing NeMo diarization stack..." && \
+      pip install --upgrade "setuptools>=70,<81" wheel && \
+      pip install --only-binary=:all: "pyarrow>=14,<18" "datasets>=2.16,<3" && \
+      pip install "pytorch-lightning>=2.0.0,<2.3.0" "lightning>=2.0.0,<2.3.0" && \
+      pip install -r requirements.nemo.txt && \
+      pip install --force-reinstall "setuptools>=70,<81" && \
+      python -c "import pkg_resources; from nemo.collections.asr.models import ClusteringDiarizer; print('NeMo OK')"; \
+    else \
+      echo "Installing pyannote diarization stack..." && \
+      pip install -r requirements.txt && \
+      python -c "import pyannote.audio; print('pyannote OK')"; \
+    fi
+
+COPY server.py hf_access.py nemo_backend.py ./
+COPY models ./models
 
 RUN mkdir -p /data/hf_cache /data/torch_cache /data/cache
 VOLUME ["/data"]
 
 EXPOSE 8090
 
-# Bind ASAP; model loads in a background thread (see server lifespan).
-HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
-    CMD curl -fsS http://127.0.0.1:8090/health || exit 1
+HEALTHCHECK --interval=15s --timeout=5s --start-period=180s --retries=20 \
+    CMD python -c "import urllib.request,json,sys; d=json.load(urllib.request.urlopen('http://127.0.0.1:8090/health')); sys.exit(0 if d.get('ready') else 1)" || exit 1
 
 CMD ["python", "server.py"]

@@ -1,46 +1,64 @@
 # Distill diarization sidecar
 
-Runs `pyannote/speaker-diarization-3.1` as a separate HTTP service so the light
-API (`python -m api`) does not load torch.
+Local speaker diarization for Distill (`pyannote` and/or **NVIDIA NeMo**).
 
-## Offline weights (recommended when Hub downloads fail)
+Production path: run via `../runtime/scripts/start.sh` (or `run_diarize.sh`) and
+point the API at `DIARIZATION_ENDPOINT=http://127.0.0.1:8090` with
+`DIARIZATION_ALLOW_FALLBACK=0`.
 
-Download **two** files on any machine/browser that can reach Hugging Face
-(after accepting gated terms), rename them exactly, and put them in
-`diarize/models/`:
+## Backends
 
-| Download | Save as |
-|----------|---------|
-| [segmentation-3.0 `pytorch_model.bin`](https://huggingface.co/pyannote/segmentation-3.0/resolve/main/pytorch_model.bin) | `pyannote_model_segmentation-3.0.bin` |
-| [wespeaker embedding `pytorch_model.bin`](https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM/resolve/main/pytorch_model.bin) | `pyannote_model_wespeaker-voxceleb-resnet34-LM.bin` |
+`DIARIZATION_BACKEND=auto|pyannote|nemo`
 
-Also accept [speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) terms (needed to authorize the downloads).
+| Priority (`auto`) | Requirement |
+|-------------------|-------------|
+| 1. Offline pyannote | `.bin` weights in `models/` + YAML |
+| 2. Hub pyannote | **Validated** `HF_TOKEN` with gated access to [speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) (+ segmentation + wespeaker) |
+| 3. NeMo | `pip install -r requirements.nemo.txt` — [NeMo speaker diarization](https://docs.nvidia.com/nemo-framework/user-guide/24.09/nemotoolkit/asr/speaker_diarization/intro.html) |
 
-Then:
+Hub is **never** used with a blank/invalid token or when gated terms are not accepted.
+
+## Quick start
 
 ```bash
-./diarize/run_local.sh
-curl -s http://127.0.0.1:8090/health
-# want: "ready": true, "local": true
+# Prefer the runtime orchestrator:
+./runtime/scripts/download_models.sh   # needs valid HF_TOKEN once
+./runtime/scripts/run_diarize.sh
+
+# No HF? use NeMo:
+DIARIZATION_BACKEND=nemo ./runtime/scripts/run_diarize.sh
 ```
 
-No Hub access needed at runtime once the `.bin` files are present.
-
-## Hub download (optional)
-
-1. `HF_TOKEN` in `.env`
-2. Accept gated terms for the models above
-3. Prefer **no** `HF_ENDPOINT` (hf-mirror often 308-redirects and breaks downloads)
-4. `./diarize/run_local.sh` or `cd diarize && docker compose up -d --build`
-
-## Point the API at it
+API:
 
 ```bash
-# .env
 DIARIZATION_ENDPOINT=http://127.0.0.1:8090
+DIARIZATION_ALLOW_FALLBACK=0
 DISTILL_ENABLE_PYANNOTE=0
 ```
 
+Health:
+
 ```bash
-python -m api
+curl -s http://127.0.0.1:8090/health
+# want: "ready": true, "backend": "pyannote" | "nemo"
 ```
+
+Diarize:
+
+```bash
+curl -F file=@meeting.wav -F min_speakers=1 -F max_speakers=4 \
+  http://127.0.0.1:8090/v1/diarize
+```
+
+## Docker
+
+```bash
+# pyannote (offline weights mounted from models/)
+docker compose up -d --build
+
+# NeMo without HF:
+docker build --build-arg INSTALL_NEMO=1 -t distill-diarize .
+```
+
+See `../runtime/README.md` for the full LLM + STT + diarize stack.

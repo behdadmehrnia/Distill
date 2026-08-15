@@ -1,0 +1,22 @@
+# Optional NVIDIA NeMo backend for diarize/server.py
+# Install after torch + diarize/requirements.txt:
+#   pip install -r diarize/requirements.nemo.txt
+#
+# Prefer Docker/Linux — native Windows often lacks `triton` wheels.
+# Pins below stop pip from backtracking into ancient pyarrow sdists.
+
+numpy>=1.26,<2.3
+setuptools>=70,<81
+wheel
+# Binary-friendly pins (must resolve before nemo pulls old datasets/pyarrow)
+pyarrow>=14.0.0,<18
+datasets>=2.16.0,<3.0.0
+pytorch-lightning>=2.0.0,<2.3.0
+lightning>=2.0.0,<2.3.0
+matplotlib>=3.7
+
+nemo_toolkit[asr]>=1.23.0,<2.1
+omegaconf>=2.3
+lhotse>=1.20
+librosa>=0.10
+protobuf>=4.24,<5

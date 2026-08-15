@@ -1,4 +1,13 @@
-"""Standalone pyannote diarization HTTP service for Distill."""
+"""Distill local diarization HTTP service.
+
+Backends (DIARIZATION_BACKEND=auto|pyannote|nemo):
+  auto     → offline pyannote weights → Hub (only if HF token has access) → NeMo
+  pyannote → offline weights, else Hub when token validates
+  nemo     → NVIDIA NeMo ClusteringDiarizer (no gated pyannote HF required)
+
+Always runs locally. Hugging Face is used only for weight download when the
+token is valid and has accepted gated model terms.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +25,9 @@ import soundfile as sf
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from hf_access import resolve_hf_token, should_use_hub_download, validate_pyannote_access
+from nemo_backend import NeMoDiarizer
+
 logger = logging.getLogger("diarize")
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -23,36 +35,53 @@ logging.basicConfig(
 )
 
 MODEL_ID = os.getenv("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1")
-# Local offline config (see diarize/models/README.md). When set, Hub download is skipped.
 _LOCAL_CONFIG = (os.getenv("PYANNOTE_CONFIG") or "").strip()
 DIARIZE_ROOT = Path(__file__).resolve().parent
+BACKEND_PREF = (os.getenv("DIARIZATION_BACKEND") or "auto").strip().lower()
 
 
-def _resolve_model_source() -> str:
-    """Return Hub model id OR absolute path to a local pipeline YAML."""
+def _resolve_local_pyannote_config() -> Optional[str]:
+    """Return absolute path to offline pipeline YAML when weights exist."""
     if _LOCAL_CONFIG:
         path = Path(_LOCAL_CONFIG)
-        if not path.is_absolute():
-            # Try cwd, then repo-relative from diarize/, then diarize/ itself.
-            candidates = [
-                path,
-                DIARIZE_ROOT.parent / path,
-                DIARIZE_ROOT / path,
-                DIARIZE_ROOT / "models" / path.name,
-            ]
-            for cand in candidates:
-                if cand.is_file():
-                    return str(cand.resolve())
-            return str((DIARIZE_ROOT / path).resolve())
-        return str(path.resolve())
-    # Auto-detect default offline layout if weights are present.
+        candidates = [
+            path,
+            DIARIZE_ROOT.parent / path,
+            DIARIZE_ROOT / path,
+            DIARIZE_ROOT / "models" / path.name,
+        ]
+        for cand in candidates:
+            if cand.is_file():
+                return str(cand.resolve())
+        return None
+
     default_cfg = DIARIZE_ROOT / "models" / "pyannote_diarization_config.yaml"
     seg = DIARIZE_ROOT / "models" / "pyannote_model_segmentation-3.0.bin"
     emb = DIARIZE_ROOT / "models" / "pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
     if default_cfg.is_file() and seg.is_file() and emb.is_file():
         return str(default_cfg.resolve())
-    return MODEL_ID
+    return None
 
+
+def _pick_device():
+    forced = (os.getenv("DIARIZATION_DEVICE") or "").strip().lower()
+    try:
+        import torch
+
+        if forced == "cpu":
+            return torch.device("cpu")
+        if forced == "cuda" and torch.cuda.is_available():
+            return torch.device("cuda")
+        if forced == "mps" and getattr(torch.backends, "mps", None):
+            if torch.backends.mps.is_available():
+                return torch.device("mps")
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    except Exception:
+        return None
 
 
 class IntervalOut(BaseModel):
@@ -64,79 +93,90 @@ class IntervalOut(BaseModel):
 
 class DiarizeResponse(BaseModel):
     intervals: List[IntervalOut] = Field(default_factory=list)
-    backend: str = "pyannote"
+    backend: str = "unknown"
     model: str = MODEL_ID
 
 
 class PipelineState:
     def __init__(self) -> None:
         self.pipeline: Any = None
-        self.backend: str = "unloaded"
+        self.nemo: Optional[NeMoDiarizer] = None
+        self.backend: str = "unloaded"  # pyannote | nemo | error | unloaded
+        self.model_id: str = MODEL_ID
         self.error: Optional[str] = None
+        self.mode: str = "none"  # local | hub | nemo
         self._lock = threading.Lock()
         self._permanent_fail = False
 
     @property
     def ready(self) -> bool:
-        return self.backend == "pyannote" and self.pipeline is not None
+        if self.backend == "pyannote":
+            return self.pipeline is not None
+        if self.backend == "nemo":
+            return self.nemo is not None and self.nemo.ready
+        return False
 
     def ensure_loaded(self) -> None:
         with self._lock:
             if self.ready or self._permanent_fail:
                 return
-            # Retry after transient Hub/network failures.
             self._load()
 
     def _load(self) -> None:
-        source = _resolve_model_source()
-        local = Path(source).is_file()
-        token = (
-            os.getenv("HF_TOKEN")
-            or os.getenv("HUGGINGFACE_TOKEN")
-            or os.getenv("HUGGING_FACE_HUB_TOKEN")
-            or ""
-        ).strip()
+        pref = BACKEND_PREF
+        errors: List[str] = []
 
-        if not local and not token:
-            self.backend = "error"
-            self.error = (
-                "HF_TOKEN not set (required for Hub download). "
-                "Or place offline weights under diarize/models/ — see models/README.md"
-            )
-            self._permanent_fail = True
-            logger.error(self.error)
-            return
+        try_pyannote = pref in {"auto", "pyannote"}
+        try_nemo = pref in {"auto", "nemo"}
+
+        if try_pyannote:
+            ok, err = self._try_load_pyannote()
+            if ok:
+                return
+            errors.append(err or "pyannote failed")
+
+        if try_nemo:
+            ok, err = self._try_load_nemo()
+            if ok:
+                return
+            errors.append(err or "nemo failed")
+
+        self.backend = "error"
+        self.error = " | ".join(errors) or "no diarization backend available"
+        self._permanent_fail = True
+        logger.error("Diarization load failed: %s", self.error)
+
+    def _try_load_pyannote(self) -> tuple[bool, str]:
+        local = _resolve_local_pyannote_config()
+        token = resolve_hf_token()
+        use_hub = False
+        source: Optional[str] = None
 
         if local:
-            logger.info("Loading pyannote from local config %s", source)
+            source = local
+            logger.info("Loading pyannote from offline weights: %s", source)
         else:
-            hub = (
-                os.getenv("HF_ENDPOINT")
-                or os.getenv("HUGGINGFACE_HUB_ENDPOINT")
-                or "https://huggingface.co"
-            )
-            logger.info(
-                "Loading %s (HF_ENDPOINT=%s, token=set)",
-                source,
-                hub.rstrip("/"),
-            )
+            if not token:
+                return False, "pyannote: no offline weights and HF_TOKEN not set"
+            ok, reason = validate_pyannote_access(token)
+            if not ok:
+                return False, f"pyannote: Hub blocked ({reason})"
+            if not should_use_hub_download(token):
+                return False, f"pyannote: Hub access not usable ({reason})"
+            use_hub = True
+            source = MODEL_ID
+            logger.info("Loading pyannote from Hugging Face Hub: %s", source)
 
         try:
             from pyannote.audio import Pipeline  # type: ignore
         except Exception as exc:
-            self.backend = "error"
-            self.error = f"pyannote import failed: {exc}"
-            self._permanent_fail = True
-            logger.error(self.error)
-            return
+            return False, f"pyannote import failed: {exc}"
 
         try:
-            # Local YAML paths are relative to diarize/ (embedding/segmentation files).
             prev_cwd = Path.cwd()
             try:
                 if local:
                     os.chdir(DIARIZE_ROOT)
-                if local:
                     pipeline = Pipeline.from_pretrained(source)
                 else:
                     try:
@@ -149,41 +189,42 @@ class PipelineState:
                 if local:
                     os.chdir(prev_cwd)
 
+            device = _pick_device()
+            if device is not None:
+                try:
+                    pipeline.to(device)
+                    logger.info("pyannote moved to %s", device)
+                except Exception as exc:
+                    logger.warning("Could not move pyannote to %s: %s", device, exc)
+
             self.pipeline = pipeline
             self.backend = "pyannote"
+            self.model_id = source or MODEL_ID
+            self.mode = "local" if local else "hub"
             self.error = None
             self._permanent_fail = False
-            logger.info("Loaded %s", source)
+            logger.info("Loaded pyannote (%s)", self.mode)
+            return True, "ok"
         except Exception as exc:
             msg = str(exc)
-            self.backend = "error"
-            self.error = msg
-            # Auth / gated-model / missing-token style errors won't fix themselves
-            # without config changes; Hub connectivity can be retried.
-            lower = msg.lower()
-            permanent = local or any(
-                tip in lower
-                for tip in (
-                    "401",
-                    "403",
-                    "gated",
-                    "restricted",
-                    "invalid username or password",
-                    "invalid token",
-                    "cannot access gated",
-                    "no such file",
-                    "not found",
-                )
-            )
-            self._permanent_fail = permanent
-            logger.exception(
-                "Failed to load %s (permanent=%s). "
-                "For offline use put .bin weights in diarize/models/ "
-                "(see models/README.md). For Hub: accept gated terms, check HF_TOKEN, "
-                "and avoid broken HF_ENDPOINT mirrors.",
-                source,
-                permanent,
-            )
+            logger.exception("Failed to load pyannote")
+            return False, f"pyannote load failed: {msg}"
+
+    def _try_load_nemo(self) -> tuple[bool, str]:
+        nemo = NeMoDiarizer()
+        if not nemo.ensure_importable():
+            return False, nemo.error or "NeMo not importable"
+        self.nemo = nemo
+        self.pipeline = None
+        self.backend = "nemo"
+        self.model_id = (
+            f"nemo:{os.getenv('NEMO_SPK_MODEL') or 'titanet_large'}"
+        )
+        self.mode = "nemo"
+        self.error = None
+        self._permanent_fail = False
+        logger.info("Using NVIDIA NeMo ClusteringDiarizer")
+        return True, "ok"
 
 
 state = PipelineState()
@@ -221,7 +262,6 @@ def _mark_overlaps(turns: List[tuple[int, int, str]]) -> List[IntervalOut]:
 
 
 def _as_annotation(output: Any) -> Any:
-    """pyannote 3.x → Annotation; 4.x → DiarizeOutput.speaker_diarization."""
     if hasattr(output, "itertracks"):
         return output
     for attr in ("speaker_diarization", "exclusive_speaker_diarization"):
@@ -231,23 +271,13 @@ def _as_annotation(output: Any) -> Any:
     raise TypeError(f"Unsupported pyannote output type: {type(output)!r}")
 
 
-def _run_pipeline(
+def _run_pyannote(
     audio: np.ndarray,
     sample_rate: int,
     min_speakers: Optional[int],
     max_speakers: Optional[int],
 ) -> List[IntervalOut]:
-    state.ensure_loaded()
-    if not state.ready:
-        raise HTTPException(
-            status_code=503,
-            detail=state.error or "diarization model not ready",
-        )
-
-    audio = np.asarray(audio, dtype=np.float32).reshape(-1)
-    if audio.size == 0:
-        return []
-
+    assert state.pipeline is not None
     kwargs: Dict[str, Any] = {}
     if min_speakers is not None:
         kwargs["min_speakers"] = int(min_speakers)
@@ -288,32 +318,98 @@ def _run_pipeline(
             pass
 
 
+def _run_nemo(
+    audio: np.ndarray,
+    sample_rate: int,
+    min_speakers: Optional[int],
+    max_speakers: Optional[int],
+) -> List[IntervalOut]:
+    assert state.nemo is not None
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        path = tmp.name
+        sf.write(path, audio, sample_rate)
+    try:
+        raw = state.nemo.diarize(
+            path,
+            sample_rate=sample_rate,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+        return [
+            IntervalOut(
+                speaker_id=item["speaker_id"],
+                start_ms=int(item["start_ms"]),
+                end_ms=int(item["end_ms"]),
+                is_overlap=bool(item.get("is_overlap", False)),
+            )
+            for item in raw
+        ]
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _run_pipeline(
+    audio: np.ndarray,
+    sample_rate: int,
+    min_speakers: Optional[int],
+    max_speakers: Optional[int],
+) -> List[IntervalOut]:
+    state.ensure_loaded()
+    if not state.ready:
+        raise HTTPException(
+            status_code=503,
+            detail=state.error or "diarization model not ready",
+        )
+
+    audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if audio.size == 0:
+        return []
+
+    if state.backend == "nemo":
+        return _run_nemo(audio, sample_rate, min_speakers, max_speakers)
+    return _run_pyannote(audio, sample_rate, min_speakers, max_speakers)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    # Load in a background thread so the port binds immediately.
-    threading.Thread(target=state.ensure_loaded, name="pyannote-load", daemon=True).start()
-    logger.info("Diarization service starting (model loads in background)")
+    threading.Thread(target=state.ensure_loaded, name="diarize-load", daemon=True).start()
+    logger.info(
+        "Diarization service starting (backend_pref=%s; model loads in background)",
+        BACKEND_PREF,
+    )
     yield
 
 
 app = FastAPI(
     title="Distill Diarization",
-    version="0.1.0",
-    description="Remote pyannote speaker diarization for Distill",
+    version="0.2.0",
+    description="Local speaker diarization (pyannote / NVIDIA NeMo) for Distill",
     lifespan=lifespan,
 )
 
 
 @app.get("/health")
 def health() -> dict:
-    source = _resolve_model_source()
+    local = _resolve_local_pyannote_config()
+    tok = resolve_hf_token()
+    hf_ok, hf_reason = (False, "no token")
+    if tok:
+        hf_ok, hf_reason = validate_pyannote_access(tok)
     return {
         "status": "ok" if state.backend != "error" else "error",
         "service": "distill-diarize",
         "ready": state.ready,
         "backend": state.backend,
-        "model": source,
-        "local": Path(source).is_file(),
+        "mode": state.mode,
+        "model": state.model_id,
+        "backend_pref": BACKEND_PREF,
+        "local_weights": bool(local),
+        "hf_token_present": bool(tok),
+        "hf_pyannote_access": hf_ok,
+        "hf_access_reason": hf_reason if not hf_ok else "ok",
         "error": state.error,
         "hf_endpoint": (
             os.getenv("HF_ENDPOINT")
@@ -325,11 +421,12 @@ def health() -> dict:
 
 @app.post("/v1/reload")
 def reload_model() -> dict:
-    """Force another model load attempt (e.g. after fixing network / token)."""
     with state._lock:
         state.pipeline = None
+        state.nemo = None
         state.backend = "unloaded"
         state.error = None
+        state.mode = "none"
         state._permanent_fail = False
     state.ensure_loaded()
     return health()
@@ -354,9 +451,9 @@ async def diarize(
     if getattr(audio, "ndim", 1) > 1:
         audio = np.mean(audio, axis=-1)
 
-    sr_i = int(sample_rate or sr)
-    if int(sr) != sr_i and sample_rate is not None:
-        # Client declared a rate; prefer file metadata when present.
+    sr_i = int(sr)
+    if sample_rate is not None:
+        # Prefer file metadata when present; Form value is advisory.
         sr_i = int(sr)
 
     intervals = _run_pipeline(
@@ -365,7 +462,11 @@ async def diarize(
         min_speakers,
         max_speakers,
     )
-    return DiarizeResponse(intervals=intervals, backend="pyannote", model=MODEL_ID)
+    return DiarizeResponse(
+        intervals=intervals,
+        backend=state.backend,
+        model=state.model_id,
+    )
 
 
 def main() -> None:

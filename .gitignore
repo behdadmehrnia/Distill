@@ -3,6 +3,7 @@ env
 data/
 *.db
 .venv/
+runtime/.venv-diarize/
 .pytest_cache/
 
 
