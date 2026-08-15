@@ -2,7 +2,9 @@
 
 Local speaker diarization for Distill (`pyannote` and/or **NVIDIA NeMo**).
 
-Production path: run via `../runtime/scripts/start.sh` (or `run_diarize.sh`) and
+**Full model-stack docs:** [`../docs/MODELS.md`](../docs/MODELS.md)
+
+Production path: run via `../runtime/scripts/start.sh` (or this compose / `run_diarize.sh`) and
 point the API at `DIARIZATION_ENDPOINT=http://127.0.0.1:8090` with
 `DIARIZATION_ALLOW_FALLBACK=0`.
 

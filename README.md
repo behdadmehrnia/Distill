@@ -17,7 +17,10 @@ data/
 
 ## اجرا
 
-**Full guide (hybrid + full local):** [`docs/LOCAL_RUN.md`](docs/LOCAL_RUN.md)
+**Model stack (diarize-only → full LLM/STT/diarize, model choice, env vars):**  
+[`docs/MODELS.md`](docs/MODELS.md)
+
+**Quick local / hybrid:** [`docs/LOCAL_RUN.md`](docs/LOCAL_RUN.md) · [`runtime/README.md`](runtime/README.md)
 
 ### A) Hybrid — local NeMo diarization + your STT/LLM API keys
 
@@ -30,11 +33,13 @@ DIARIZATION_ALLOW_FALLBACK=0
 DISTILL_ENABLE_PYANNOTE=0
 ```
 
-Terminal 1 — **only** NeMo:
+Terminal 1 — **only** NeMo (Docker recommended on Windows):
 
 ```bash
-DIARIZATION_BACKEND=nemo ./runtime/scripts/run_diarize.sh
-# wait: curl -s http://127.0.0.1:8090/health   → ready:true, backend:nemo
+INSTALL_NEMO=1 DIARIZATION_BACKEND=nemo \
+  docker compose -f diarize/docker-compose.yml up -d --build
+# or: DIARIZATION_BACKEND=nemo ./runtime/scripts/run_diarize.sh
+curl -s http://127.0.0.1:8090/health   # ready:true, backend:nemo
 ```
 
 Terminal 2 — API:
@@ -48,13 +53,15 @@ python -m api
 
 ```bash
 cp runtime/.env.example runtime/.env
-./runtime/scripts/start.sh          # or: --native / --audio
-# Point root .env at :8001 / :8080 / :8090 (see docs/LOCAL_RUN.md)
+# Recommended: DIARIZATION_BACKEND=nemo, INSTALL_NEMO=1
+./runtime/scripts/start.sh
+# Configure root .env — see docs/MODELS.md §3
 pip install -r requirements.txt
 python -m api
 ```
 
-See `runtime/README.md` for GPU/CPU options and NeMo vs pyannote.
+Defaults: **STT** `large-v3`, **LLM** `Qwen/Qwen2.5-7B-Instruct`, **diarize** NeMo or pyannote.  
+An **RTX 4090 (24 GB)** is adequate. Full options: [`docs/MODELS.md`](docs/MODELS.md).
 
 ### API only (cloud STT/LLM, no local models)
 
@@ -63,8 +70,6 @@ cp .env.example .env
 # set LLM_* and STT_* keys; optional DIARIZATION_ENDPOINT
 pip install -r requirements.txt
 python -m api
-# یا: python main.py
-# یا مستقیم: uvicorn api.app:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
 مسیر اصلی STT دیگر به **ffmpeg / pydub** نیاز ندارد؛ صوت به‌صورت WAV مستقیم به endpoint سازگار با OpenAI ارسال می‌شود.

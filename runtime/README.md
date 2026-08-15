@@ -1,7 +1,10 @@
 # Distill local runtime
 
 Production-oriented local inference for Distill — same idea as
-[MA-runtime](https://github.com/BMDarkLight/MA-runtime):
+[MA-runtime](https://github.com/BMDarkLight/MA-runtime).
+
+**Full guide (profiles, model choice, every env var):**  
+[`docs/MODELS.md`](../docs/MODELS.md)
 
 | Service | Port | Role |
 |---------|------|------|
@@ -15,63 +18,48 @@ Otherwise use offline `.bin` weights under `diarize/models/`, or set
 `DIARIZATION_BACKEND=nemo` / `INSTALL_NEMO=1` (NVIDIA NeMo ClusteringDiarizer —
 no gated pyannote).
 
+## Profiles
+
+| Command | Services |
+|---------|----------|
+| `./scripts/run_diarize.sh` | Diarize only |
+| `./scripts/start.sh --audio` | STT + diarize |
+| `./scripts/start.sh` | LLM + STT + diarize |
+| `./scripts/start.sh --native` | Same, without Compose |
+
+See [`docs/MODELS.md`](../docs/MODELS.md) for root `.env` wiring and model selection.
+
 ## Hybrid: NeMo only + cloud STT/LLM
 
 If repo-root `.env` already has `LLM_*` / `STT_*` API keys:
 
 ```bash
-# runtime/.env
-DIARIZATION_BACKEND=nemo
+# Prefer Docker on Windows:
+INSTALL_NEMO=1 DIARIZATION_BACKEND=nemo \
+  docker compose -f ../diarize/docker-compose.yml up -d --build
 
+# or native (Linux/WSL):
 DIARIZATION_BACKEND=nemo ./scripts/run_diarize.sh
-# other terminal: python -m api   (with DIARIZATION_ENDPOINT=http://127.0.0.1:8090)
 ```
 
-See [`docs/LOCAL_RUN.md`](../docs/LOCAL_RUN.md).
+Then `python -m api` with `DIARIZATION_ENDPOINT=http://127.0.0.1:8090`.
 
 ## Quick start (full local stack)
 
 ```bash
 cd runtime
 cp .env.example .env
-# Optional: HF_TOKEN with pyannote gated access (accept model terms first)
-./scripts/download_models.sh   # offline pyannote weights (needs valid HF_TOKEN)
-./scripts/start.sh             # Docker GPU full stack; waits until ready
+# Recommended without HF: DIARIZATION_BACKEND=nemo, INSTALL_NEMO=1
+./scripts/download_models.sh   # optional — pyannote offline weights only
+./scripts/start.sh
 ./scripts/healthcheck.sh
 ```
 
-Windows (PowerShell / Git Bash):
-
-```powershell
-.\runtime\scripts\start.ps1
-# or: bash ./runtime/scripts/start.sh
-```
-
-Native (no Docker compose) — three processes:
-
-```bash
-./scripts/start.sh --native
-```
-
-Audio only (STT + diarize):
-
-```bash
-./scripts/start.sh --audio
-```
-
-No HF token? Use NeMo:
-
-```bash
-# native
-DIARIZATION_BACKEND=nemo ./scripts/run_diarize.sh
-
-# docker
-INSTALL_NEMO=1 DIARIZATION_BACKEND=nemo ./scripts/start.sh --audio
-```
+Windows: `.\runtime\scripts\start.ps1`
 
 ## Point Distill at the stack
 
-In the **repo root** `.env`:
+In the **repo root** `.env` (see also `docs/MODELS.md`):
 
 ```bash
 LLM_ENDPOINT=http://127.0.0.1:8001/v1/chat/completions
@@ -87,11 +75,18 @@ DIARIZATION_ALLOW_FALLBACK=0
 DISTILL_ENABLE_PYANNOTE=0
 ```
 
-Then:
+Then: `python -m api`
 
-```bash
-python -m api
-```
+## Default models (full accuracy)
+
+| Role | Default |
+|------|---------|
+| STT | Whisper **`large-v3`** |
+| LLM | **`Qwen/Qwen2.5-7B-Instruct`** (vLLM) |
+| Diarize | **NeMo** (`INSTALL_NEMO=1`) or **pyannote 3.1** |
+
+**RTX 4090 (24 GB)** is adequate. Prefer `DIARIZATION_DEVICE=cpu` and
+`VLLM_GPU_MEMORY_UTILIZATION=0.45` when sharing one GPU with Whisper.
 
 ## Diarization backends
 
@@ -99,17 +94,11 @@ python -m api
 
 | Value | Behavior |
 |-------|----------|
-| `auto` (default) | Offline pyannote → Hub (**only if token validates**) → NeMo |
+| `auto` | Offline pyannote → Hub (**only if token validates**) → NeMo |
 | `pyannote` | Offline or validated Hub only |
 | `nemo` | [NVIDIA NeMo ClusteringDiarizer](https://docs.nvidia.com/nemo-framework/user-guide/24.09/nemotoolkit/asr/speaker_diarization/intro.html) |
 
-Models:
-
-- PyAnnote: [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)
-- NeMo: meeting-domain VAD + TitaNet clustering (no gated HF)
-
-`DIARIZATION_ALLOW_FALLBACK=0` on the API prevents silent weak mono-mic heuristics
-when the sidecar fails — required for production accuracy.
+Docker builds **one** stack per image via `INSTALL_NEMO=0|1` (not both).
 
 ## Scripts
 
