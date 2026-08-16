@@ -20,13 +20,9 @@ DEFAULT_MODEL = "gapgpt/whisper-1"
 DEFAULT_ENDPOINT = "https://api.gapgpt.app/v1/audio/transcriptions"
 _MAX_ERROR_BODY = 240
 
-# Nudge ASR toward clean Persian meeting speech (OpenAI-compatible `prompt`).
-DEFAULT_STT_PROMPT = (
-    "این یک جلسه کاری به زبان فارسی است. "
-    "گفتار را دقیق و روان پیاده‌سازی کن. "
-    "از ساختن متن بی‌معنی، تکرار بی‌جا، و ترجمه به انگلیسی خودداری کن. "
-    "کلمات انگلیسی را فقط اگر واقعاً گفته شدند بنویس."
-)
+# Whisper's `prompt` is previous-transcript context, not a system instruction.
+# Sending instructions made Groq/Whisper transcribe the prompt on later hops.
+DEFAULT_STT_PROMPT = ""
 
 # Models known to reject response_format=verbose_json (OpenAI transcribe family).
 _NO_VERBOSE_JSON_MARKERS = (
@@ -117,9 +113,11 @@ class OpenAICompatibleSTT:
     def _file_hash(content: bytes) -> str:
         return hashlib.md5(content).hexdigest()
 
-    def _request_hash(self, pcm_bytes: bytes, model: str, language: str) -> str:
+    def _request_hash(
+        self, pcm_bytes: bytes, model: str, language: str, prompt: str
+    ) -> str:
         """Cache key includes model/prompt/language so prompt changes invalidate."""
-        meta = f"{model}|{language}|{self.prompt}".encode("utf-8")
+        meta = f"{model}|{language}|{prompt}".encode("utf-8")
         return hashlib.md5(pcm_bytes + meta).hexdigest()
 
     def _cache_paths(self, pcm_hash: str) -> Tuple[str, str]:
@@ -192,6 +190,7 @@ class OpenAICompatibleSTT:
         language: Optional[str],
         *,
         response_format: str,
+        prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         headers = {}
         if self.api_key:
@@ -207,8 +206,9 @@ class OpenAICompatibleSTT:
         form.add_field("language", language or "fa")
         form.add_field("model", model or self.model)
         form.add_field("response_format", response_format)
-        if self.prompt:
-            form.add_field("prompt", self.prompt)
+        used = (prompt if prompt is not None else self.prompt).strip()
+        if used:
+            form.add_field("prompt", used)
         if response_format == "verbose_json":
             # OpenAI-compatible optional hint; ignored by endpoints that don't support it
             form.add_field("timestamp_granularities[]", "word")
@@ -236,11 +236,15 @@ class OpenAICompatibleSTT:
         file_content: np.ndarray,
         model: Optional[str] = None,
         language: Optional[str] = "fa",
+        prompt: Optional[str] = None,
     ) -> STTResult:
         audio_int16 = (np.asarray(file_content, dtype=np.float32) * 32768.0).astype(np.int16)
         pcm_bytes = audio_int16.tobytes()
         chosen_model = model or self.model
-        pcm_hash = self._request_hash(pcm_bytes, chosen_model, language or "fa")
+        used_prompt = (prompt if prompt is not None else self.prompt).strip()
+        pcm_hash = self._request_hash(
+            pcm_bytes, chosen_model, language or "fa", used_prompt
+        )
         text_cache, json_cache = self._cache_paths(pcm_hash)
 
         if os.path.exists(json_cache):
@@ -281,6 +285,7 @@ class OpenAICompatibleSTT:
                     model,
                     language,
                     response_format="verbose_json",
+                    prompt=used_prompt,
                 )
                 words = self._parse_words(result)
                 self._verbose_supported = True
@@ -293,7 +298,11 @@ class OpenAICompatibleSTT:
 
         if not result:
             result = await self._post_transcribe(
-                wav_content, model, language, response_format="json"
+                wav_content,
+                model,
+                language,
+                response_format="json",
+                prompt=used_prompt,
             )
             words = self._parse_words(result)
 
@@ -321,9 +330,10 @@ class OpenAICompatibleSTT:
         file_content: np.ndarray,
         model: Optional[str] = None,
         language: Optional[str] = "fa",
+        prompt: Optional[str] = None,
     ) -> str:
         result = await self.transcribe_detailed(
-            file_content, model=model, language=language
+            file_content, model=model, language=language, prompt=prompt
         )
         return result.text
 

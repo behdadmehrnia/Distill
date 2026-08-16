@@ -132,12 +132,6 @@ def test_dissimilar_hops_do_not_erase_earlier_speech():
     texts = " ".join(s.text for s in segments)
     assert "بودجه" in texts
     assert "حرف بزنه" in texts
-    # Must not be a single segment spanning 0→74s with only the late text
-    assert not (
-        len(segments) == 1
-        and segments[0].start_ms == 0
-        and "بودجه" not in segments[0].text
-    )
 
 
 def test_collapse_internal_repeats_helper():
@@ -516,6 +510,16 @@ def test_gate_drops_whisper_music_hallucination():
         result = gate_stt_text(junk, language="fa")
         assert not result.accepted, junk
         assert "whisper_boilerplate" in result.reasons
+
+
+def test_gate_drops_whisper_instruction_prompt_echo():
+    from api.meeting.review import gate_stt_text, is_stt_prompt_echo
+
+    leaked = "از ساختن بی‌معنی، تکرار بی‌جا، و ترجمه به انگلیسی خودداری کن."
+    assert is_stt_prompt_echo(leaked)
+    result = gate_stt_text(leaked, language="fa")
+    assert not result.accepted
+    assert "whisper_boilerplate" in result.reasons
 
 
 def test_music_hop_does_not_wipe_good_pending(tmp_path, store):

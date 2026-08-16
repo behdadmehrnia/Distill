@@ -367,7 +367,9 @@ class MeetingSession:
             )
         return abs_words
 
-    async def _transcribe_with_retry(self, audio: np.ndarray, language: str):
+    async def _transcribe_with_retry(
+        self, audio: np.ndarray, language: str, prompt: Optional[str] = None
+    ):
         """Call STT with exponential backoff; return None if all attempts fail."""
         retries = self._stt_retry_count()
         last_exc: Optional[Exception] = None
@@ -376,9 +378,20 @@ class MeetingSession:
             t0 = time.perf_counter()
             try:
                 if detailed is not None:
-                    result = await detailed(audio, language=language)
+                    try:
+                        result = await detailed(
+                            audio, language=language, prompt=prompt
+                        )
+                    except TypeError:
+                        result = await detailed(audio, language=language)
                 else:
-                    text = await self.stt.transcribe(audio, language=language)
+                    kwargs: Dict[str, Any] = {"language": language}
+                    if prompt:
+                        kwargs["prompt"] = prompt
+                    try:
+                        text = await self.stt.transcribe(audio, **kwargs)
+                    except TypeError:
+                        text = await self.stt.transcribe(audio, language=language)
                     from api.providers.stt import STTResult
 
                     result = STTResult(text=text, words=[])
@@ -406,6 +419,15 @@ class MeetingSession:
         await self._emit({"type": "error", "message": f"STT error: {last_exc}"})
         return None
 
+    def _stt_context_prompt(self) -> Optional[str]:
+        """Previous accepted transcript — Whisper's intended `prompt` usage."""
+        if not self._pending_stt:
+            return None
+        text = (self._pending_stt[-1][2] or "").strip()
+        if len(text) < 8:
+            return None
+        return text[-240:]
+
     async def _stt_worker(self) -> None:
         while True:
             chunk = await self._stt_queue.get()
@@ -414,7 +436,9 @@ class MeetingSession:
                 break
             try:
                 lang = str(self.tuning.get("stt_language") or "fa")
-                result = await self._transcribe_with_retry(chunk.audio, lang)
+                result = await self._transcribe_with_retry(
+                    chunk.audio, lang, prompt=self._stt_context_prompt()
+                )
                 if result is None:
                     continue
                 raw = (result.text or "").strip()
@@ -793,7 +817,13 @@ class MeetingSession:
             nonlocal done
             async with sem:
                 lang = str(self.tuning.get("stt_language") or "fa")
-                result = await self._transcribe_with_retry(chunk.audio, lang)
+                ctx = None
+                async with results_lock:
+                    if stt_results:
+                        ctx = (stt_results[-1][2] or "").strip()[-240:] or None
+                result = await self._transcribe_with_retry(
+                    chunk.audio, lang, prompt=ctx
+                )
                 if result is None:
                     async with results_lock:
                         done += 1

@@ -260,6 +260,16 @@ _WHISPER_BOILERPLATE = frozenset(
 _EVENT_TAG_RE = re.compile(r"[\(\[【][^\)\]】]*[\)\]】]")
 _BOILERPLATE_STRIP_RE = re.compile(r"[\(\)\[\]【】♪♫\.\،\,\s_\-]+")
 
+# Old Whisper "system instruction" prompt that Groq often transcribes verbatim.
+_STT_PROMPT_ECHO_NEEDLES = (
+    "از ساختن متن بی‌معنی",
+    "تکرار بی‌جا",
+    "ترجمه به انگلیسی خودداری",
+    "این یک جلسه کاری به زبان فارسی است",
+    "گفتار را دقیق و روان پیاده‌سازی کن",
+    "کلمات انگلیسی را فقط اگر واقعاً گفته شدند",
+)
+
 
 def localize_nonspeech_events(text: str) -> str:
     """Translate English ASR event tags like (cough)/(Sigh) to Persian."""
@@ -279,6 +289,19 @@ def _boilerplate_key(text: str) -> str:
     return " ".join(t.split())
 
 
+def is_stt_prompt_echo(text: str) -> bool:
+    """True when ASR repeated the old instruction prompt instead of speech."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    key = _boilerplate_key(raw)
+    for needle in _STT_PROMPT_ECHO_NEEDLES:
+        nkey = _boilerplate_key(needle)
+        if nkey and (nkey in key or key in nkey):
+            return True
+    return False
+
+
 def is_whisper_boilerplate(text: str) -> bool:
     """
     True for Whisper junk that is only a non-speech label / YouTube boilerplate.
@@ -289,6 +312,8 @@ def is_whisper_boilerplate(text: str) -> bool:
     raw = (text or "").strip()
     if not raw:
         return False
+    if is_stt_prompt_echo(raw):
+        return True
     key = _boilerplate_key(raw)
     if key in _WHISPER_BOILERPLATE:
         return True
