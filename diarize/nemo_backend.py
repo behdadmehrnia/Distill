@@ -53,6 +53,90 @@ logger = logging.getLogger("diarize.nemo")
 # Meeting-domain defaults aligned with NeMo diar_infer_meeting.yaml
 _DEFAULT_VAD = "vad_multilingual_marblenet"
 _DEFAULT_SPK = "titanet_large"
+_LOCAL_VAD = (
+    Path(__file__).resolve().parent
+    / "models"
+    / "nemo"
+    / "frame_vad_multilingual_marblenet_v2.0.nemo"
+)
+_LOCAL_SPK = (
+    Path(__file__).resolve().parent
+    / "models"
+    / "nemo"
+    / "speakerverification_en_titanet_large.nemo"
+)
+_CLUSTERING_PATCHED = False
+
+
+def _patch_torch_tensor_format() -> None:
+    """Torch 2.13 refuses '{0:0.4f}'.format(tensor); NeMo 2.0 still does that."""
+    import torch
+
+    if getattr(torch.Tensor, "_distill_format_patched", False):
+        return
+
+    orig = torch.Tensor.__format__
+
+    def _format(self: Any, spec: str) -> str:  # type: ignore[override]
+        try:
+            return orig(self, spec)
+        except TypeError:
+            val = self.detach().cpu().reshape(-1)
+            if val.numel() == 0:
+                raise
+            return format(float(val[0].item()), spec)
+
+    torch.Tensor.__format__ = _format  # type: ignore[method-assign]
+    torch.Tensor._distill_format_patched = True  # type: ignore[attr-defined]
+
+
+def _adapt_frame_vad(vad_model: Any) -> None:
+    """Collapse Frame-VAD [B, T, 2] logits to segment-VAD [B, 2] for ClusteringDiarizer."""
+    import torch
+
+    if getattr(vad_model, "_distill_frame_adapted", False):
+        return
+    orig_fwd = vad_model.forward
+
+    def forward(*args: Any, **kwargs: Any) -> Any:
+        out = orig_fwd(*args, **kwargs)
+        if torch.is_tensor(out) and out.ndim == 3:
+            # Pick the most speech-like frame so ClusteringDiarizer's windowed
+            # VAD still sees speech on short windows (mean-pool was all silence).
+            idx = out[..., 1].argmax(dim=1)
+            batch = torch.arange(out.size(0), device=out.device)
+            out = out[batch, idx]
+        return out
+
+    vad_model.forward = forward
+    vad_model._distill_frame_adapted = True
+
+
+def _patch_clustering_diarizer(ClusteringDiarizer: Any) -> None:
+    global _CLUSTERING_PATCHED
+    if _CLUSTERING_PATCHED:
+        return
+    orig_init_vad = ClusteringDiarizer._init_vad_model
+
+    def _init_vad_local(self: Any) -> None:
+        model_path = str(self._cfg.diarizer.vad.model_path)
+        if model_path.endswith(".nemo"):
+            from nemo.collections.asr.models import EncDecClassificationModel
+
+            self._vad_model = EncDecClassificationModel.restore_from(
+                model_path,
+                map_location=self._cfg.device,
+                strict=False,
+            )
+            logger.info("VAD model loaded locally from %s", model_path)
+            self._vad_window_length_in_sec = self._vad_params.window_length_in_sec
+            self._vad_shift_length_in_sec = self._vad_params.shift_length_in_sec
+            self.has_vad_model = True
+            return
+        return orig_init_vad(self)
+
+    ClusteringDiarizer._init_vad_model = _init_vad_local
+    _CLUSTERING_PATCHED = True
 
 
 def _device() -> str:
@@ -76,18 +160,25 @@ def _build_cfg(
     out_dir: str,
     min_speakers: Optional[int],
     max_speakers: Optional[int],
+    external_vad_manifest: Optional[str] = None,
 ) -> Any:
     from omegaconf import OmegaConf
 
-    vad_model = (os.getenv("NEMO_VAD_MODEL") or _DEFAULT_VAD).strip()
-    spk_model = (os.getenv("NEMO_SPK_MODEL") or _DEFAULT_SPK).strip()
+    vad_model = (os.getenv("NEMO_VAD_MODEL") or "").strip()
+    spk_model = (os.getenv("NEMO_SPK_MODEL") or "").strip()
+    if not vad_model:
+        vad_model = str(_LOCAL_VAD) if _LOCAL_VAD.is_file() else _DEFAULT_VAD
+    if not spk_model:
+        spk_model = str(_LOCAL_SPK) if _LOCAL_SPK.is_file() else _DEFAULT_SPK
+    if external_vad_manifest:
+        vad_model = None
     max_spk = int(max_speakers or os.getenv("NEMO_MAX_SPEAKERS") or 8)
     min_spk = int(min_speakers or 1)
     oracle_num = min_spk == max_spk and min_spk > 0
 
     cfg_dict: Dict[str, Any] = {
         "name": "DistillNeMoClusteringDiarizer",
-        "num_workers": 1,
+        "num_workers": 0,
         "sample_rate": 16000,
         "batch_size": 64,
         "device": _device(),
@@ -100,14 +191,14 @@ def _build_cfg(
             "ignore_overlap": True,
             "vad": {
                 "model_path": vad_model,
-                "external_vad_manifest": None,
+                "external_vad_manifest": external_vad_manifest,
                 "parameters": {
                     "window_length_in_sec": 0.15,
                     "shift_length_in_sec": 0.01,
                     "smoothing": "median",
                     "overlap": 0.5,
-                    "onset": 0.1,
-                    "offset": 0.1,
+                    "onset": 0.05,
+                    "offset": 0.05,
                     "pad_onset": 0.1,
                     "pad_offset": -0.05,
                     "min_duration_on": 0.2,
@@ -232,12 +323,14 @@ class NeMoDiarizer:
             out_dir = work / "out"
             out_dir.mkdir(parents=True, exist_ok=True)
 
+            uniq_id = Path(audio_path).stem
             meta = {
                 "audio_filepath": str(Path(audio_path).resolve()),
                 "offset": 0,
                 "duration": None,
                 "label": "infer",
                 "text": "-",
+                "uniq_id": uniq_id,
                 "num_speakers": (
                     int(min_speakers)
                     if min_speakers is not None
@@ -252,16 +345,38 @@ class NeMoDiarizer:
                 json.dump(meta, fp)
                 fp.write("\n")
 
+            import soundfile as sf
+
+            duration = float(sf.info(audio_path).duration)
+            vad_manifest = work / "external_vad.json"
+            with vad_manifest.open("w", encoding="utf-8") as fp:
+                json.dump(
+                    {
+                        "audio_filepath": str(Path(audio_path).resolve()),
+                        "offset": 0.0,
+                        "duration": duration,
+                        "label": "UNK",
+                        "uniq_id": uniq_id,
+                    },
+                    fp,
+                )
+                fp.write("\n")
+
             cfg = _build_cfg(
                 str(manifest),
                 str(out_dir),
                 min_speakers,
                 max_speakers,
+                external_vad_manifest=str(vad_manifest),
             )
             # sample_rate is informational; NeMo resamples internally as needed
             _ = sample_rate
 
+            _patch_torch_tensor_format()
+            _patch_clustering_diarizer(ClusteringDiarizer)
             model = ClusteringDiarizer(cfg=cfg)
+            if getattr(model, "_vad_model", None) is not None:
+                _adapt_frame_vad(model._vad_model)
             try:
                 import torch
 
