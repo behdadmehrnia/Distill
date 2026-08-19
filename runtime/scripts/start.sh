@@ -6,6 +6,7 @@
 #   ./runtime/scripts/start.sh              # docker compose GPU/full stack
 #   ./runtime/scripts/start.sh --native     # three local processes
 #   ./runtime/scripts/start.sh --audio      # STT + diarize only
+#   ./runtime/scripts/start.sh --llm        # vLLM only (keep existing STT/diarize)
 #   ./runtime/scripts/start.sh --cpu        # diarize (compose cpu profile)
 #   ./runtime/scripts/start.sh --no-wait    # do not block on model ready
 set -euo pipefail
@@ -16,6 +17,7 @@ ROOT_DIR="$(cd "$RUNTIME_DIR/.." && pwd)"
 
 MODE="docker"
 PROFILE="full"
+COMPOSE_SERVICES=()
 NATIVE=0
 WAIT=1
 
@@ -23,6 +25,7 @@ for arg in "$@"; do
   case "$arg" in
     --native) NATIVE=1; MODE="native" ;;
     --audio) PROFILE="audio" ;;
+    --llm) PROFILE="full"; COMPOSE_SERVICES=(llm) ;;
     --cpu) PROFILE="cpu" ;;
     --full) PROFILE="full" ;;
     --no-wait) WAIT=0 ;;
@@ -84,20 +87,23 @@ if [[ "$NATIVE" -eq 1 ]]; then
     echo "  vLLM pid $(cat "$LOG_DIR/vllm.pid")"
   fi
 
-  if [[ "$PROFILE" != "cpu" ]]; then
+  if [[ "${COMPOSE_SERVICES[*]-}" != "llm" && "$PROFILE" != "cpu" ]]; then
     nohup "$SCRIPT_DIR/run_stt.sh" >"$LOG_DIR/stt.log" 2>&1 &
     echo $! >"$LOG_DIR/stt.pid"
     echo "  STT  pid $(cat "$LOG_DIR/stt.pid")"
   fi
 
-  nohup "$SCRIPT_DIR/run_diarize.sh" >"$LOG_DIR/diarize.log" 2>&1 &
-  echo $! >"$LOG_DIR/diarize.pid"
-  echo "  Diarize pid $(cat "$LOG_DIR/diarize.pid")"
+  if [[ "${COMPOSE_SERVICES[*]-}" != "llm" ]]; then
+    nohup "$SCRIPT_DIR/run_diarize.sh" >"$LOG_DIR/diarize.log" 2>&1 &
+    echo $! >"$LOG_DIR/diarize.pid"
+    echo "  Diarize pid $(cat "$LOG_DIR/diarize.pid")"
+  fi
 
   write_distill_env_hint
   if [[ "$WAIT" -eq 1 ]]; then
     wait_args=()
     [[ "$PROFILE" == "audio" ]] && wait_args+=(--audio)
+    [[ "${COMPOSE_SERVICES[*]-}" == "llm" ]] && wait_args+=(--llm)
     [[ "$PROFILE" == "cpu" ]] && wait_args+=(--diarize)
     "$SCRIPT_DIR/wait_ready.sh" "${wait_args[@]+"${wait_args[@]}"}"
   else
@@ -118,13 +124,14 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 cd "$RUNTIME_DIR"
-echo "[docker] profile=$PROFILE"
-docker compose --profile "$PROFILE" up -d --build
+echo "[docker] profile=$PROFILE${COMPOSE_SERVICES[*]:+ services=${COMPOSE_SERVICES[*]}}"
+docker compose --profile "$PROFILE" up -d --build "${COMPOSE_SERVICES[@]+"${COMPOSE_SERVICES[@]}"}"
 
 write_distill_env_hint
 if [[ "$WAIT" -eq 1 ]]; then
   wait_args=()
   [[ "$PROFILE" == "audio" ]] && wait_args+=(--audio)
+  [[ "${COMPOSE_SERVICES[*]-}" == "llm" ]] && wait_args+=(--llm)
   [[ "$PROFILE" == "cpu" ]] && wait_args+=(--diarize)
   "$SCRIPT_DIR/wait_ready.sh" "${wait_args[@]+"${wait_args[@]}"}"
 else

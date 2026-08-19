@@ -10,10 +10,12 @@
 
 services:
   llm:
-    image: vllm/vllm-openai:v0.8.5
+    # v0.8.5 has no sm_120 kernels (RTX 5090). New CLI also dropped --disable-log-requests.
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
     container_name: distill-llm
     restart: unless-stopped
     runtime: nvidia
+    ipc: host
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
@@ -23,16 +25,21 @@ services:
       - "127.0.0.1:${VLLM_PORT:-8001}:8000"
     volumes:
       - hf_cache:/root/.cache/huggingface
-    command: >
-      --model ${LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}
-      --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.45}
-      --max-model-len ${VLLM_MAX_MODEL_LEN:-8192}
-      --max-num-seqs ${VLLM_MAX_NUM_SEQS:-8}
-      --dtype auto
-      --trust-remote-code
-      --host 0.0.0.0
-      --port 8000
-      --disable-log-requests
+    command:
+      - ${LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}
+      - --gpu-memory-utilization
+      - ${VLLM_GPU_MEMORY_UTILIZATION:-0.45}
+      - --max-model-len
+      - ${VLLM_MAX_MODEL_LEN:-8192}
+      - --max-num-seqs
+      - ${VLLM_MAX_NUM_SEQS:-8}
+      - --dtype
+      - auto
+      - --trust-remote-code
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
     deploy:
       resources:
         reservations:
@@ -54,6 +61,7 @@ services:
       dockerfile: Dockerfile
     container_name: distill-stt
     restart: unless-stopped
+    runtime: nvidia
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}

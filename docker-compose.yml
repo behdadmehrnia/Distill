@@ -1,10 +1,13 @@
+# API container must reach runtime sidecars (STT/diarize/LLM). When the API runs
+# in Docker, use service hostnames in root .env (see .env.example). Start runtime
+# first: cd runtime && ./scripts/start.sh
 services:
   distill:
     build: .
     image: distill:latest
     container_name: distill
     ports:
-      - "${MEETING_PORT:-8000}:8000"
+      - "127.0.0.1:${MEETING_PORT:-8000}:8000"
     env_file:
       - .env
     environment:
@@ -17,7 +20,15 @@ services:
       # Named volume survives image rebuild/redeploy: DB, uploads, audio,
       # STT cache, and HuggingFace/torch model caches under /app/data
       - distill-data:/app/data
+    networks:
+      - default
+      - runtime
     restart: unless-stopped
+
+networks:
+  runtime:
+    external: true
+    name: runtime_default
 
 volumes:
   distill-data:
