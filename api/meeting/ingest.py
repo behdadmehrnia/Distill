@@ -75,14 +75,52 @@ class AudioIngest:
         return out
 
     @staticmethod
+    def _load_wav(path: str, target_sr: int) -> Tuple[np.ndarray, int]:
+        with wave.open(path, "rb") as wf:
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            frames = wf.readframes(wf.getnframes())
+        if sampwidth != 2:
+            raise ValueError(f"unsupported WAV sample width: {sampwidth}")
+        samples = np.frombuffer(frames, dtype=np.int16)
+        if n_channels > 1:
+            samples = samples.reshape(-1, n_channels).mean(axis=1).astype(np.int16)
+        audio = samples.astype(np.float32) / 32768.0
+        if framerate != target_sr and len(audio) > 0:
+            duration = len(audio) / framerate
+            target_len = max(1, int(round(duration * target_sr)))
+            x_old = np.linspace(0.0, 1.0, num=len(audio), endpoint=False)
+            x_new = np.linspace(0.0, 1.0, num=target_len, endpoint=False)
+            audio = np.interp(x_new, x_old, audio).astype(np.float32)
+        return audio, target_sr
+
+    @staticmethod
     def load_audio_file(path: str, target_sr: int = 16000) -> Tuple[np.ndarray, int]:
         """Load audio file as float32 mono at target_sr."""
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            raise ValueError("empty or missing audio file")
+
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".wav":
+            try:
+                return AudioIngest._load_wav(path, target_sr)
+            except wave.Error as exc:
+                raise ValueError(f"invalid WAV file: {exc}") from exc
+
         try:
             from pydub import AudioSegment
+            from pydub.exceptions import CouldntDecodeError
         except ImportError as exc:
             raise ImportError("pydub is required to load audio files") from exc
 
-        segment = AudioSegment.from_file(path)
+        try:
+            segment = AudioSegment.from_file(path)
+        except CouldntDecodeError as exc:
+            raise ValueError(
+                "could not decode audio file; it may be corrupt, truncated, "
+                "or an unsupported format"
+            ) from exc
         segment = segment.set_channels(1).set_frame_rate(target_sr).set_sample_width(2)
         samples = np.array(segment.get_array_of_samples(), dtype=np.int16)
         audio = samples.astype(np.float32) / 32768.0

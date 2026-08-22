@@ -373,6 +373,21 @@ def test_websocket_disconnect_auto_stops_recording(tmp_path):
         client.post(f"/meetings/{meeting_id}/stop")
 
 
+def test_upload_rejects_invalid_audio(tmp_path):
+    with _make_client(tmp_path) as client:
+        created = client.post("/meetings", json={"title": "آپلود", "start": False})
+        meeting_id = created.json()["id"]
+        resp = client.post(
+            f"/meetings/{meeting_id}/upload",
+            files={"file": ("bad.mp3", b"not-an-mp3", "audio/mpeg")},
+        )
+        assert resp.status_code == 400
+        assert "decode" in resp.json()["detail"].lower()
+
+        meeting = client.get(f"/meetings/{meeting_id}")
+        assert meeting.json()["status"] == "created"
+
+
 def test_orphaned_recording_status_allows_restart(tmp_path):
     """Stale DB status=recording with no live capture must not block /start."""
     from api.meeting.models import MeetingStatus

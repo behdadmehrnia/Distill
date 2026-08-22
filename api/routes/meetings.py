@@ -525,7 +525,12 @@ async def upload_audio(
             out.write(chunk)
 
     logger.info("Uploaded %s (%d bytes) for meeting %s", dest, size, meeting_id)
-    segments = await session.process_uploaded_file(dest)
+    if size == 0:
+        raise HTTPException(status_code=400, detail="empty audio")
+    try:
+        segments = await session.process_uploaded_file(dest)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "meeting_id": meeting_id,
         "audio_path": dest,

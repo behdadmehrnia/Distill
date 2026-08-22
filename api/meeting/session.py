@@ -758,6 +758,8 @@ class MeetingSession:
     async def process_uploaded_file(self, path: str) -> List[TranscriptSegment]:
         """Offline path: load file → diarize → windowed STT → align → store."""
         self._active_tuning = dict(self.tuning)
+        self.ingest.load_from_file(path)
+
         self.record.status = MeetingStatus.PROCESSING
         self.record.started_at = time.time()
         self.store.save_meeting(self.record)
@@ -777,8 +779,6 @@ class MeetingSession:
                     ),
                 }
             )
-
-        self.ingest.load_from_file(path)
         out_path = self.ingest.audio_path or os.path.join(
             "./data/audio", f"{self.meeting_id}.wav"
         )

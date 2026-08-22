@@ -169,6 +169,24 @@ def test_quality_gate_drops_hallucination():
     assert result.action == "drop"
 
 
+def test_load_audio_file_rejects_empty_and_corrupt(tmp_path):
+    from api.meeting.ingest import AudioIngest
+
+    missing = tmp_path / "missing.wav"
+    with pytest.raises(ValueError, match="empty or missing"):
+        AudioIngest.load_audio_file(str(missing))
+
+    empty = tmp_path / "empty.mp3"
+    empty.write_bytes(b"")
+    with pytest.raises(ValueError, match="empty or missing"):
+        AudioIngest.load_audio_file(str(empty))
+
+    corrupt = tmp_path / "bad.mp3"
+    corrupt.write_bytes(b"not-an-mp3")
+    with pytest.raises(ValueError, match="could not decode"):
+        AudioIngest.load_audio_file(str(corrupt))
+
+
 @pytest.mark.asyncio
 async def test_upload_path_stores_segments(store, tmp_path):
     sr = 16000
