@@ -388,6 +388,19 @@ def test_upload_rejects_invalid_audio(tmp_path):
         assert meeting.json()["status"] == "created"
 
 
+def test_upload_rejects_empty_body(tmp_path):
+    with _make_client(tmp_path) as client:
+        created = client.post("/meetings", json={"title": "آپلود", "start": False})
+        meeting_id = created.json()["id"]
+        resp = client.post(
+            f"/meetings/{meeting_id}/upload",
+            files={"file": ("empty.mp3", b"", "audio/mpeg")},
+        )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "خالی" in detail or "ناقص" in detail
+
+
 def test_orphaned_recording_status_allows_restart(tmp_path):
     """Stale DB status=recording with no live capture must not block /start."""
     from api.meeting.models import MeetingStatus

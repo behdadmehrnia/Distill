@@ -515,18 +515,28 @@ async def upload_audio(
 
     filename = file.filename or "upload.wav"
     dest = str(settings.upload_dir / f"{meeting_id}_{os.path.basename(filename)}")
-    size = 0
+    data = await file.read()
+    size = len(data)
+    if size == 0:
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > 0:
+            detail = "فایل در مسیر آپلود به سرور ناقص رسید"
+        else:
+            detail = "فایل صوتی خالی است"
+        logger.warning(
+            "Empty upload for meeting %s (filename=%s content-type=%s content-length=%s)",
+            meeting_id,
+            filename,
+            file.content_type,
+            content_length,
+        )
+        raise HTTPException(status_code=400, detail=detail)
+
+    os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
     with open(dest, "wb") as out:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            out.write(chunk)
+        out.write(data)
 
     logger.info("Uploaded %s (%d bytes) for meeting %s", dest, size, meeting_id)
-    if size == 0:
-        raise HTTPException(status_code=400, detail="empty audio")
     try:
         segments = await session.process_uploaded_file(dest)
     except ValueError as exc:

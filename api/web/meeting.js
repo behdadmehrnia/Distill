@@ -3304,16 +3304,34 @@ class DistillClient {
       alert("ابتدا یک فایل صوتی انتخاب کنید");
       return;
     }
+    if (!file.size) {
+      alert("فایل انتخاب‌شده خالی است. اگر فایل در iCloud یا Google Drive است، ابتدا آن را دانلود کنید.");
+      return;
+    }
     const title = this.requireMeetingTitle();
     if (!title) return;
     try {
+      this.setStatus("processing", "آماده‌سازی فایل…");
+      let buffer;
+      try {
+        buffer = await file.arrayBuffer();
+      } catch (readErr) {
+        console.error(readErr);
+        throw new Error("خواندن فایل صوتی ناموفق بود. دوباره فایل را انتخاب کنید.");
+      }
+      if (!buffer.byteLength) {
+        throw new Error("فایل صوتی خالی است");
+      }
+
       this.setStatus("processing", "آپلود و پیاده‌سازی…");
       const created = await fetch("/meetings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title, start: false }),
       });
-      if (!created.ok) throw new Error(await created.text());
+      if (!created.ok) {
+        throw new Error(this.formatErrorDetail(await created.text()) || "ایجاد جلسه ناموفق بود");
+      }
       const meeting = await created.json();
       this.meetingId = meeting.id;
       this.meetingStatus = meeting.status || "stopped";
@@ -3323,15 +3341,25 @@ class DistillClient {
       this.setSessionUrl(meeting.id);
       this.clearTimeline(true);
 
-      await this.connectWebSocket(meeting.id);
+      const wsPromise = this.connectWebSocket(meeting.id).catch((err) => {
+        console.warn("upload progress websocket unavailable", err);
+        return null;
+      });
 
       const form = new FormData();
-      form.append("file", file, file.name);
+      form.append(
+        "file",
+        new Blob([buffer], { type: file.type || "application/octet-stream" }),
+        file.name || "upload.wav",
+      );
       const res = await fetch(`/meetings/${this.meetingId}/upload`, {
         method: "POST",
         body: form,
       });
-      if (!res.ok) throw new Error(await res.text());
+      await wsPromise;
+      if (!res.ok) {
+        throw new Error(this.formatErrorDetail(await res.text()) || `آپلود ناموفق (کد ${res.status})`);
+      }
       const data = await res.json();
       this.meetingStatus = "stopped";
       this.setHasRecording(true);
