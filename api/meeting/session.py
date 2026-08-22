@@ -56,6 +56,7 @@ class MeetingSession:
         audio_dir: str = "./data/audio",
         on_event: Optional[EventCallback] = None,
         tuning: Optional[Dict[str, Any]] = None,
+        upload_denoise_enabled: bool = True,
     ):
         self.record = record
         self.store = store
@@ -66,6 +67,7 @@ class MeetingSession:
         self.diarize_every_ms = diarize_every_ms
         self.on_event = on_event
         self.tuning = tuning if tuning is not None else {}
+        self.upload_denoise_enabled = upload_denoise_enabled
 
         os.makedirs(audio_dir, exist_ok=True)
         audio_path = os.path.join(audio_dir, f"{record.id}.wav")
@@ -867,6 +869,20 @@ class MeetingSession:
 
             await asyncio.to_thread(self.ingest.load_from_file, path)
             self._check_cancelled()
+
+            if self.upload_denoise_enabled:
+                from api.audio.denoise import denoise_upload_audio
+
+                await self._emit_phase("enhance_audio")
+                denoise_result = await asyncio.to_thread(
+                    denoise_upload_audio,
+                    self.ingest.get_buffer(),
+                    self.sample_rate,
+                    enabled=True,
+                )
+                if denoise_result.applied:
+                    self.ingest.replace_buffer(denoise_result.audio)
+
             if self.diarizer.backend not in {"pyannote", "nemo"}:
                 await self._emit(
                     {

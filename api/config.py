@@ -63,6 +63,7 @@ class Settings:
     diarization_endpoint: str | None = None
     diarization_timeout_s: float = 120.0
     diarization_allow_fallback: bool | None = None
+    upload_denoise_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -82,6 +83,9 @@ class Settings:
         else:
             # None → SpeakerDiarizer defaults (no fallback when sidecar is set)
             diarization_allow_fallback = None
+
+        denoise_raw = (_env_str("AUDIO_DENOISE_UPLOAD") or "1").strip().lower()
+        upload_denoise_enabled = denoise_raw not in {"0", "false", "no", "off"}
 
         return cls(
             host=_env_str("MEETING_HOST", "0.0.0.0") or "0.0.0.0",
@@ -110,6 +114,7 @@ class Settings:
             diarization_endpoint=_env_str("DIARIZATION_ENDPOINT"),
             diarization_timeout_s=diarization_timeout_s,
             diarization_allow_fallback=diarization_allow_fallback,
+            upload_denoise_enabled=upload_denoise_enabled,
         )
 
     def ensure_dirs(self) -> None:

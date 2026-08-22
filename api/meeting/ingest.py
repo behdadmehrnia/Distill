@@ -147,6 +147,13 @@ class AudioIngest:
         self._total_samples = len(audio)
         self._cached = audio
 
+    def replace_buffer(self, audio: np.ndarray) -> None:
+        """Replace the in-memory PCM buffer (e.g. after upload denoise)."""
+        arr = np.asarray(audio, dtype=np.float32).reshape(-1)
+        self._chunks = [arr.copy()]
+        self._total_samples = len(arr)
+        self._cached = arr.copy()
+
     def clear(self) -> None:
         """Drop in-memory PCM; leave audio_path unchanged for reuse on save."""
         self._chunks = []

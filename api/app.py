@@ -81,6 +81,7 @@ def _build_services(settings: Settings) -> Dict[str, Any]:
         hop_ms=int(tuning["hop_ms"]),
         diarize_every_ms=int(tuning["diarize_every_ms"]),
         audio_dir=str(settings.audio_dir),
+        upload_denoise_enabled=settings.upload_denoise_enabled,
     )
     return {
         "settings": settings,

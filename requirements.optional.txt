@@ -10,3 +10,5 @@
 
 soundfile
 pyannote.audio==3.3.2
+# Upload-path noise suppression (DeepFilterNet3 via ONNX — no torch required)
+deepfilter-stream>=0.1.0,<1

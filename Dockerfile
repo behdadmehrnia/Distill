@@ -50,6 +50,17 @@ RUN pip install --upgrade pip \
 COPY api/ ./api/
 COPY main.py .
 
+ARG DEEPFILTER_STREAM_TAG=model-dfn3-512-v1
+RUN mkdir -p /app/share/deepfilter-stream/dfn3-512-v1 \
+    && curl -fsSL -o /app/share/deepfilter-stream/dfn3-512-v1/denoiser_model.onnx \
+        "https://github.com/wuxuedaifu/deepfilter-stream/releases/download/${DEEPFILTER_STREAM_TAG}/denoiser_model.onnx" \
+    && curl -fsSL -o /app/share/deepfilter-stream/dfn3-512-v1/initial_states.npz \
+        "https://github.com/wuxuedaifu/deepfilter-stream/releases/download/${DEEPFILTER_STREAM_TAG}/initial_states.npz" \
+    && curl -fsSL -o /app/share/deepfilter-stream/dfn3-512-v1/meta.json \
+        "https://github.com/wuxuedaifu/deepfilter-stream/releases/download/${DEEPFILTER_STREAM_TAG}/meta.json"
+
+ENV DEEPFILTER_STREAM_MODEL_DIR=/app/share/deepfilter-stream/dfn3-512-v1
+
 RUN mkdir -p \
         /app/data/uploads \
         /app/data/audio \
