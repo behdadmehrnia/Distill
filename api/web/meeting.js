@@ -121,6 +121,8 @@ class DistillClient {
     this.minutesDecisionsEl = document.getElementById("minutesDecisions");
     this.minutesSaveStatus = document.getElementById("minutesSaveStatus");
     this.reopenReviewBtn = document.getElementById("reopenReviewBtn");
+    this.showUploadMode = document.getElementById("showUploadMode");
+    this.showLiveMode = document.getElementById("showLiveMode");
 
     this.bindEvents();
     this.loadAudioDevices();
@@ -174,6 +176,7 @@ class DistillClient {
     this.meetingStatus = meeting.status || "stopped";
     this.speakerMap = { ...(meeting.speaker_map || {}) };
     this.setHasRecording(!!meeting.has_recording);
+    this.setCaptureSource(this.inferCaptureSource(meeting));
     if (this.meetingTitle) {
       this.meetingTitle.value = meeting.title || "";
       this.meetingTitle.classList.remove("field-invalid");
@@ -259,13 +262,11 @@ class DistillClient {
 
     this.liveSource = document.getElementById("liveSource");
     this.uploadSource = document.getElementById("uploadSource");
-    const showUpload = document.getElementById("showUploadMode");
-    const showLive = document.getElementById("showLiveMode");
-    if (showUpload) {
-      showUpload.addEventListener("click", () => this.setSourceMode("upload"));
+    if (this.showUploadMode) {
+      this.showUploadMode.addEventListener("click", () => this.setSourceMode("upload"));
     }
-    if (showLive) {
-      showLive.addEventListener("click", () => this.setSourceMode("live"));
+    if (this.showLiveMode) {
+      this.showLiveMode.addEventListener("click", () => this.setSourceMode("live"));
     }
 
     if (this.statusChip) {
@@ -530,9 +531,70 @@ class DistillClient {
   }
 
   setSourceMode(mode) {
+    if (this._captureSource && this._captureSource !== mode) return;
     const isUpload = mode === "upload";
     if (this.liveSource) this.liveSource.classList.toggle("hidden", isUpload);
     if (this.uploadSource) this.uploadSource.classList.toggle("hidden", !isUpload);
+  }
+
+  inferCaptureSource(meeting) {
+    if (!meeting) return null;
+    const status = meeting.status || "";
+    if (status === "recording") return "live";
+    const path = String(meeting.audio_path || "");
+    if (path) {
+      const base = path.split("/").pop() || "";
+      if (base.startsWith(`${meeting.id}_`)) return "upload";
+      if (base === `${meeting.id}.wav` || path.includes("/uploads/")) {
+        return path.includes("/uploads/") ? "upload" : "live";
+      }
+      if (path.includes("/audio/")) return "live";
+    }
+    return null;
+  }
+
+  setCaptureSource(source) {
+    this._captureSource = source || null;
+    if (this._captureSource === "live") {
+      this.setSourceMode("live");
+    } else if (this._captureSource === "upload") {
+      this.setSourceMode("upload");
+    }
+    this.applyCaptureSourceLock();
+  }
+
+  applyCaptureSourceLock() {
+    const source = this._captureSource;
+    const liveLocked = source === "upload";
+    const uploadLocked = source === "live";
+    const uploadBusy =
+      source === "upload" &&
+      (this.meetingStatus === "processing" || this._reviewWizardOpen);
+
+    if (this.showUploadMode) {
+      this.showUploadMode.disabled = liveLocked;
+      this.showUploadMode.classList.toggle("is-locked", liveLocked);
+    }
+    if (this.showLiveMode) {
+      this.showLiveMode.disabled = uploadLocked;
+      this.showLiveMode.classList.toggle("is-locked", uploadLocked);
+    }
+
+    if (source === "live") {
+      if (this.liveSource) this.liveSource.classList.remove("hidden", "capture-locked");
+      if (this.uploadSource) this.uploadSource.classList.add("hidden");
+    } else if (source === "upload") {
+      if (this.uploadSource) this.uploadSource.classList.remove("hidden", "capture-locked");
+      if (this.liveSource) this.liveSource.classList.add("hidden");
+    } else {
+      if (this.liveSource) this.liveSource.classList.remove("capture-locked");
+      if (this.uploadSource) this.uploadSource.classList.remove("capture-locked");
+    }
+
+    if (this.startBtn) this.startBtn.disabled = liveLocked;
+    if (this.audioInput) this.audioInput.disabled = liveLocked;
+    if (this.uploadBtn) this.uploadBtn.disabled = uploadLocked || uploadBusy;
+    if (this.uploadFile) this.uploadFile.disabled = uploadLocked || uploadBusy;
   }
 
   async loadAudioDevices() {
@@ -885,6 +947,7 @@ class DistillClient {
   }
 
   async startLive() {
+    if (this._captureSource === "upload") return;
     let startedOnServer = false;
     try {
       const title = this.requireMeetingTitle();
@@ -930,7 +993,7 @@ class DistillClient {
       this.meetingId = meeting.id;
       this.meetingStatus = "recording";
       this.speakerMap = { ...(meeting.speaker_map || {}) };
-      this._captureSource = "live";
+      this.setCaptureSource("live");
       this.setHasRecording(false);
       this.setMeetingMeta();
       this.setSessionUrl(meeting.id);
@@ -1791,6 +1854,7 @@ class DistillClient {
     this.reviewWizard.classList.remove("hidden");
     this.resetProcessingPhases();
     this.setReviewStep("processing");
+    this.applyCaptureSourceLock();
   }
 
   closeReviewWizard(force = false) {
@@ -1798,6 +1862,7 @@ class DistillClient {
     this._reviewWizardOpen = false;
     this.stopSpeakerSamplePlayback();
     if (this.reviewWizard) this.reviewWizard.classList.add("hidden");
+    this.applyCaptureSourceLock();
   }
 
   setReviewStep(step) {
@@ -3301,6 +3366,7 @@ class DistillClient {
   }
 
   async uploadRecording() {
+    if (this._captureSource === "live") return;
     const file = this.uploadFile.files && this.uploadFile.files[0];
     if (!file) {
       alert("ابتدا یک فایل صوتی انتخاب کنید");
@@ -3312,9 +3378,15 @@ class DistillClient {
     }
     const title = this.requireMeetingTitle();
     if (!title) return;
+
+    this.setCaptureSource("upload");
+    this.meetingStatus = "processing";
+    this.openReviewWizard();
+    this.applyCaptureSourceLock();
+    this.setStatus("processing", "آماده‌سازی فایل…");
+
     let processError = null;
     try {
-      this.setStatus("processing", "آماده‌سازی فایل…");
       let buffer;
       try {
         buffer = await file.arrayBuffer();
@@ -3338,12 +3410,10 @@ class DistillClient {
       this.meetingId = meeting.id;
       this.meetingStatus = "processing";
       this.speakerMap = { ...(meeting.speaker_map || {}) };
-      this._captureSource = "upload";
       this.setMeetingMeta();
       this.setSessionUrl(meeting.id);
       this.clearTimeline(true);
-      this.openReviewWizard();
-      this.updateReviewAvailability();
+      this.applyCaptureSourceLock();
 
       await this.connectWebSocket(meeting.id);
       this.setStatus("processing", "آپلود و پیاده‌سازی…");
@@ -3418,6 +3488,9 @@ class DistillClient {
         } catch (_) {}
       }
       alert(`آپلود ناموفق: ${err.message}`);
+      if (!this.meetingId) {
+        this.setCaptureSource(null);
+      }
       this.closeReviewWizard(true);
     } finally {
       if (this.ws) {
@@ -3426,6 +3499,7 @@ class DistillClient {
         } catch (_) {}
         this.ws = null;
       }
+      this.applyCaptureSourceLock();
       this.updateReviewAvailability();
     }
   }

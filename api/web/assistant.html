@@ -272,6 +272,23 @@
         color: #f9d423;
       }
 
+      .source-switch:disabled,
+      .source-switch.is-locked {
+        display: none;
+      }
+
+      .source-mode.capture-locked {
+        opacity: 0.45;
+        pointer-events: none;
+      }
+
+      .source-mode .btn:disabled,
+      .source-mode input:disabled,
+      .source-mode select:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
       .record-block {
         display: flex;
         flex-direction: column;
