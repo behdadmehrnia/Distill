@@ -80,6 +80,20 @@ if (-not $Native) {
     if ($Cpu) { $profile = "cpu" }
     Push-Location $RuntimeDir
     try {
+        $whisperDev = if ($env:WHISPER_DEVICE) { $env:WHISPER_DEVICE } else { "cuda" }
+        $diarizeDev = if ($env:DIARIZATION_DEVICE) { $env:DIARIZATION_DEVICE } else { "cpu" }
+        if ($Cpu) { $diarizeDev = "cpu" }
+        function Get-DockerfileForDevice([string]$Device, [string]$Profile) {
+            $d = $Device.ToLower()
+            if ($d -eq "auto") {
+                if ($Profile -eq "cpu") { $d = "cpu" } else { $d = "cuda" }
+            }
+            if ($d -in @("cuda", "gpu")) { "Dockerfile.cuda" } else { "Dockerfile" }
+        }
+        $env:STT_DOCKERFILE = Get-DockerfileForDevice $whisperDev $profile
+        $env:DIARIZE_DOCKERFILE = Get-DockerfileForDevice $diarizeDev $profile
+        Write-Host "[compose] STT -> $($env:STT_DOCKERFILE) (WHISPER_DEVICE=$whisperDev)"
+        Write-Host "[compose] Diarize -> $($env:DIARIZE_DOCKERFILE) (DIARIZATION_DEVICE=$diarizeDev)"
         docker compose --profile $profile up -d --build
     } finally {
         Pop-Location

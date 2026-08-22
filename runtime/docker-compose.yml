@@ -58,7 +58,7 @@ services:
   stt:
     build:
       context: ./stt
-      dockerfile: Dockerfile
+      dockerfile: ${STT_DOCKERFILE:-Dockerfile}
     container_name: distill-stt
     restart: unless-stopped
     runtime: nvidia
@@ -95,19 +95,21 @@ services:
   diarize:
     build:
       context: ../diarize
-      dockerfile: Dockerfile
+      dockerfile: ${DIARIZE_DOCKERFILE:-Dockerfile}
       args:
         # Set INSTALL_NEMO=1 when you have no HF_TOKEN / offline pyannote weights
         INSTALL_NEMO: ${INSTALL_NEMO:-0}
     container_name: distill-diarize
     restart: unless-stopped
+    runtime: nvidia
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
       DIARIZE_HOST: "0.0.0.0"
       DIARIZE_PORT: "8090"
       DIARIZATION_BACKEND: ${DIARIZATION_BACKEND:-auto}
-      DIARIZATION_DEVICE: ${DIARIZATION_DEVICE:-cpu}
+      DIARIZATION_DEVICE: ${DIARIZATION_DEVICE:-cuda}
+      CUDA_VISIBLE_DEVICES: ${DIARIZE_GPU:-0}
       PYANNOTE_MODEL: ${DIARIZATION_MODEL:-pyannote/speaker-diarization-3.1}
       HF_HOME: /data/hf_cache
       TORCH_HOME: /data/torch_cache
@@ -118,6 +120,13 @@ services:
       - hf_cache:/data/hf_cache
       - torch_cache:/data/torch_cache
       - ../diarize/models:/app/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     healthcheck:
       test:
         [
@@ -127,8 +136,8 @@ services:
           "import urllib.request,json,sys; d=json.load(urllib.request.urlopen('http://127.0.0.1:8090/health')); sys.exit(0 if d.get('ready') else 1)",
         ]
       interval: 20s
-      timeout: 8s
-      retries: 12
+      timeout: 120s
+      retries: 30
       start_period: 180s
     profiles: ["gpu", "full", "audio", "cpu"]
 

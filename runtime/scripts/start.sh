@@ -52,6 +52,12 @@ if [[ -f "$RUNTIME_DIR/.env" ]]; then
   set -a; source "$RUNTIME_DIR/.env"; set +a
 fi
 
+# Map WHISPER_DEVICE / DIARIZATION_DEVICE → Dockerfile.cuda | Dockerfile
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/resolve_dockerfiles.sh" "$PROFILE"
+echo "[docker] STT image: $STT_DOCKERFILE (WHISPER_DEVICE=${WHISPER_DEVICE:-cuda})"
+echo "[docker] Diarize image: $DIARIZE_DOCKERFILE (DIARIZATION_DEVICE=${DIARIZATION_DEVICE:-cpu})"
+
 # Best-effort weight download (does not fail startup if NeMo/offline later)
 "$SCRIPT_DIR/download_models.sh" || true
 

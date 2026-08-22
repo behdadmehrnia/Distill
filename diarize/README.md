@@ -56,11 +56,18 @@ curl -F file=@meeting.wav -F min_speakers=1 -F max_speakers=4 \
 ## Docker
 
 ```bash
-# pyannote (offline weights mounted from models/)
+# pyannote (offline weights mounted from models/) — CPU image
 docker compose up -d --build
 
-# NeMo without HF:
+# NeMo without HF (CPU):
 docker build --build-arg INSTALL_NEMO=1 -t distill-diarize .
+
+# GPU server (CUDA PyTorch + NeMo):
+docker build -f Dockerfile.cuda --build-arg INSTALL_NEMO=1 -t distill-diarize:cuda .
 ```
+
+Runtime stack (`../runtime/docker-compose.yml`) picks the image from
+`DIARIZATION_DEVICE` automatically (`cuda` → `Dockerfile.cuda`, `cpu` →
+`Dockerfile`). Use `./runtime/scripts/start.sh` or `./runtime/scripts/compose.sh`.
 
 See `../runtime/README.md` for the full LLM + STT + diarize stack.
