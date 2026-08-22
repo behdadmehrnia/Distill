@@ -787,8 +787,10 @@ class MeetingSession:
             self.record.audio_path = out_path
         except Exception:
             self.record.audio_path = path
+        await self._emit_phase("save_audio")
 
         audio = self.ingest.get_buffer()
+        await self._emit_phase("diarize")
         intervals = await asyncio.to_thread(self.diarizer.diarize, audio, self.sample_rate)
         self._speaker_intervals = intervals
         self.store.replace_speaker_intervals(self.meeting_id, intervals)
@@ -807,6 +809,7 @@ class MeetingSession:
         if rem is not None:
             windows.append(rem)
 
+        await self._emit_phase("flush_stt")
         stt_results: List[PendingStt] = []
         results_lock = asyncio.Lock()
         sem = asyncio.Semaphore(self._stt_workers())
@@ -885,6 +888,7 @@ class MeetingSession:
             similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
             min_time_overlap_ratio=float(self.tuning.get("dedupe_time_overlap", 0.35)),
         )
+        await self._emit_phase("review")
         try:
             segments = await self._finalize_review(segments)
         except Exception as exc:

@@ -1109,7 +1109,9 @@ class DistillClient {
 
       this.ws.onopen = () => {
         this.isConnected = true;
-        this.setStatus("connected", "متصل");
+        if (this.meetingStatus !== "processing") {
+          this.setStatus("connected", "متصل");
+        }
         resolve();
       };
       this.ws.onmessage = (ev) => this.onWsMessage(ev);
@@ -3310,6 +3312,7 @@ class DistillClient {
     }
     const title = this.requireMeetingTitle();
     if (!title) return;
+    let processError = null;
     try {
       this.setStatus("processing", "آماده‌سازی فایل…");
       let buffer;
@@ -3323,7 +3326,6 @@ class DistillClient {
         throw new Error("فایل صوتی خالی است");
       }
 
-      this.setStatus("processing", "آپلود و پیاده‌سازی…");
       const created = await fetch("/meetings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3334,17 +3336,17 @@ class DistillClient {
       }
       const meeting = await created.json();
       this.meetingId = meeting.id;
-      this.meetingStatus = meeting.status || "stopped";
+      this.meetingStatus = "processing";
       this.speakerMap = { ...(meeting.speaker_map || {}) };
       this._captureSource = "upload";
       this.setMeetingMeta();
       this.setSessionUrl(meeting.id);
       this.clearTimeline(true);
+      this.openReviewWizard();
+      this.updateReviewAvailability();
 
-      const wsPromise = this.connectWebSocket(meeting.id).catch((err) => {
-        console.warn("upload progress websocket unavailable", err);
-        return null;
-      });
+      await this.connectWebSocket(meeting.id);
+      this.setStatus("processing", "آپلود و پیاده‌سازی…");
 
       const form = new FormData();
       form.append(
@@ -3352,24 +3354,71 @@ class DistillClient {
         new Blob([buffer], { type: file.type || "application/octet-stream" }),
         file.name || "upload.wav",
       );
-      const res = await fetch(`/meetings/${this.meetingId}/upload`, {
-        method: "POST",
-        body: form,
-      });
-      await wsPromise;
+      const res = await this.fetchWithTimeout(
+        `/meetings/${this.meetingId}/upload`,
+        { method: "POST", body: form },
+        600000,
+      );
       if (!res.ok) {
-        throw new Error(this.formatErrorDetail(await res.text()) || `آپلود ناموفق (کد ${res.status})`);
+        const detail = this.formatErrorDetail(await res.text());
+        processError =
+          `آپلود یا پردازش فایل ناموفق بود (کد ${res.status}).` +
+          (detail ? `\n\n${detail}` : "");
+        throw new Error(processError);
       }
       const data = await res.json();
       this.meetingStatus = "stopped";
       this.setHasRecording(true);
       this.replaceTranscript(data.segments || []);
-      this.setStatus("connected", "پیاده‌سازی فایل انجام شد");
+      try {
+        await this.refreshTranscript();
+      } catch (err) {
+        console.error(err);
+      }
+      if (!this.hasTranscriptContext()) {
+        this.setStatus("connected", "پیاده‌سازی انجام شد — متنی دریافت نشد");
+        if (!processError) {
+          processError =
+            "پردازش فایل تمام شد، ولی متن قابل‌اتکایی از STT به‌دست نیامد.\n\n" +
+            "می‌توانید نام‌گذاری را ادامه دهید یا فایل دیگری را امتحان کنید.";
+        }
+      } else {
+        this.setStatus("connected", "پیاده‌سازی فایل انجام شد");
+      }
       await this.refreshDebug();
+
+      if (processError) {
+        await this.showPrompt({
+          title: "خطا در پردازش فایل",
+          message: processError,
+          okLabel: "متوجه شدم",
+        });
+      }
+
+      try {
+        await this.advanceToSpeakerStep();
+      } catch (err) {
+        console.error(err);
+        await this.showPrompt({
+          title: "خطا در ادامه ویزارد",
+          message: `پردازش انجام شد، ولی ورود به مرحله بعد ناموفق بود.\n\n${
+            err.message || err
+          }`,
+        });
+      }
     } catch (err) {
       console.error(err);
       this.setStatus("disconnected", "خطا در آپلود");
+      if (this._reviewWizardOpen && this.meetingId) {
+        try {
+          await this.refreshTranscript().catch(() => {});
+          this.meetingStatus = "stopped";
+          await this.advanceToSpeakerStep();
+          return;
+        } catch (_) {}
+      }
       alert(`آپلود ناموفق: ${err.message}`);
+      this.closeReviewWizard(true);
     } finally {
       if (this.ws) {
         try {
@@ -3377,6 +3426,7 @@ class DistillClient {
         } catch (_) {}
         this.ws = null;
       }
+      this.updateReviewAvailability();
     }
   }
 
