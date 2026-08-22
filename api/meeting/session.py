@@ -35,6 +35,10 @@ _STT_BACKOFF_S = (0.5, 1.0, 2.0)
 PendingStt = Tuple[int, int, str, Optional[Sequence[Tuple[str, int, int]]]]
 
 
+class ProcessingCancelled(Exception):
+    """Raised when a client aborts an in-flight processing pipeline."""
+
+
 class MeetingSession:
     """Owns continuous capture, windowed STT, and periodic diarization for one meeting."""
 
@@ -88,6 +92,8 @@ class MeetingSession:
         self._pending_stt: List[PendingStt] = []
         self._running = False
         self._stopping = False
+        self._cancel_requested = False
+        self._pipeline_active = False
 
         # Debug counters
         self._stt_calls = 0
@@ -295,6 +301,55 @@ class MeetingSession:
         self.record.stopped_at = None
         self.record.status = MeetingStatus.CREATED
         self.store.save_meeting(self.record)
+
+    def request_cancel(self) -> None:
+        self._cancel_requested = True
+
+    def _check_cancelled(self) -> None:
+        if self._cancel_requested:
+            raise ProcessingCancelled()
+
+    async def _halt_workers(self) -> None:
+        if not self._worker_tasks:
+            return
+        n_workers = len(self._worker_tasks) or 1
+        for _ in range(n_workers):
+            try:
+                await self._stt_queue.put(None)
+            except Exception:
+                pass
+        for task in self._worker_tasks:
+            task.cancel()
+        await asyncio.gather(*self._worker_tasks, return_exceptions=True)
+        self._worker_tasks = []
+
+    async def _apply_cancel(self, extra_paths: Optional[Sequence[str]] = None) -> MeetingRecord:
+        self._running = False
+        await self._halt_workers()
+        self._stopping = False
+        self._cancel_requested = False
+        self._pipeline_active = False
+        for path in extra_paths or ():
+            try:
+                if path and os.path.isfile(path):
+                    os.remove(path)
+            except OSError as exc:
+                logger.warning("Could not remove cancelled upload %s: %s", path, exc)
+        self.clear_for_rerecord()
+        await self._emit(
+            {
+                "type": "status",
+                "status": MeetingStatus.CREATED.value,
+                "meeting_id": self.meeting_id,
+                "cancelled": True,
+            }
+        )
+        return self.record
+
+    async def cancel(self, extra_paths: Optional[Sequence[str]] = None) -> MeetingRecord:
+        self.request_cancel()
+        async with self._stop_lock:
+            return await self._apply_cancel(extra_paths=extra_paths)
 
     async def start(self, *, reset: bool = False) -> None:
         if self._running:
@@ -697,6 +752,8 @@ class MeetingSession:
         async with self._stop_lock:
             if self._stopping or not self._running:
                 return self.record
+            if self._cancel_requested:
+                return await self._apply_cancel()
             self._stopping = True
             try:
                 self.record.status = MeetingStatus.PROCESSING
@@ -709,6 +766,7 @@ class MeetingSession:
                     }
                 )
 
+                self._check_cancelled()
                 await self._emit_phase("save_audio")
                 try:
                     path = self.ingest.save_wav()
@@ -717,6 +775,7 @@ class MeetingSession:
                 except Exception as exc:
                     logger.warning("Could not save WAV: %s", exc)
 
+                self._check_cancelled()
                 await self._emit_phase("flush_stt")
                 rem = self.chunker.flush_remainder(self.ingest.get_buffer())
                 if rem is not None:
@@ -726,9 +785,13 @@ class MeetingSession:
                 for _ in range(n_workers):
                     await self._stt_queue.put(None)
                 if self._worker_tasks:
+                    if self._cancel_requested:
+                        await self._halt_workers()
+                        return await self._apply_cancel()
                     await asyncio.gather(*self._worker_tasks)
                 self._worker_tasks = []
 
+                self._check_cancelled()
                 await self._emit_phase("diarize")
                 try:
                     await self._refresh_diarization(
@@ -749,6 +812,8 @@ class MeetingSession:
                     }
                 )
                 return self.record
+            except ProcessingCancelled:
+                return await self._apply_cancel()
             except BaseException:
                 # Cancellation mid-stop must not sticky-lock the session forever.
                 if self._running:
@@ -757,78 +822,117 @@ class MeetingSession:
 
     async def process_uploaded_file(self, path: str) -> List[TranscriptSegment]:
         """Offline path: load file → diarize → windowed STT → align → store."""
-        self._active_tuning = dict(self.tuning)
-        self.ingest.load_from_file(path)
+        self._pipeline_active = True
+        self._cancel_requested = False
+        try:
+            self._active_tuning = dict(self.tuning)
+            self.ingest.load_from_file(path)
 
-        self.record.status = MeetingStatus.PROCESSING
-        self.record.started_at = time.time()
-        self.store.save_meeting(self.record)
-        await self._emit(
-            {"type": "status", "status": "processing", "meeting_id": self.meeting_id}
-        )
-        if self.diarizer.backend not in {"pyannote", "nemo"}:
+            self.record.status = MeetingStatus.PROCESSING
+            self.record.started_at = time.time()
+            self.store.save_meeting(self.record)
+            await self._emit(
+                {"type": "status", "status": "processing", "meeting_id": self.meeting_id}
+            )
+            if self.diarizer.backend not in {"pyannote", "nemo"}:
+                await self._emit(
+                    {
+                        "type": "warning",
+                        "meeting_id": self.meeting_id,
+                        "code": "fallback_diarization",
+                        "message": (
+                            "Diarization backend is fallback (not pyannote/nemo). "
+                            "Speaker labels may be unreliable on a single mic. "
+                            "Start runtime diarize and set DIARIZATION_ENDPOINT."
+                        ),
+                    }
+                )
+            out_path = self.ingest.audio_path or os.path.join(
+                "./data/audio", f"{self.meeting_id}.wav"
+            )
+            try:
+                self.ingest.save_wav(out_path)
+                self.record.audio_path = out_path
+            except Exception:
+                self.record.audio_path = path
+            self._check_cancelled()
+            await self._emit_phase("save_audio")
+
+            audio = self.ingest.get_buffer()
+            self._check_cancelled()
+            await self._emit_phase("diarize")
+            intervals = await asyncio.to_thread(
+                self.diarizer.diarize, audio, self.sample_rate
+            )
+            self._check_cancelled()
+            self._speaker_intervals = intervals
+            self.store.replace_speaker_intervals(self.meeting_id, intervals)
             await self._emit(
                 {
-                    "type": "warning",
-                    "meeting_id": self.meeting_id,
-                    "code": "fallback_diarization",
-                    "message": (
-                        "Diarization backend is fallback (not pyannote/nemo). "
-                        "Speaker labels may be unreliable on a single mic. "
-                        "Start runtime diarize and set DIARIZATION_ENDPOINT."
-                    ),
+                    "type": "speaker_update",
+                    "backend": self.diarizer.backend,
+                    "intervals": [iv.to_dict() for iv in intervals],
+                    "overlaps": [iv.to_dict() for iv in intervals if iv.is_overlap],
                 }
             )
-        out_path = self.ingest.audio_path or os.path.join(
-            "./data/audio", f"{self.meeting_id}.wav"
-        )
-        try:
-            self.ingest.save_wav(out_path)
-            self.record.audio_path = out_path
-        except Exception:
-            self.record.audio_path = path
-        await self._emit_phase("save_audio")
 
-        audio = self.ingest.get_buffer()
-        await self._emit_phase("diarize")
-        intervals = await asyncio.to_thread(self.diarizer.diarize, audio, self.sample_rate)
-        self._speaker_intervals = intervals
-        self.store.replace_speaker_intervals(self.meeting_id, intervals)
-        await self._emit(
-            {
-                "type": "speaker_update",
-                "backend": self.diarizer.backend,
-                "intervals": [iv.to_dict() for iv in intervals],
-                "overlaps": [iv.to_dict() for iv in intervals if iv.is_overlap],
-            }
-        )
+            self.chunker.reset()
+            windows = self.chunker.pop_ready_chunks(audio)
+            rem = self.chunker.flush_remainder(audio)
+            if rem is not None:
+                windows.append(rem)
 
-        self.chunker.reset()
-        windows = self.chunker.pop_ready_chunks(audio)
-        rem = self.chunker.flush_remainder(audio)
-        if rem is not None:
-            windows.append(rem)
+            self._check_cancelled()
+            await self._emit_phase("flush_stt")
+            stt_results: List[PendingStt] = []
+            results_lock = asyncio.Lock()
+            sem = asyncio.Semaphore(self._stt_workers())
+            total = len(windows)
+            done = 0
 
-        await self._emit_phase("flush_stt")
-        stt_results: List[PendingStt] = []
-        results_lock = asyncio.Lock()
-        sem = asyncio.Semaphore(self._stt_workers())
-        total = len(windows)
-        done = 0
-
-        async def _process_chunk(chunk) -> None:
-            nonlocal done
-            async with sem:
-                lang = str(self.tuning.get("stt_language") or "fa")
-                ctx = None
-                async with results_lock:
-                    if stt_results:
-                        ctx = (stt_results[-1][2] or "").strip()[-240:] or None
-                result = await self._transcribe_with_retry(
-                    chunk.audio, lang, prompt=ctx
-                )
-                if result is None:
+            async def _process_chunk(chunk) -> None:
+                nonlocal done
+                self._check_cancelled()
+                async with sem:
+                    self._check_cancelled()
+                    lang = str(self.tuning.get("stt_language") or "fa")
+                    ctx = None
                     async with results_lock:
+                        if stt_results:
+                            ctx = (stt_results[-1][2] or "").strip()[-240:] or None
+                    result = await self._transcribe_with_retry(
+                        chunk.audio, lang, prompt=ctx
+                    )
+                    self._check_cancelled()
+                    if result is None:
+                        async with results_lock:
+                            done += 1
+                            current = done
+                        await self._emit(
+                            {
+                                "type": "status",
+                                "status": "transcribing",
+                                "progress": {
+                                    "done": current,
+                                    "total": total,
+                                    "chunk": chunk.index,
+                                    "start_ms": chunk.start_ms,
+                                    "end_ms": chunk.end_ms,
+                                },
+                            }
+                        )
+                        return
+                    raw = (result.text or "").strip()
+                    text = await self._gate_stt_text(raw) if raw else None
+                    words = self._words_abs(chunk.start_ms, result) if text else None
+                    if words:
+                        self._stt_with_timings += 1
+                    async with results_lock:
+                        if text:
+                            stt_results.append(
+                                (chunk.start_ms, chunk.end_ms, text, words)
+                            )
+                            self._chunks_processed += 1
                         done += 1
                         current = done
                     await self._emit(
@@ -844,73 +948,56 @@ class MeetingSession:
                             },
                         }
                     )
-                    return
-                raw = (result.text or "").strip()
-                text = await self._gate_stt_text(raw) if raw else None
-                words = self._words_abs(chunk.start_ms, result) if text else None
-                if words:
-                    self._stt_with_timings += 1
-                async with results_lock:
-                    if text:
-                        stt_results.append(
-                            (chunk.start_ms, chunk.end_ms, text, words)
-                        )
-                        self._chunks_processed += 1
-                    done += 1
-                    current = done
-                await self._emit(
-                    {
-                        "type": "status",
-                        "status": "transcribing",
-                        "progress": {
-                            "done": current,
-                            "total": total,
-                            "chunk": chunk.index,
-                            "start_ms": chunk.start_ms,
-                            "end_ms": chunk.end_ms,
-                        },
-                    }
-                )
 
-        if windows:
-            await asyncio.gather(*[_process_chunk(c) for c in windows])
-        stt_results.sort(key=lambda x: x[0])
+            if windows:
+                await asyncio.gather(*[_process_chunk(c) for c in windows])
+            self._check_cancelled()
+            stt_results.sort(key=lambda x: x[0])
 
-        segments = align_stt_with_diarization(
-            self.meeting_id,
-            stt_results,
-            intervals,
-            provisional=False,
-            **self._align_kwargs(),
-        )
-        segments = dedupe_overlapping_transcripts(
-            segments,
-            similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
-            min_time_overlap_ratio=float(self.tuning.get("dedupe_time_overlap", 0.35)),
-        )
-        await self._emit_phase("review")
-        try:
-            segments = await self._finalize_review(segments)
-        except Exception as exc:
-            logger.exception(
-                "Finalize review failed on upload; keeping unpolished text: %s", exc
+            segments = align_stt_with_diarization(
+                self.meeting_id,
+                stt_results,
+                intervals,
+                provisional=False,
+                **self._align_kwargs(),
             )
-        self.store.replace_meeting_segments(self.meeting_id, segments)
-        await self._emit(
-            {
-                "type": "transcript",
-                "meeting_id": self.meeting_id,
-                "segments": [s.to_dict() for s in segments],
-            }
-        )
+            segments = dedupe_overlapping_transcripts(
+                segments,
+                similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
+                min_time_overlap_ratio=float(
+                    self.tuning.get("dedupe_time_overlap", 0.35)
+                ),
+            )
+            self._check_cancelled()
+            await self._emit_phase("review")
+            try:
+                segments = await self._finalize_review(segments)
+            except Exception as exc:
+                logger.exception(
+                    "Finalize review failed on upload; keeping unpolished text: %s", exc
+                )
+            self._check_cancelled()
+            self.store.replace_meeting_segments(self.meeting_id, segments)
+            await self._emit(
+                {
+                    "type": "transcript",
+                    "meeting_id": self.meeting_id,
+                    "segments": [s.to_dict() for s in segments],
+                }
+            )
 
-        self.record.status = MeetingStatus.STOPPED
-        self.record.stopped_at = time.time()
-        self.store.save_meeting(self.record)
-        await self._emit(
-            {"type": "status", "status": "stopped", "meeting_id": self.meeting_id}
-        )
-        return segments
+            self.record.status = MeetingStatus.STOPPED
+            self.record.stopped_at = time.time()
+            self.store.save_meeting(self.record)
+            await self._emit(
+                {"type": "status", "status": "stopped", "meeting_id": self.meeting_id}
+            )
+            return segments
+        except ProcessingCancelled:
+            await self._apply_cancel(extra_paths=[path])
+            raise
+        finally:
+            self._pipeline_active = False
 
 
 class MeetingManager:
@@ -984,19 +1071,43 @@ class MeetingManager:
         return self._sessions.get(meeting_id)
 
     def heal_orphaned_recording(self, record: MeetingRecord) -> MeetingRecord:
-        """Mark a non-live recording/processing meeting as stopped so clients can restart."""
+        """Reset stale recording/processing with no live worker to a clean created state."""
         if record.status not in (MeetingStatus.RECORDING, MeetingStatus.PROCESSING):
             return record
         live = self._sessions.get(record.id)
-        if live is not None and (live._running or live._stopping):
+        if live is not None and (
+            live._running or live._stopping or live._pipeline_active
+        ):
             return record
-        record.status = MeetingStatus.STOPPED
-        if record.stopped_at is None:
-            record.stopped_at = time.time()
+        return self._reset_cancelled_record(record)
+
+    def _reset_cancelled_record(self, record: MeetingRecord) -> MeetingRecord:
+        self.store.replace_meeting_segments(record.id, [])
+        self.store.replace_speaker_intervals(record.id, [])
+        self.store.delete_insights(record.id)
+        self.store.delete_minutes(record.id)
+        record.status = MeetingStatus.CREATED
+        record.started_at = None
+        record.stopped_at = None
         self.store.save_meeting(record)
-        if live is not None and live.record is not record:
+        live = self._sessions.get(record.id)
+        if live is not None:
             live.record.status = record.status
+            live.record.started_at = record.started_at
             live.record.stopped_at = record.stopped_at
+        return record
+
+    async def cancel_meeting(
+        self, meeting_id: str, extra_paths: Optional[Sequence[str]] = None
+    ) -> Optional[MeetingRecord]:
+        session = self._sessions.get(meeting_id)
+        if session:
+            return await session.cancel(extra_paths=extra_paths)
+        record = self.store.get_meeting(meeting_id)
+        if not record:
+            return None
+        if record.status in (MeetingStatus.RECORDING, MeetingStatus.PROCESSING):
+            return self._reset_cancelled_record(record)
         return record
 
     def get_or_restore(

@@ -340,8 +340,8 @@ def test_recording_endpoint_and_restart(tmp_path):
         assert stopped.status_code == 200
 
 
-def test_websocket_disconnect_auto_stops_recording(tmp_path):
-    """Closing the audio WS without POST /stop must not leave 'already recording'."""
+def test_websocket_disconnect_auto_cancels_recording(tmp_path):
+    """Closing the audio WS without POST /stop must cancel capture, not finish processing."""
     import time
 
     with _make_client(tmp_path) as client:
@@ -361,10 +361,10 @@ def test_websocket_disconnect_auto_stops_recording(tmp_path):
             meta = client.get(f"/meetings/{meeting_id}")
             assert meta.status_code == 200
             status = meta.json()["status"]
-            if status == "stopped":
+            if status == "created":
                 break
             time.sleep(0.05)
-        assert status == "stopped"
+        assert status == "created"
 
         again = client.post(f"/meetings/{meeting_id}/start", json={"reset": True})
         assert again.status_code == 200
@@ -401,6 +401,24 @@ def test_upload_rejects_empty_body(tmp_path):
         assert "خالی" in detail or "ناقص" in detail
 
 
+def test_cancel_resets_processing_meeting(tmp_path):
+    from api.meeting.models import MeetingStatus
+
+    with _make_client(tmp_path) as client:
+        created = client.post("/meetings", json={"title": "لغو", "start": False})
+        meeting_id = created.json()["id"]
+        meeting = client.app.state.manager.store.get_meeting(meeting_id)
+        meeting.status = MeetingStatus.PROCESSING
+        client.app.state.manager.store.save_meeting(meeting)
+
+        resp = client.post(f"/meetings/{meeting_id}/cancel")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "created"
+
+        again = client.get(f"/meetings/{meeting_id}")
+        assert again.json()["status"] == "created"
+
+
 def test_orphaned_recording_status_allows_restart(tmp_path):
     """Stale DB status=recording with no live capture must not block /start."""
     from api.meeting.models import MeetingStatus
@@ -415,7 +433,7 @@ def test_orphaned_recording_status_allows_restart(tmp_path):
 
         stuck = client.get(f"/meetings/{meeting_id}")
         assert stuck.status_code == 200
-        assert stuck.json()["status"] == "stopped"
+        assert stuck.json()["status"] == "created"
 
         started = client.post(f"/meetings/{meeting_id}/start", json={})
         assert started.status_code == 200

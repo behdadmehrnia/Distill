@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ from fastapi.responses import FileResponse, Response
 
 from api.meeting.ingest import AudioIngest
 from api.meeting.models import MeetingMinutes, MeetingStatus, MinutesDecision
+from api.meeting.session import ProcessingCancelled
 from api.realtime import broadcast
 
 logger = logging.getLogger(__name__)
@@ -443,7 +445,56 @@ async def stop_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
     session = request.app.state.manager.get_or_restore(meeting_id)
     if not session:
         raise HTTPException(status_code=404, detail="meeting not found")
-    record = await session.stop()
+
+    async def _watch_disconnect() -> None:
+        while True:
+            if await request.is_disconnected():
+                session.request_cancel()
+                return
+            await asyncio.sleep(0.25)
+
+    watch = asyncio.create_task(_watch_disconnect())
+    try:
+        record = await session.stop()
+    except ProcessingCancelled:
+        record = session.record
+        raise HTTPException(status_code=409, detail="processing cancelled") from None
+    except asyncio.CancelledError:
+        record = await session.cancel()
+        raise HTTPException(status_code=409, detail="processing cancelled") from None
+    finally:
+        watch.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watch
+
+    settings = request.app.state.settings
+    path = _resolve_recording_path(
+        meeting_id,
+        record.audio_path,
+        audio_dir=settings.audio_dir,
+        upload_dir=settings.upload_dir,
+    )
+    return _meeting_payload(record, has_recording=path is not None)
+
+
+@router.post("/meetings/{meeting_id}/cancel")
+async def cancel_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
+    manager = request.app.state.manager
+    if not manager.store.get_meeting(meeting_id):
+        raise HTTPException(status_code=404, detail="meeting not found")
+    record = await manager.cancel_meeting(meeting_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="meeting not found")
+    await broadcast(
+        request.app,
+        meeting_id,
+        {
+            "type": "status",
+            "status": record.status.value,
+            "meeting_id": meeting_id,
+            "cancelled": True,
+        },
+    )
     settings = request.app.state.settings
     path = _resolve_recording_path(
         meeting_id,
@@ -537,10 +588,28 @@ async def upload_audio(
         out.write(data)
 
     logger.info("Uploaded %s (%d bytes) for meeting %s", dest, size, meeting_id)
+
+    async def _watch_disconnect() -> None:
+        while True:
+            if await request.is_disconnected():
+                session.request_cancel()
+                return
+            await asyncio.sleep(0.25)
+
+    watch = asyncio.create_task(_watch_disconnect())
     try:
         segments = await session.process_uploaded_file(dest)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProcessingCancelled:
+        raise HTTPException(status_code=409, detail="processing cancelled") from None
+    except asyncio.CancelledError:
+        await session.cancel(extra_paths=[dest])
+        raise HTTPException(status_code=409, detail="processing cancelled") from None
+    finally:
+        watch.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watch
     return {
         "meeting_id": meeting_id,
         "audio_path": dest,
@@ -709,19 +778,21 @@ async def audio_ws(websocket: WebSocket, meeting_id: str) -> None:
         # Tab close / refresh never hits POST /stop. Finalize in a detached
         # task: awaiting stop() here is cancelled with the WebSocket ASGI task
         # and would leave the meeting stuck as processing/recording.
-        if not sockets and session._running:
+        if not sockets and (
+            session._running or session._stopping or session._pipeline_active
+        ):
             asyncio.create_task(
-                _auto_stop_after_disconnect(session, meeting_id),
-                name=f"auto-stop-{meeting_id}",
+                _auto_cancel_after_disconnect(session, meeting_id),
+                name=f"auto-cancel-{meeting_id}",
             )
 
 
-async def _auto_stop_after_disconnect(session, meeting_id: str) -> None:
+async def _auto_cancel_after_disconnect(session, meeting_id: str) -> None:
     try:
-        await session.stop()
+        await session.cancel()
     except Exception:
         logger.exception(
-            "Auto-stop after WebSocket disconnect failed for %s", meeting_id
+            "Auto-cancel after WebSocket disconnect failed for %s", meeting_id
         )
 
 

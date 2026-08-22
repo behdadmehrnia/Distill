@@ -83,6 +83,7 @@ class DistillClient {
     this._promptShowing = false;
     this._fallbackPromptShown = false;
     this._speakersContinueBusy = false;
+    this._processingAbortController = null;
 
     this.reviewWizard = document.getElementById("reviewWizard");
     this.reviewStepDots = this.reviewWizard
@@ -202,9 +203,45 @@ class DistillClient {
   onPageHide(ev) {
     // bfcache (back/forward) — page may return; do not finalize.
     if (ev && ev.persisted) return;
-    if (!this.isRecording || !this.meetingId) return;
-    const meetingId = this.meetingId;
+    if (!this.shouldCancelOnLeave()) return;
     this.isRecording = false;
+    this.cancelProcessingOnLeave();
+  }
+
+  shouldCancelOnLeave() {
+    return (
+      !!this.meetingId &&
+      (this.isRecording ||
+        this.meetingStatus === "processing" ||
+        !!this._processingAbortController)
+    );
+  }
+
+  startProcessingRequest() {
+    if (this._processingAbortController) {
+      try {
+        this._processingAbortController.abort();
+      } catch (_) {}
+    }
+    this._processingAbortController = new AbortController();
+    return this._processingAbortController.signal;
+  }
+
+  endProcessingRequest() {
+    this._processingAbortController = null;
+  }
+
+  isLeaveAbort(err) {
+    return !!(err && (err.name === "AbortError" || err.code === 20));
+  }
+
+  cancelProcessingOnLeave() {
+    if (!this.meetingId) return;
+    if (this._processingAbortController) {
+      try {
+        this._processingAbortController.abort();
+      } catch (_) {}
+    }
     try {
       if (this.ws) {
         this.ws.onclose = null;
@@ -213,8 +250,21 @@ class DistillClient {
     } catch (_) {}
     this.ws = null;
     try {
-      fetch(`/meetings/${meetingId}/stop`, { method: "POST", keepalive: true });
+      fetch(`/meetings/${this.meetingId}/cancel`, { method: "POST", keepalive: true });
     } catch (_) {}
+  }
+
+  mergeAbortSignals(...signals) {
+    const active = signals.filter(Boolean);
+    if (!active.length) return undefined;
+    if (typeof AbortSignal.any === "function") return AbortSignal.any(active);
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    active.forEach((signal) => {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
+    return controller.signal;
   }
 
   bindEvents() {
@@ -851,12 +901,14 @@ class DistillClient {
   }
 
   async fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    const timeoutController = new AbortController();
+    const timer = window.setTimeout(() => timeoutController.abort(), timeoutMs);
+    const signal = this.mergeAbortSignals(timeoutController.signal, options.signal);
     try {
-      const res = await fetch(url, { ...options, signal: controller.signal });
+      const res = await fetch(url, { ...options, signal });
       return res;
     } catch (err) {
+      if (this.isLeaveAbort(err)) throw err;
       if (err && (err.name === "AbortError" || err.code === 20)) {
         throw new Error(`پاسخی از سرور در ${Math.round(timeoutMs / 1000)} ثانیه نیامد`);
       }
@@ -1041,6 +1093,7 @@ class DistillClient {
   async stopLive() {
     const snapshotHadText = this.hasTranscriptContext();
     let processError = null;
+    const processingSignal = this.startProcessingRequest();
     try {
       this.isRecording = false;
       this.meetingStatus = "processing";
@@ -1059,9 +1112,16 @@ class DistillClient {
           // Cap wait: server polish has its own budget; don't hang the wizard forever.
           const stopRes = await this.fetchWithTimeout(
             `/meetings/${this.meetingId}/stop`,
-            { method: "POST" },
+            { method: "POST", signal: processingSignal },
             120000
           );
+          if (stopRes.status === 409) {
+            this.meetingStatus = "created";
+            this.closeReviewWizard(true);
+            this.setCaptureSource(null);
+            this.setStatus("connected", "پردازش لغو شد");
+            return;
+          }
           if (stopRes.ok) {
             try {
               stopped = await stopRes.json();
@@ -1074,6 +1134,7 @@ class DistillClient {
             console.error("stop failed", stopRes.status, detail);
           }
         } catch (stopErr) {
+          if (this.isLeaveAbort(stopErr)) return;
           console.error(stopErr);
           processError = `ارتباط با سرور هنگام توقف جلسه برقرار نشد.\n\n${
             stopErr.message || stopErr
@@ -1156,6 +1217,7 @@ class DistillClient {
         try { this.ws.close(); } catch (_) {}
         this.ws = null;
       }
+      this.endProcessingRequest();
       this.setRecordingControls({ recording: false });
       this.audioLevel.classList.add("hidden");
       this.stopTimer(false);
@@ -1277,6 +1339,14 @@ class DistillClient {
         }
       } else if (msg.type === "status") {
         if (msg.status) this.meetingStatus = msg.status;
+        if (msg.cancelled) {
+          this.closeReviewWizard(true);
+          this.setCaptureSource(null);
+          this.setStatus("connected", "پردازش لغو شد");
+          this.endProcessingRequest();
+          this.applyCaptureSourceLock();
+          return;
+        }
         if (msg.status === "processing") {
           this.setStatus("processing", "در حال پردازش");
           if (msg.phase) this.updateProcessingPhase(msg.phase);
@@ -3384,6 +3454,7 @@ class DistillClient {
     this.openReviewWizard();
     this.applyCaptureSourceLock();
     this.setStatus("processing", "آماده‌سازی فایل…");
+    const processingSignal = this.startProcessingRequest();
 
     let processError = null;
     try {
@@ -3426,9 +3497,16 @@ class DistillClient {
       );
       const res = await this.fetchWithTimeout(
         `/meetings/${this.meetingId}/upload`,
-        { method: "POST", body: form },
+        { method: "POST", body: form, signal: processingSignal },
         600000,
       );
+      if (res.status === 409) {
+        this.meetingStatus = "created";
+        this.closeReviewWizard(true);
+        this.setCaptureSource(null);
+        this.setStatus("connected", "پردازش لغو شد");
+        return;
+      }
       if (!res.ok) {
         const detail = this.formatErrorDetail(await res.text());
         processError =
@@ -3477,6 +3555,7 @@ class DistillClient {
         });
       }
     } catch (err) {
+      if (this.isLeaveAbort(err)) return;
       console.error(err);
       this.setStatus("disconnected", "خطا در آپلود");
       if (this._reviewWizardOpen && this.meetingId) {
@@ -3499,6 +3578,7 @@ class DistillClient {
         } catch (_) {}
         this.ws = null;
       }
+      this.endProcessingRequest();
       this.applyCaptureSourceLock();
       this.updateReviewAvailability();
     }
