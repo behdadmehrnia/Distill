@@ -15,7 +15,7 @@ from .aligner import (
 from .chunker import OverlappingChunker
 from .diarization import SpeakerDiarizer
 from .ingest import AudioIngest
-from .models import MeetingRecord, MeetingStatus, TranscriptSegment
+from .models import MeetingRecord, MeetingStatus, SpeakerInterval, TranscriptSegment
 from .review import (
     TranscriptReviewAgent,
     gate_stt_text,
@@ -820,20 +820,53 @@ class MeetingSession:
                     self._stopping = False
                 raise
 
+    async def _diarize_upload_audio(
+        self, audio: np.ndarray
+    ) -> List[SpeakerInterval]:
+        """Diarize uploaded audio; fall back to one speaker so STT can still run."""
+        await self._emit_phase("diarize")
+        try:
+            return await asyncio.to_thread(
+                self.diarizer.diarize, audio, self.sample_rate
+            )
+        except RuntimeError as exc:
+            logger.warning(
+                "Upload diarization unavailable (%s); using single-speaker span for STT",
+                exc,
+            )
+            await self._emit(
+                {
+                    "type": "warning",
+                    "meeting_id": self.meeting_id,
+                    "code": "diarization_unavailable",
+                    "message": (
+                        "سرویس تفکیک گوینده در دسترس نبود؛ پیاده‌سازی با یک گوینده "
+                        "ادامه می‌یابد. برای برچسب‌گذاری دقیق‌تر، runtime diarize را "
+                        "اجرا کنید (./runtime/scripts/start.sh)."
+                    ),
+                }
+            )
+            duration_ms = int(len(audio) * 1000 / self.sample_rate)
+            if duration_ms <= 0:
+                return []
+            return [SpeakerInterval("SPEAKER_00", 0, duration_ms, False)]
+
     async def process_uploaded_file(self, path: str) -> List[TranscriptSegment]:
         """Offline path: load file → diarize → windowed STT → align → store."""
         self._pipeline_active = True
         self._cancel_requested = False
         try:
             self._active_tuning = dict(self.tuning)
-            self.ingest.load_from_file(path)
-
             self.record.status = MeetingStatus.PROCESSING
             self.record.started_at = time.time()
             self.store.save_meeting(self.record)
             await self._emit(
                 {"type": "status", "status": "processing", "meeting_id": self.meeting_id}
             )
+            await self._emit_phase("save_audio")
+
+            await asyncio.to_thread(self.ingest.load_from_file, path)
+            self._check_cancelled()
             if self.diarizer.backend not in {"pyannote", "nemo"}:
                 await self._emit(
                     {
@@ -847,23 +880,17 @@ class MeetingSession:
                         ),
                     }
                 )
-            out_path = self.ingest.audio_path or os.path.join(
-                "./data/audio", f"{self.meeting_id}.wav"
-            )
+            out_path = os.path.join("./data/audio", f"{self.meeting_id}.wav")
             try:
-                self.ingest.save_wav(out_path)
+                await asyncio.to_thread(self.ingest.save_wav, out_path)
                 self.record.audio_path = out_path
             except Exception:
                 self.record.audio_path = path
+            self.store.save_meeting(self.record)
             self._check_cancelled()
-            await self._emit_phase("save_audio")
 
             audio = self.ingest.get_buffer()
-            self._check_cancelled()
-            await self._emit_phase("diarize")
-            intervals = await asyncio.to_thread(
-                self.diarizer.diarize, audio, self.sample_rate
-            )
+            intervals = await self._diarize_upload_audio(audio)
             self._check_cancelled()
             self._speaker_intervals = intervals
             self.store.replace_speaker_intervals(self.meeting_id, intervals)

@@ -622,12 +622,12 @@ class DistillClient {
       (this.meetingStatus === "processing" || this._reviewWizardOpen);
 
     if (this.showUploadMode) {
-      this.showUploadMode.disabled = liveLocked;
-      this.showUploadMode.classList.toggle("is-locked", liveLocked);
+      this.showUploadMode.disabled = uploadLocked;
+      this.showUploadMode.classList.toggle("is-locked", uploadLocked);
     }
     if (this.showLiveMode) {
-      this.showLiveMode.disabled = uploadLocked;
-      this.showLiveMode.classList.toggle("is-locked", uploadLocked);
+      this.showLiveMode.disabled = liveLocked;
+      this.showLiveMode.classList.toggle("is-locked", liveLocked);
     }
 
     if (source === "live") {
@@ -1339,6 +1339,7 @@ class DistillClient {
         }
       } else if (msg.type === "status") {
         if (msg.status) this.meetingStatus = msg.status;
+        if (msg.phase) this.updateProcessingPhase(msg.phase);
         if (msg.cancelled) {
           this.closeReviewWizard(true);
           this.setCaptureSource(null);
@@ -1349,12 +1350,24 @@ class DistillClient {
         }
         if (msg.status === "processing") {
           this.setStatus("processing", "در حال پردازش");
-          if (msg.phase) this.updateProcessingPhase(msg.phase);
+          if (msg.phase) {
+            this.updateProcessingPhase(msg.phase);
+            const phaseLabels = {
+              save_audio: "خواندن و ذخیره فایل صوتی…",
+              flush_stt: "پیاده‌سازی متن…",
+              diarize: "شناسایی سخنگوها…",
+              review: "بهبود نهایی متن…",
+            };
+            const label = phaseLabels[msg.phase];
+            if (label) this.setStatus("processing", label);
+          }
         }
         if (msg.status === "transcribing" && msg.progress) {
+          this.updateProcessingPhase("flush_stt");
           const p = msg.progress;
           const done = p.done != null ? p.done : p.chunk;
           const total = p.total != null ? p.total : "?";
+          this.updateProcessingPhase("flush_stt");
           this.setStatus("processing", `پیاده‌سازی ${done}/${total}`);
         }
         if (msg.status === "stopped") {
@@ -3453,6 +3466,7 @@ class DistillClient {
     this.meetingStatus = "processing";
     this.openReviewWizard();
     this.applyCaptureSourceLock();
+    this.updateProcessingPhase("save_audio");
     this.setStatus("processing", "آماده‌سازی فایل…");
     const processingSignal = this.startProcessingRequest();
 
@@ -3487,6 +3501,7 @@ class DistillClient {
       this.applyCaptureSourceLock();
 
       await this.connectWebSocket(meeting.id);
+      this.updateProcessingPhase("save_audio");
       this.setStatus("processing", "آپلود و پیاده‌سازی…");
 
       const form = new FormData();
@@ -3558,14 +3573,6 @@ class DistillClient {
       if (this.isLeaveAbort(err)) return;
       console.error(err);
       this.setStatus("disconnected", "خطا در آپلود");
-      if (this._reviewWizardOpen && this.meetingId) {
-        try {
-          await this.refreshTranscript().catch(() => {});
-          this.meetingStatus = "stopped";
-          await this.advanceToSpeakerStep();
-          return;
-        } catch (_) {}
-      }
       alert(`آپلود ناموفق: ${err.message}`);
       if (!this.meetingId) {
         this.setCaptureSource(null);

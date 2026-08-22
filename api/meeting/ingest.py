@@ -114,8 +114,21 @@ class AudioIngest:
         except ImportError as exc:
             raise ImportError("pydub is required to load audio files") from exc
 
+        format_hints = {
+            ".m4a": "mp4",
+            ".mp4": "mp4",
+            ".aac": "aac",
+            ".ogg": "ogg",
+            ".opus": "ogg",
+            ".mp3": "mp3",
+            ".flac": "flac",
+        }
+        load_kwargs: dict = {}
+        if ext in format_hints:
+            load_kwargs["format"] = format_hints[ext]
+
         try:
-            segment = AudioSegment.from_file(path)
+            segment = AudioSegment.from_file(path, **load_kwargs)
         except CouldntDecodeError as exc:
             raise ValueError(
                 "could not decode audio file; it may be corrupt, truncated, "
@@ -133,7 +146,6 @@ class AudioIngest:
         self._chunks = [audio]
         self._total_samples = len(audio)
         self._cached = audio
-        self.audio_path = path
 
     def clear(self) -> None:
         """Drop in-memory PCM; leave audio_path unchanged for reuse on save."""

@@ -6,6 +6,7 @@ import asyncio
 import wave
 from pathlib import Path
 from typing import List, Optional
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -221,6 +222,52 @@ async def test_upload_path_stores_segments(store, tmp_path):
     meeting = store.get_meeting(record.id)
     assert meeting is not None
     assert meeting.status.value == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_upload_continues_stt_when_diarization_unavailable(store, tmp_path):
+    sr = 16000
+    audio = _sine(sr, 10.0, 200.0, amp=0.12)
+    wav_path = _write_wav(tmp_path / "upload.wav", audio, sr)
+
+    stt = MockSTT(text="سلام این یک جلسه آزمایشی است")
+    record = MeetingRecord.create("upload-diarize-fail")
+    diarizer = SpeakerDiarizer(
+        sample_rate=sr,
+        remote_endpoint="http://127.0.0.1:8090",
+        allow_fallback=False,
+    )
+    session = MeetingSession(
+        record=record,
+        store=store,
+        stt_provider=stt,
+        diarizer=diarizer,
+        review_agent=None,
+        audio_dir=str(tmp_path / "audio"),
+        tuning=make_tuning(
+            {
+                "window_ms": 8000,
+                "hop_ms": 6000,
+                "stt_workers": 2,
+                "stt_review_mode": "heuristic",
+                "stt_retry_count": 1,
+            }
+        ),
+    )
+
+    with patch.object(
+        diarizer,
+        "diarize",
+        side_effect=RuntimeError(
+            "Quality diarization failed and DIARIZATION_ALLOW_FALLBACK=0"
+        ),
+    ):
+        segments = await session.process_uploaded_file(str(wav_path))
+
+    assert segments
+    assert all(s.text for s in segments)
+    assert session._speaker_intervals
+    assert session._speaker_intervals[0].speaker_id == "SPEAKER_00"
 
 
 @pytest.mark.asyncio
