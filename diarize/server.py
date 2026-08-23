@@ -63,6 +63,32 @@ def _resolve_local_pyannote_config() -> Optional[str]:
     return None
 
 
+def _cuda_kernels_usable() -> bool:
+    """True only if a tiny CUDA op succeeds (catches sm_120 + old cu124 wheels)."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+        major, minor = torch.cuda.get_device_capability(0)
+        arches = set(torch.cuda.get_arch_list() or [])
+        tag = f"sm_{major}{minor}"
+        if arches and tag not in arches and f"compute_{major}{minor}" not in arches:
+            logger.warning(
+                "CUDA device %s not in torch arch list %s — falling back to CPU",
+                tag,
+                sorted(arches),
+            )
+            return False
+        x = torch.zeros(1, device="cuda")
+        torch.cuda.synchronize()
+        del x
+        return True
+    except Exception as exc:
+        logger.warning("CUDA probe failed (%s) — falling back to CPU", exc)
+        return False
+
+
 def _pick_device():
     forced = (os.getenv("DIARIZATION_DEVICE") or "").strip().lower()
     try:
@@ -70,12 +96,17 @@ def _pick_device():
 
         if forced == "cpu":
             return torch.device("cpu")
-        if forced == "cuda" and torch.cuda.is_available():
-            return torch.device("cuda")
+        if forced == "cuda":
+            if _cuda_kernels_usable():
+                return torch.device("cuda")
+            logger.warning(
+                "DIARIZATION_DEVICE=cuda but kernels are unusable; using CPU"
+            )
+            return torch.device("cpu")
         if forced == "mps" and getattr(torch.backends, "mps", None):
             if torch.backends.mps.is_available():
                 return torch.device("mps")
-        if torch.cuda.is_available():
+        if _cuda_kernels_usable():
             return torch.device("cuda")
         if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
             return torch.device("mps")

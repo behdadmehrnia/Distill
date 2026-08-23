@@ -5,6 +5,7 @@ import logging
 import re
 from typing import List, Optional
 
+from .llm_budget import cap_completion_tokens
 from .models import MeetingInsights, TranscriptSegment
 
 logger = logging.getLogger(__name__)
@@ -128,7 +129,11 @@ class MeetingInsightsGenerator:
                 ),
             },
         ]
-        raw = await self.llm.complete(messages, temperature=0.2, max_tokens=2048)
+        raw = await self.llm.complete(
+            messages,
+            temperature=0.2,
+            max_tokens=cap_completion_tokens(messages, 2048),
+        )
         data = _parse_json_response(raw)
         summary = str(data.get("summary") or "").strip()
         highlights = _as_str_list(data.get("highlights"))

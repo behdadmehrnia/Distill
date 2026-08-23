@@ -1,8 +1,9 @@
-# CUDA runtime for NeMo / pyannote diarization (cu124 PyTorch).
+# CUDA runtime for NeMo / pyannote diarization.
+# Use cu128 PyTorch so Blackwell GPUs (RTX 50xx / sm_120) have kernels.
 # INSTALL_NEMO=1 → NeMo only (no pyannote). INSTALL_NEMO=0 → pyannote only.
 ARG INSTALL_NEMO=0
 
-FROM nvidia/cuda:12.6.1-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
 
 ARG INSTALL_NEMO=0
 
@@ -45,7 +46,7 @@ RUN apt-get update \
 COPY requirements.txt requirements.nemo.txt ./
 
 RUN pip install --upgrade pip setuptools wheel \
-    && pip install --index-url https://download.pytorch.org/whl/cu124 \
+    && pip install --index-url https://download.pytorch.org/whl/cu128 \
         torch \
         torchaudio \
     && pip install \
@@ -64,10 +65,14 @@ RUN if [ "$INSTALL_NEMO" = "1" ]; then \
       pip install "pytorch-lightning>=2.0.0,<2.3.0" "lightning>=2.0.0,<2.3.0" && \
       pip install -r requirements.nemo.txt && \
       pip install --force-reinstall "setuptools>=70,<81" && \
+      pip install --force-reinstall --index-url https://download.pytorch.org/whl/cu128 \
+        torch torchaudio && \
       python -c "import pkg_resources; from nemo.collections.asr.models import ClusteringDiarizer; print('NeMo OK')"; \
     else \
       echo "Installing pyannote diarization stack..." && \
       pip install -r requirements.txt && \
+      pip install --force-reinstall --index-url https://download.pytorch.org/whl/cu128 \
+        torch torchaudio && \
       python -c "import pyannote.audio; print('pyannote OK')"; \
     fi
 

@@ -83,7 +83,8 @@ if [[ ! -d "$VENV" ]]; then
   activate_venv
   pip install --upgrade pip
   if command -v nvidia-smi >/dev/null 2>&1; then
-    pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+    # cu128 required for RTX 50xx (sm_120); cu124 crashes with "no kernel image"
+    pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
   else
     pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
   fi

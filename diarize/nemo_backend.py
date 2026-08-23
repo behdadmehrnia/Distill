@@ -139,14 +139,47 @@ def _patch_clustering_diarizer(ClusteringDiarizer: Any) -> None:
     _CLUSTERING_PATCHED = True
 
 
-def _device() -> str:
-    forced = (os.getenv("DIARIZATION_DEVICE") or "").strip().lower()
-    if forced in {"cpu", "cuda", "mps"}:
-        return forced
+def _cuda_kernels_usable() -> bool:
+    """True only if a tiny CUDA op succeeds (catches sm_120 + old cu124 wheels)."""
     try:
         import torch
 
-        if torch.cuda.is_available():
+        if not torch.cuda.is_available():
+            return False
+        major, minor = torch.cuda.get_device_capability(0)
+        arches = set(torch.cuda.get_arch_list() or [])
+        tag = f"sm_{major}{minor}"
+        if arches and tag not in arches and f"compute_{major}{minor}" not in arches:
+            logger.warning(
+                "CUDA device %s not in torch arch list %s — falling back to CPU",
+                tag,
+                sorted(arches),
+            )
+            return False
+        x = torch.zeros(1, device="cuda")
+        torch.cuda.synchronize()
+        del x
+        return True
+    except Exception as exc:
+        logger.warning("CUDA probe failed (%s) — falling back to CPU", exc)
+        return False
+
+
+def _device() -> str:
+    forced = (os.getenv("DIARIZATION_DEVICE") or "").strip().lower()
+    if forced == "cpu":
+        return "cpu"
+    if forced == "mps":
+        return "mps"
+    if forced == "cuda":
+        if _cuda_kernels_usable():
+            return "cuda"
+        logger.warning("DIARIZATION_DEVICE=cuda but kernels are unusable; using CPU")
+        return "cpu"
+    try:
+        import torch
+
+        if _cuda_kernels_usable():
             return "cuda"
         if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
             return "mps"

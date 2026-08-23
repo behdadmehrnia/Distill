@@ -9,6 +9,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from .insights import _parse_json_response, format_transcript_for_llm, has_meaningful_speech
+from .llm_budget import cap_completion_tokens, llm_max_context_tokens, transcript_chars_for_context
 from .models import MeetingMinutes, MinutesDecision, TranscriptSegment
 
 logger = logging.getLogger(__name__)
@@ -292,6 +293,15 @@ class MeetingMinutesGenerator:
         self.llm = llm
         self.max_chars = max_chars if max_chars is not None else max_transcript_chars()
 
+    def _chunk_chars(self) -> int:
+        """Per-chunk transcript budget that fits the LLM context window."""
+        per_call = transcript_chars_for_context(
+            system_tokens=650,
+            wrapper_tokens=120,
+            completion_tokens=min(minutes_max_tokens(), 1536),
+        )
+        return min(self.max_chars, per_call)
+
     async def generate(
         self,
         meeting_id: str,
@@ -319,7 +329,7 @@ class MeetingMinutesGenerator:
             )
 
         chunks = cap_chunks(
-            split_transcript(transcript, self.max_chars), minutes_max_chunks()
+            split_transcript(transcript, self._chunk_chars()), minutes_max_chunks()
         )
         if len(chunks) <= 1:
             data = await self._extract_full(
@@ -327,10 +337,11 @@ class MeetingMinutesGenerator:
             )
         else:
             logger.info(
-                "Minutes map-reduce: transcript_chars=%d chunks=%d budget=%d parallel=%d llm_merge=%s",
+                "Minutes map-reduce: transcript_chars=%d chunks=%d budget=%d ctx=%d parallel=%d llm_merge=%s",
                 len(transcript),
                 len(chunks),
-                self.max_chars,
+                self._chunk_chars(),
+                llm_max_context_tokens(),
                 minutes_parallel(),
                 minutes_use_llm_merge(),
             )
@@ -376,7 +387,7 @@ class MeetingMinutesGenerator:
         raw = await self.llm.complete(
             messages,
             temperature=0.2,
-            max_tokens=minutes_max_tokens(),
+            max_tokens=cap_completion_tokens(messages, minutes_max_tokens()),
             timeout=minutes_llm_timeout_s(),
         )
         return _parse_json_response(raw)
@@ -404,7 +415,9 @@ class MeetingMinutesGenerator:
         raw = await self.llm.complete(
             messages,
             temperature=0.2,
-            max_tokens=min(1536, minutes_max_tokens()),
+            max_tokens=cap_completion_tokens(
+                messages, min(1536, minutes_max_tokens())
+            ),
             timeout=minutes_llm_timeout_s(),
         )
         data = _parse_json_response(raw)
@@ -446,7 +459,7 @@ class MeetingMinutesGenerator:
         raw = await self.llm.complete(
             messages,
             temperature=0.2,
-            max_tokens=minutes_max_tokens(),
+            max_tokens=cap_completion_tokens(messages, minutes_max_tokens()),
             timeout=minutes_llm_timeout_s(),
         )
         return _parse_json_response(raw)
