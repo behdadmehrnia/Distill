@@ -44,3 +44,5 @@ cache_metadata.json
 diarize/.venv/
 diarize/models/*.bin
 diarize/models/nemo/
+
+.claude

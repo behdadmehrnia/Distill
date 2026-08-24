@@ -1,248 +1,110 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="fa" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Distill</title>
-    <link rel="icon" type="image/svg+xml" href="/logo.svg">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;700;900&display=swap" rel="stylesheet">
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: 'Vazirmatn', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #1a1a1a;
-            color: #e0e0e0;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 2rem;
-            direction: rtl;
-        }
-        .container {
-            max-width: 960px;
-            width: 100%;
-            text-align: center;
-        }
-        h1 {
-            font-size: 3.2rem;
-            font-weight: 900;
-            margin-bottom: 0.5rem;
-            color: #f9d423;
-        }
-        .subtitle {
-            font-size: 1.15rem;
-            color: #999;
-            margin-bottom: 3rem;
-            max-width: 600px;
-            margin-left: auto;
-            margin-right: auto;
-            line-height: 1.8;
-        }
-        .section-title {
-            font-size: 1.8rem;
-            font-weight: 700;
-            color: #f9d423;
-            margin-bottom: 0.5rem;
-        }
-        .section-desc {
-            color: #888;
-            margin-bottom: 2rem;
-            font-size: 0.95rem;
-        }
-        .features {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            gap: 1.25rem;
-            margin-bottom: 4rem;
-        }
-        .feature-card {
-            background: #242424;
-            border: 1px solid #333;
-            border-radius: 12px;
-            padding: 1.5rem;
-            text-align: right;
-            transition: border-color 0.3s, box-shadow 0.3s;
-        }
-        .feature-card:hover {
-            border-color: #f9d423;
-            box-shadow: 0 0 20px rgba(249, 212, 35, 0.08);
-        }
-        .feature-icon {
-            font-size: 2rem;
-            margin-bottom: 0.75rem;
-        }
-        .feature-title {
-            font-size: 1.1rem;
-            font-weight: 700;
-            color: #f9d423;
-            margin-bottom: 0.5rem;
-        }
-        .feature-desc {
-            color: #999;
-            line-height: 1.7;
-            font-size: 0.92rem;
-        }
-        .personas {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-            gap: 1.25rem;
-            margin-bottom: 4rem;
-        }
-        .persona-card {
-            background: #242424;
-            border: 1px solid #333;
-            border-radius: 12px;
-            padding: 1.5rem 1rem;
-            text-align: center;
-            transition: border-color 0.3s, transform 0.2s;
-        }
-        .persona-card:hover {
-            border-color: #f9d423;
-            transform: translateY(-3px);
-        }
-        .persona-emoji {
-            font-size: 2.5rem;
-            margin-bottom: 0.75rem;
-        }
-        .persona-name {
-            font-size: 1.05rem;
-            font-weight: 700;
-            color: #f9d423;
-            margin-bottom: 0.35rem;
-        }
-        .persona-desc {
-            color: #888;
-            font-size: 0.82rem;
-            line-height: 1.6;
-        }
-        .divider {
-            border: none;
-            border-top: 1px solid #333;
-            margin: 0 0 3rem 0;
-        }
-        .cta-section {
-            padding: 2.5rem 2rem;
-            background: #242424;
-            border-radius: 12px;
-            border: 1px solid #333;
-        }
-        .cta-section h2 {
-            color: #f9d423;
-            font-size: 1.5rem;
-            margin-bottom: 1rem;
-        }
-        .cta-button {
-            display: inline-block;
-            padding: 1.2rem 2.7rem;
-            background: #f9d423;
-            color: #1a1a1a;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: 700;
-            font-size: 1.2rem;
-            transition: background 0.3s, box-shadow 0.3s;
-        }
-        .cta-button:hover {
-            background: #e6c320;
-            box-shadow: 0 4px 20px rgba(249, 212, 35, 0.25);
-        }
-        .cta-actions {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 0.85rem;
-        }
-        .footer {
-            margin-top: 3rem;
-            color: #555;
-            font-size: 0.85rem;
-            padding-bottom: 1rem;
-        }
-        .footer a {
-            color: #f9d423;
-            text-decoration: none;
-        }
-        .footer a:hover {
-            text-decoration: underline;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1 style="display: flex; align-items: center; justify-content: center; gap: 1rem;">
-            <svg width="56" height="28" viewBox="0 0 36 17" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M8.5 0.5C12.9183 0.5 16.5 4.08172 16.5 8.5C16.5 12.9183 12.9183 16.5 8.5 16.5C4.08172 16.5 0.5 12.9183 0.5 8.5C0.5 4.08172 4.08172 0.5 8.5 0.5Z" stroke="#FFC828"/>
-                <path d="M27.5 17C32.1944 17 36 13.1944 36 8.5C36 3.80558 32.1944 0 27.5 0C22.8056 0 19 3.80558 19 8.5C19 13.1944 22.8056 17 27.5 17Z" fill="#FFC828"/>
-            </svg>
-            Distill
-        </h1>
-        <p class="subtitle">AI meeting assistant</p>
-
-        <hr class="divider">
-
-        <div class="section-title">قابلیت‌ها</div>
-        <p class="section-desc">امکاناتی که Distill را از سایر دستیارها متمایز می‌کند</p>
-
-        <div class="features">
-            <div class="feature-card">
-                <div class="feature-icon">🎙️</div>
-                <div class="feature-title">ضبط و پیاده‌سازی زنده</div>
-                <div class="feature-desc">با یک میکروفون مشترک، صحبت‌های جلسه را در لحظه به متن تبدیل می‌کند.</div>
-            </div>
-
-            <div class="feature-card">
-                <div class="feature-icon">👥</div>
-                <div class="feature-title">تشخیص گوینده</div>
-                <div class="feature-desc">سخنان افراد را از هم جدا می‌کند و timeline خوانا با برچسب گوینده می‌سازد.</div>
-            </div>
-
-            <div class="feature-card">
-                <div class="feature-icon">⚡</div>
-                <div class="feature-title">آگاهی از هم‌پوشانی</div>
-                <div class="feature-desc">پریدن وسط حرف و صحبت همزمان را تشخیص می‌دهد و در متن علامت می‌زند.</div>
-            </div>
-
-            <div class="feature-card">
-                <div class="feature-icon">📝</div>
-                <div class="feature-title">خلاصه هوشمند</div>
-                <div class="feature-desc">پس از جلسه، خلاصه، نکات کلیدی و تصمیمات را با LLM استخراج می‌کند.</div>
-            </div>
-
-            <div class="feature-card">
-                <div class="feature-icon">✅</div>
-                <div class="feature-title">اقدامات و تصمیمات</div>
-                <div class="feature-desc">خروجی ساخت‌یافته برای پیگیری کارها، مسئولیت‌ها و جمع‌بندی جلسه.</div>
-            </div>
-
-            <div class="feature-card">
-                <div class="feature-icon">📁</div>
-                <div class="feature-title">آپلود فایل ضبط‌شده</div>
-                <div class="feature-desc">علاوه بر ضبط زنده، فایل صوتی جلسه را هم می‌توانید پیاده‌سازی کنید.</div>
-            </div>
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="landing-page">
+      <div class="lp-hero">
+        <div class="lp-brand">
+          <svg
+            class="lp-logo"
+            width="56"
+            height="28"
+            viewBox="0 0 36 17"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true"
+          >
+            <path
+              d="M8.5 0.5C12.9183 0.5 16.5 4.08172 16.5 8.5C16.5 12.9183 12.9183 16.5 8.5 16.5C4.08172 16.5 0.5 12.9183 0.5 8.5C0.5 4.08172 4.08172 0.5 8.5 0.5Z"
+              stroke="#FFC828"
+            />
+            <path
+              d="M27.5 17C32.1944 17 36 13.1944 36 8.5C36 3.80558 32.1944 0 27.5 0C22.8056 0 19 3.80558 19 8.5C19 13.1944 22.8056 17 27.5 17Z"
+              fill="#FFC828"
+            />
+          </svg>
+          <h1 class="lp-title">Distill</h1>
         </div>
+        <p class="lp-tagline">
+          AI meeting assistant
+        </p>
+      </div>
 
-        <hr class="divider">
+      <hr class="lp-divider" />
 
-        <div class="cta-section">
-            <h2>همین حالا شروع کنید!</h2>
-            <div class="cta-actions">
-                <a href="/dashboard" class="cta-button">شروع Distill</a>
-            </div>
+      <div class="lp-section">
+        <h2 class="lp-section-title">قابلیت‌ها</h2>
+        <p class="lp-section-sub">
+          امکاناتی که Distill را از سایر دستیارها متمایز می‌کند
+        </p>
+      </div>
+
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">🎙️</div>
+          <h3>ضبط و پیاده‌سازی زنده</h3>
+          <p>با یک میکروفون مشترک، صحبت‌های جلسه را در لحظه به متن تبدیل می‌کند.</p>
         </div>
-
-        <div class="footer">
-            <p></p>
-            <p style="font-size: 0.65rem;"></p>
-            <p style="margin-top: 0.6rem; font-size: 1rem;">© Distill</p>
-            <p style="margin-top: 0.7rem; font-size: 0.65rem;">Built with ❤️ by <a href="https://github.com/BMDarkLight" target="_blank" rel="noopener noreferrer">Behdad</a>  |  <a href="/docs">API Documentation</a></p>
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">👥</div>
+          <h3>تشخیص گوینده</h3>
+          <p>سخنان افراد را از هم جدا می‌کند و timeline خوانا با برچسب گوینده می‌سازد.</p>
         </div>
-    </div>
-</body>
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">⚡</div>
+          <h3>آگاهی از هم‌پوشانی</h3>
+          <p>پریدن وسط حرف و صحبت همزمان را تشخیص می‌دهد و در متن علامت می‌زند.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">📝</div>
+          <h3>خلاصه هوشمند</h3>
+          <p>پس از جلسه، خلاصه، نکات کلیدی و تصمیمات را با LLM استخراج می‌کند.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">✅</div>
+          <h3>اقدامات و تصمیمات</h3>
+          <p>خروجی ساخت‌یافته برای پیگیری کارها، مسئولیت‌ها و جمع‌بندی جلسه.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">📁</div>
+          <h3>آپلود فایل ضبط‌شده</h3>
+          <p>علاوه بر ضبط زنده، فایل صوتی جلسه را هم می‌توانید پیاده‌سازی کنید.</p>
+        </div>
+      </div>
+
+      <hr class="lp-divider" />
+
+      <div class="lp-cta-wrap">
+        <div class="cta-box">
+          <h2 class="cta-title">همین حالا شروع کنید!</h2>
+          <a href="/dashboard" class="btn btn-primary btn-cta">شروع Distill</a>
+        </div>
+      </div>
+
+      <footer class="lp-footer">
+        <p class="footer-kicker"></p>
+        <p class="footer-copy">
+          Distill، از پیشگامان ایرانی هوش مصنوعی، با تمرکز بر توسعه فناوری‌های
+          نوآورانه و بومی‌سازی مدل‌ها، راهکارهای تخصصی برای کسب‌وکارها و مردم
+          ارائه می‌دهد. تیم ما متشکل از نخبگان دانشگاهی و متخصصان فناوری است که
+          با رویکرد علمی و مسئولیت‌پذیر، دستیارهای هوشمند در حوزه‌هایی چون
+          پزشکی، حقوقی، آموزشی، سلامت روان، پژوهش و کودکان طراحی کرده و نقشی
+          مؤثر در تحول دیجیتال کشور ایفا می‌کند.
+        </p>
+        <p class="footer-rights">© Distill</p>
+        <p class="footer-credit">
+          Built with ❤️ by
+          <a href="https://github.com/BMDarkLight" target="_blank" rel="noopener noreferrer">Behdad</a>
+          <span class="sep-dot" aria-hidden="true">•</span>
+          <a href="/docs">API Documentation</a>
+        </p>
+      </footer>
+    </main>
+  </body>
 </html>

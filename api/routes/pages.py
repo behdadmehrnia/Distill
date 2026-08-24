@@ -103,6 +103,11 @@ async def serve_css(request: Request) -> Response:
     return _web_file(request, "styles.css")
 
 
+@router.get("/assistant.css")
+async def serve_assistant_css(request: Request) -> Response:
+    return _web_file(request, "assistant.css")
+
+
 @router.get("/meeting.js")
 async def serve_js(request: Request) -> Response:
     return _web_file(request, "meeting.js")

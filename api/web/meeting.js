@@ -1242,8 +1242,25 @@ class DistillClient {
         resolve();
       };
       this.ws.onmessage = (ev) => this.onWsMessage(ev);
-      this.ws.onclose = () => {
+      this.ws.onclose = (event) => {
         this.isConnected = false;
+        // Server closes with 4401/4403 when the auth cookie is missing/invalid
+        // or belongs to another user; that looks like a normal drop otherwise.
+        if (event && (event.code === 4401 || event.code === 4403)) {
+          if (this.isRecording) {
+            this.isRecording = false;
+            this.stopMic();
+            this.stopTimer(false);
+          }
+          const next = window.location.pathname + window.location.search;
+          this.showPrompt({
+            title: "نشست منقضی شده",
+            message: "برای ادامه، دوباره وارد حساب کاربری خود شوید.",
+          }).finally(() => {
+            window.location.href = "/login?next=" + encodeURIComponent(next);
+          });
+          return;
+        }
         if (this.isRecording) this.stopLive();
       };
       this.ws.onerror = (err) => reject(err);
@@ -1293,7 +1310,11 @@ class DistillClient {
   sendAudio(float32) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const int16 = this.floatTo16BitPCM(float32);
-    this.ws.send(JSON.stringify({ type: "audio", data: Array.from(int16) }));
+    // Binary PCM frame, not a JSON array of numbers: the server already
+    // decodes raw bytes on this path (np.frombuffer(..., dtype=int16)),
+    // and JSON-encoding each sample as decimal text bloats every ~128ms
+    // chunk several times over for no benefit.
+    this.ws.send(int16.buffer);
   }
 
   floatTo16BitPCM(input) {
