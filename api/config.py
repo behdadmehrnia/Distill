@@ -40,6 +40,7 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 8000
     db_path: Path = DB_PATH
+    database_url: str = "postgresql://distill:distill@127.0.0.1:5432/distill"
     upload_dir: Path = UPLOAD_DIR
     audio_dir: Path = AUDIO_DIR
     web_dir: Path = WEB_DIR
@@ -65,6 +66,11 @@ class Settings:
     diarization_allow_fallback: bool | None = None
     upload_denoise_enabled: bool = True
 
+    # --- Auth (JWT in cookie) ---
+    jwt_secret: str = "dev-insecure-change-me-please-use-a-long-secret-value-1234567890abcdef"
+    jwt_expire_minutes: int = 10080
+    auth_cookie_secure: bool = False
+
     @classmethod
     def from_env(cls) -> "Settings":
         # Prefer MEETING_PORT; fall back to PORT (common on PaaS like Hamdocker)
@@ -87,10 +93,25 @@ class Settings:
         denoise_raw = (_env_str("AUDIO_DENOISE_UPLOAD") or "1").strip().lower()
         upload_denoise_enabled = denoise_raw not in {"0", "false", "no", "off"}
 
+        jwt_secret = (
+            _env_str("JWT_SECRET")
+            or "dev-insecure-change-me-please-use-a-long-secret-value-1234567890abcdef"
+        )
+        jwt_expire_minutes = _env_int("JWT_EXPIRE_MINUTES", 10080)
+
+        cookie_secure_raw = (_env_str("AUTH_COOKIE_SECURE") or "0").strip().lower()
+        auth_cookie_secure = cookie_secure_raw in {"1", "true", "yes", "on"}
+
+        database_url = (
+            _env_str("DATABASE_URL")
+            or "postgresql://distill:distill@127.0.0.1:5432/distill"
+        )
+
         return cls(
             host=_env_str("MEETING_HOST", "0.0.0.0") or "0.0.0.0",
             port=port,
             db_path=DB_PATH,
+            database_url=database_url,
             upload_dir=UPLOAD_DIR,
             audio_dir=AUDIO_DIR,
             web_dir=WEB_DIR,
@@ -115,6 +136,9 @@ class Settings:
             diarization_timeout_s=diarization_timeout_s,
             diarization_allow_fallback=diarization_allow_fallback,
             upload_denoise_enabled=upload_denoise_enabled,
+            jwt_secret=jwt_secret,
+            jwt_expire_minutes=jwt_expire_minutes,
+            auth_cookie_secure=auth_cookie_secure,
         )
 
     def ensure_dirs(self) -> None:

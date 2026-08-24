@@ -17,6 +17,7 @@ from api.providers.llm import OpenAICompatibleLLM
 from api.providers.stt import OpenAICompatibleSTT
 from api.routes import setup_routes
 from api.tuning import make_tuning
+from api.auth.store import UserStore
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,8 @@ def _build_services(settings: Settings) -> Dict[str, Any]:
         api_key=settings.llm_api_key,
         model=settings.llm_model,
     )
-    store = TranscriptStore(db_path=str(settings.db_path))
+    store = TranscriptStore(database_url=settings.database_url)
+    user_store = UserStore(database_url=settings.database_url)
     # Never load pyannote/torch here — it OOMs small pods and blocks readiness.
     # Prefer DIARIZATION_ENDPOINT (remote sidecar) when set.
     diarizer = SpeakerDiarizer(
@@ -87,6 +89,7 @@ def _build_services(settings: Settings) -> Dict[str, Any]:
         "settings": settings,
         "tuning": tuning,
         "manager": manager,
+        "user_store": user_store,
         "insights": insights,
         "minutes": minutes_generator,
         "diarizer": diarizer,
@@ -128,6 +131,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.state.settings = services["settings"]
     app.state.tuning = services["tuning"]
     app.state.manager = services["manager"]
+    app.state.user_store = services["user_store"]
     app.state.insights = services["insights"]
     app.state.minutes = services["minutes"]
     app.state.ws_by_meeting = services["ws_by_meeting"]

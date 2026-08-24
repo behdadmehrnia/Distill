@@ -2,6 +2,24 @@
 # in Docker, use service hostnames in root .env (see .env.example). Start runtime
 # first: cd runtime && ./scripts/start.sh
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: distill-postgres
+    environment:
+      POSTGRES_USER: distill
+      POSTGRES_PASSWORD: distill
+      POSTGRES_DB: distill
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - distill-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U distill -d distill"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   distill:
     build: .
     image: distill:latest
@@ -14,12 +32,16 @@ services:
       # Paths are fixed in code under /app/data and /app/api/web
       MEETING_HOST: "0.0.0.0"
       MEETING_PORT: "8000"
+      DATABASE_URL: "postgresql://distill:distill@postgres:5432/distill"
       # HF_TOKEN comes from .env — required for pyannote (image includes CPU torch)
       CUDA_VISIBLE_DEVICES: ""
     volumes:
-      # Named volume survives image rebuild/redeploy: DB, uploads, audio,
+      # Named volume survives image rebuild/redeploy: uploads, audio,
       # STT cache, and HuggingFace/torch model caches under /app/data
       - distill-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - default
       - runtime
@@ -32,3 +54,4 @@ networks:
 
 volumes:
   distill-data:
+  distill-postgres:

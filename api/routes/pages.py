@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+
+from api.auth.deps import get_optional_user
+from api.auth.models import UserRecord
 
 router = APIRouter(tags=["pages"])
 
@@ -45,17 +50,51 @@ async def serve_landing(request: Request) -> Response:
     return _web_file(request, "landing.html")
 
 
+@router.get("/login", response_class=HTMLResponse)
+async def serve_login(request: Request) -> Response:
+    return _web_file(request, "login.html")
+
+
+@router.get("/register", response_class=HTMLResponse)
+async def serve_register(request: Request) -> Response:
+    return _web_file(request, "register.html")
+
+
+@router.get("/dashboard", response_class=HTMLResponse)
+async def serve_dashboard(
+    request: Request,
+    user: Optional[UserRecord] = Depends(get_optional_user),
+) -> Response:
+    if not user:
+        return RedirectResponse(url="/login?next=/dashboard", status_code=302)
+    return _web_file(request, "dashboard.html")
+
+
 @router.get("/assistant", response_class=HTMLResponse)
-async def serve_assistant(request: Request) -> Response:
+async def serve_assistant(
+    request: Request,
+    user: Optional[UserRecord] = Depends(get_optional_user),
+) -> Response:
+    if not user:
+        return RedirectResponse(url="/login?next=/assistant", status_code=302)
     return _web_file(request, "assistant.html")
 
 
 @router.get("/assistant/{meeting_id}", response_class=HTMLResponse)
-async def serve_assistant_session(request: Request, meeting_id: str) -> Response:
+async def serve_assistant_session(
+    request: Request,
+    meeting_id: str,
+    user: Optional[UserRecord] = Depends(get_optional_user),
+) -> Response:
     """Open assistant UI scoped to an existing meeting id."""
     meeting = request.app.state.manager.store.get_meeting(meeting_id)
     if not meeting:
-        return RedirectResponse(url="/assistant", status_code=302)
+        return RedirectResponse(url="/dashboard", status_code=302)
+    meeting_owner_id = getattr(meeting, "user_id", None)
+    if user and meeting_owner_id and meeting_owner_id != user.id:
+        return RedirectResponse(url="/dashboard", status_code=302)
+    if not user:
+        return RedirectResponse(url=f"/login?next=/assistant/{meeting_id}", status_code=302)
     return _web_file(request, "assistant.html")
 
 
@@ -67,6 +106,16 @@ async def serve_css(request: Request) -> Response:
 @router.get("/meeting.js")
 async def serve_js(request: Request) -> Response:
     return _web_file(request, "meeting.js")
+
+
+@router.get("/auth.js")
+async def serve_auth_js(request: Request) -> Response:
+    return _web_file(request, "auth.js")
+
+
+@router.get("/dashboard.js")
+async def serve_dashboard_js(request: Request) -> Response:
+    return _web_file(request, "dashboard.js")
 
 
 @router.get("/logo.svg")

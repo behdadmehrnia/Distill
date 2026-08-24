@@ -15,8 +15,8 @@ from api.meeting.store import TranscriptStore
 
 
 @pytest.fixture
-def store(tmp_path):
-    return TranscriptStore(db_path=str(tmp_path / "meetings.db"))
+def store(database_url):
+    return TranscriptStore(database_url=database_url)
 
 
 def test_chunker_emits_overlapping_windows():

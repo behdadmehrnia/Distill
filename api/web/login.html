@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ورود — Distill</title>
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page auth-page">
+      <div class="auth-card">
+        <a href="/" class="auth-brand">
+          <img src="/logo.svg" alt="" width="36" height="36" />
+          <span>Distill</span>
+        </a>
+        <h1 class="auth-title">ورود</h1>
+        <p class="auth-subtitle">برای مدیریت جلسات خود وارد شوید</p>
+
+        <form id="loginForm" class="auth-form">
+          <label class="auth-label">
+            ایمیل
+            <input type="email" name="email" required autocomplete="email" />
+          </label>
+          <label class="auth-label">
+            رمز عبور
+            <input
+              type="password"
+              name="password"
+              required
+              autocomplete="current-password"
+            />
+          </label>
+          <p id="loginError" class="auth-error" hidden></p>
+          <button type="submit" class="btn btn-primary auth-submit">ورود</button>
+        </form>
+
+        <p class="auth-footer">
+          حساب ندارید؟
+          <a href="/register" id="registerLink">ثبت‌نام</a>
+        </p>
+      </div>
+    </main>
+    <script src="/auth.js"></script>
+    <script>
+      (async function () {
+        const params = new URLSearchParams(window.location.search);
+        const next = params.get("next") || "/dashboard";
+        document.getElementById("registerLink").href =
+          "/register?next=" + encodeURIComponent(next);
+
+        const existing = await distillAuth.me();
+        if (existing) {
+          window.location.href = next;
+          return;
+        }
+
+        document.getElementById("loginForm").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const form = e.target;
+          const errEl = document.getElementById("loginError");
+          errEl.hidden = true;
+          const btn = form.querySelector("button[type=submit]");
+          btn.disabled = true;
+          try {
+            await distillAuth.login(form.email.value, form.password.value);
+            window.location.href = next;
+          } catch (err) {
+            errEl.textContent = err.message || "خطا در ورود";
+            errEl.hidden = false;
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

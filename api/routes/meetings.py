@@ -12,6 +12,7 @@ import numpy as np
 from fastapi import (
     APIRouter,
     File,
+    Depends,
     HTTPException,
     Request,
     UploadFile,
@@ -20,8 +21,10 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, Response
 
+from api.auth.deps import authenticate_websocket, get_current_user, require_meeting
+from api.auth.models import UserRecord
 from api.meeting.ingest import AudioIngest
-from api.meeting.models import MeetingMinutes, MeetingStatus, MinutesDecision
+from api.meeting.models import MeetingMinutes, MeetingRecord, MeetingStatus, MinutesDecision
 from api.meeting.session import ProcessingCancelled
 from api.realtime import broadcast
 
@@ -126,8 +129,15 @@ def _meeting_payload(meeting, *, has_recording: Optional[bool] = None) -> Dict[s
 
 
 @router.get("/meetings")
-async def list_meetings(request: Request) -> Dict[str, Any]:
-    meetings = request.app.state.manager.store.list_meetings()
+async def list_meetings(
+    request: Request,
+    user: UserRecord = Depends(get_current_user),
+    limit: int = 50,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    meetings = request.app.state.manager.store.list_meetings(
+        user_id=user.id, limit=limit, offset=offset
+    )
     settings = request.app.state.settings
     out = []
     for m in meetings:
@@ -142,14 +152,20 @@ async def list_meetings(request: Request) -> Dict[str, Any]:
 
 
 @router.post("/meetings", status_code=201)
-async def create_meeting(request: Request) -> Dict[str, Any]:
+async def create_meeting(
+    request: Request,
+    user: UserRecord = Depends(get_current_user),
+) -> Dict[str, Any]:
     try:
         raw = await request.json()
     except Exception:
         raw = {}
     if not isinstance(raw, dict):
         raw = {}
-    title = raw.get("title") or "جلسه جدید"
+    if "title" in raw:
+        title = str(raw.get("title") or "").strip()
+    else:
+        title = "جلسه جدید"
     participants = raw.get("participants") or []
     start = bool(raw.get("start", True))
     app = request.app
@@ -162,7 +178,10 @@ async def create_meeting(request: Request) -> Dict[str, Any]:
             await broadcast(app, meeting_id, event)
 
     session = app.state.manager.create_meeting(
-        title=title, participants=participants, on_event=on_event
+        title=title,
+        participants=participants,
+        user_id=user.id,
+        on_event=on_event,
     )
     if start:
         await session.start()
@@ -170,10 +189,10 @@ async def create_meeting(request: Request) -> Dict[str, Any]:
 
 
 @router.get("/meetings/{meeting_id}")
-async def get_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
-    meeting = request.app.state.manager.store.get_meeting(meeting_id)
-    if not meeting:
-        raise HTTPException(status_code=404, detail="meeting not found")
+async def get_meeting(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
     # Heal stale "recording"/"processing" left behind when the capture process
     # died (or stop was cancelled) and nothing is actually running.
     if meeting.status in (MeetingStatus.RECORDING, MeetingStatus.PROCESSING):
@@ -188,11 +207,27 @@ async def get_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
     return _meeting_payload(meeting, has_recording=path is not None)
 
 
-@router.get("/meetings/{meeting_id}/recording")
-async def get_recording(request: Request, meeting_id: str):
-    meeting = request.app.state.manager.store.get_meeting(meeting_id)
-    if not meeting:
+@router.delete("/meetings/{meeting_id}", status_code=204)
+async def delete_meeting(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Response:
+    settings = request.app.state.settings
+    deleted = await request.app.state.manager.delete_meeting(
+        meeting.id, audio_dir=str(settings.audio_dir)
+    )
+    if not deleted:
         raise HTTPException(status_code=404, detail="meeting not found")
+
+    request.app.state.ws_by_meeting.pop(meeting.id, None)
+    return Response(status_code=204)
+
+
+@router.get("/meetings/{meeting_id}/recording")
+async def get_recording(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+):
     settings = request.app.state.settings
     path = _resolve_recording_path(
         meeting.id,
@@ -212,8 +247,12 @@ async def get_recording(request: Request, meeting_id: str):
 
 
 @router.post("/meetings/{meeting_id}/start")
-async def start_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
+async def start_meeting(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
     """Start (or restart) capture on an existing meeting."""
+    meeting_id = meeting.id
     try:
         raw = await request.json()
     except Exception:
@@ -221,6 +260,7 @@ async def start_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
     reset = bool(raw.get("reset", False))
+    title = str(raw.get("title") or "").strip()
 
     app = request.app
 
@@ -231,6 +271,9 @@ async def start_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
     session = app.state.manager.get_or_restore(meeting_id, on_event=on_event)
     if not session:
         raise HTTPException(status_code=404, detail="meeting not found")
+    if title:
+        session.record.title = title
+        app.state.manager.store.save_meeting(session.record)
     if session._running:
         raise HTTPException(status_code=409, detail="already recording")
     if session.record.status in (
@@ -264,8 +307,12 @@ async def start_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
 
 
 @router.patch("/meetings/{meeting_id}/speakers")
-async def update_speaker_map(request: Request, meeting_id: str) -> Dict[str, Any]:
+async def update_speaker_map(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
     """Map SPEAKER_XX ids to display names. Body: {"SPEAKER_00": "علی", ...} or {"speaker_map": {...}}."""
+    meeting_id = meeting.id
     session = request.app.state.manager.get_or_restore(meeting_id)
     if not session:
         raise HTTPException(status_code=404, detail="meeting not found")
@@ -289,12 +336,13 @@ async def update_speaker_map(request: Request, meeting_id: str) -> Dict[str, Any
 
 @router.patch("/meetings/{meeting_id}/segments/{segment_id}")
 async def update_segment_text(
-    request: Request, meeting_id: str, segment_id: str
+    request: Request,
+    segment_id: str,
+    meeting: MeetingRecord = Depends(require_meeting),
 ) -> Dict[str, Any]:
     """Edit finalized (non-provisional) segment text. Body: {"text": "..."}."""
+    meeting_id = meeting.id
     store = request.app.state.manager.store
-    if not store.get_meeting(meeting_id):
-        raise HTTPException(status_code=404, detail="meeting not found")
     try:
         raw = await request.json()
     except Exception as exc:
@@ -323,12 +371,13 @@ async def update_segment_text(
 
 
 @router.get("/meetings/{meeting_id}/speakers")
-async def list_speakers(request: Request, meeting_id: str) -> Dict[str, Any]:
+async def list_speakers(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
     """List distinct speakers with current label + a suggested sample span for playback."""
+    meeting_id = meeting.id
     store = request.app.state.manager.store
-    meeting = store.get_meeting(meeting_id)
-    if not meeting:
-        raise HTTPException(status_code=404, detail="meeting not found")
 
     settings = request.app.state.settings
     has_recording = (
@@ -384,13 +433,13 @@ async def list_speakers(request: Request, meeting_id: str) -> Dict[str, Any]:
 
 @router.get("/meetings/{meeting_id}/speakers/{speaker_id}/audio")
 async def get_speaker_sample_audio(
-    request: Request, meeting_id: str, speaker_id: str
+    request: Request,
+    speaker_id: str,
+    meeting: MeetingRecord = Depends(require_meeting),
 ):
     """Return a short WAV clip for the given speaker, for naming/preview UI."""
+    meeting_id = meeting.id
     store = request.app.state.manager.store
-    meeting = store.get_meeting(meeting_id)
-    if not meeting:
-        raise HTTPException(status_code=404, detail="meeting not found")
 
     settings = request.app.state.settings
     path = _resolve_recording_path(
@@ -441,7 +490,11 @@ async def get_speaker_sample_audio(
 
 
 @router.post("/meetings/{meeting_id}/stop")
-async def stop_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
+async def stop_meeting(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
+    meeting_id = meeting.id
     session = request.app.state.manager.get_or_restore(meeting_id)
     if not session:
         raise HTTPException(status_code=404, detail="meeting not found")
@@ -478,10 +531,12 @@ async def stop_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
 
 
 @router.post("/meetings/{meeting_id}/cancel")
-async def cancel_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
+async def cancel_meeting(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
+    meeting_id = meeting.id
     manager = request.app.state.manager
-    if not manager.store.get_meeting(meeting_id):
-        raise HTTPException(status_code=404, detail="meeting not found")
     record = await manager.cancel_meeting(meeting_id)
     if not record:
         raise HTTPException(status_code=404, detail="meeting not found")
@@ -506,20 +561,21 @@ async def cancel_meeting(request: Request, meeting_id: str) -> Dict[str, Any]:
 
 
 @router.get("/meetings/{meeting_id}/transcript")
-async def get_transcript(request: Request, meeting_id: str) -> Dict[str, Any]:
-    store = request.app.state.manager.store
-    if not store.get_meeting(meeting_id):
-        raise HTTPException(status_code=404, detail="meeting not found")
-    segments = store.get_segments(meeting_id)
+async def get_transcript(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
+    meeting_id = meeting.id
+    segments = request.app.state.manager.store.get_segments(meeting_id)
     return {"meeting_id": meeting_id, "segments": [s.to_dict() for s in segments]}
 
 
 @router.get("/meetings/{meeting_id}/debug")
-async def get_meeting_debug(request: Request, meeting_id: str) -> Dict[str, Any]:
-    store = request.app.state.manager.store
-    meeting = store.get_meeting(meeting_id)
-    if not meeting:
-        raise HTTPException(status_code=404, detail="meeting not found")
+async def get_meeting_debug(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
+    meeting_id = meeting.id
     session = request.app.state.manager.get(meeting_id)
     if session is not None:
         return session.debug_stats()
@@ -549,9 +605,10 @@ async def get_meeting_debug(request: Request, meeting_id: str) -> Dict[str, Any]
 @router.post("/meetings/{meeting_id}/upload")
 async def upload_audio(
     request: Request,
-    meeting_id: str,
+    meeting: MeetingRecord = Depends(require_meeting),
     file: UploadFile = File(...),
 ) -> Dict[str, Any]:
+    meeting_id = meeting.id
     app = request.app
     settings = app.state.settings
 
@@ -618,11 +675,12 @@ async def upload_audio(
 
 
 @router.post("/meetings/{meeting_id}/insights")
-async def generate_insights(request: Request, meeting_id: str) -> Dict[str, Any]:
+async def generate_insights(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
+    meeting_id = meeting.id
     store = request.app.state.manager.store
-    meeting = store.get_meeting(meeting_id)
-    if not meeting:
-        raise HTTPException(status_code=404, detail="meeting not found")
     segments = store.get_segments(meeting_id)
     final = [s for s in segments if not s.provisional] or segments
     try:
@@ -639,19 +697,23 @@ async def generate_insights(request: Request, meeting_id: str) -> Dict[str, Any]
 
 
 @router.get("/meetings/{meeting_id}/insights")
-async def get_insights(request: Request, meeting_id: str) -> Dict[str, Any]:
-    result = request.app.state.manager.store.get_insights(meeting_id)
+async def get_insights(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
+    result = request.app.state.manager.store.get_insights(meeting.id)
     if not result:
         raise HTTPException(status_code=404, detail="insights not found")
     return result.to_dict()
 
 
 @router.post("/meetings/{meeting_id}/minutes/generate")
-async def generate_minutes(request: Request, meeting_id: str) -> Dict[str, Any]:
+async def generate_minutes(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
+    meeting_id = meeting.id
     store = request.app.state.manager.store
-    meeting = store.get_meeting(meeting_id)
-    if not meeting:
-        raise HTTPException(status_code=404, detail="meeting not found")
     segments = store.get_segments(meeting_id)
     final = [s for s in segments if not s.provisional] or segments
     try:
@@ -681,19 +743,24 @@ async def generate_minutes(request: Request, meeting_id: str) -> Dict[str, Any]:
 
 
 @router.get("/meetings/{meeting_id}/minutes")
-async def get_minutes(request: Request, meeting_id: str) -> Dict[str, Any]:
-    result = request.app.state.manager.store.get_minutes(meeting_id)
+async def get_minutes(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
+    result = request.app.state.manager.store.get_minutes(meeting.id)
     if not result:
         raise HTTPException(status_code=404, detail="minutes not found")
     return result.to_dict()
 
 
 @router.put("/meetings/{meeting_id}/minutes")
-async def update_minutes(request: Request, meeting_id: str) -> Dict[str, Any]:
+async def update_minutes(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
     """Persist a fully user-edited minutes document (no LLM call)."""
+    meeting_id = meeting.id
     store = request.app.state.manager.store
-    if not store.get_meeting(meeting_id):
-        raise HTTPException(status_code=404, detail="meeting not found")
     try:
         raw = await request.json()
     except Exception as exc:
@@ -730,8 +797,18 @@ async def update_minutes(request: Request, meeting_id: str) -> Dict[str, Any]:
 
 @router.websocket("/meetings/{meeting_id}/audio")
 async def audio_ws(websocket: WebSocket, meeting_id: str) -> None:
-    await websocket.accept()
     app = websocket.app
+    user = await authenticate_websocket(websocket)
+    if not user:
+        await websocket.close(code=4401, reason="not authenticated")
+        return
+
+    meeting = app.state.manager.store.get_meeting(meeting_id)
+    if not meeting or meeting.user_id != user.id:
+        await websocket.close(code=4403, reason="forbidden")
+        return
+
+    await websocket.accept()
 
     async def on_event(event: Dict[str, Any]) -> None:
         if "meeting_id" not in event:

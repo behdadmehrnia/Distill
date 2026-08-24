@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from api.auth.deps import get_current_user
 from api.tuning import _sanitize, make_tuning, public_tuning_payload
 
-router = APIRouter(tags=["tuning"])
+router = APIRouter(
+    tags=["tuning"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.get("/tuning")

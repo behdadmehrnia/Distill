@@ -3,7 +3,10 @@
 **Model stack (profiles, choosing models, all env vars):**  
 → **[`MODELS.md`](MODELS.md)**
 
-This page is a short entry point. Prefer `MODELS.md` for configuration detail.
+**Auth + PostgreSQL:**  
+→ **[`AUTH.md`](AUTH.md)** — start Postgres before `python -m api` / `pytest`.
+
+This page is a short entry point. Prefer `MODELS.md` for model configuration and `AUTH.md` for login/database.
 
 ---
 

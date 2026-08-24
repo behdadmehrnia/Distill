@@ -28,7 +28,7 @@
       body {
         font-family:
           "Vazirmatn", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-        background: #1a1a1a;
+        background: #121212;
         color: #e0e0e0;
         direction: rtl;
         display: flex;
@@ -43,21 +43,27 @@
       .navbar {
         flex-shrink: 0;
         display: flex;
+        flex-direction: row;
         align-items: center;
         justify-content: space-between;
         gap: 1rem;
         padding: 0.7rem 1.25rem;
+        min-height: 56px;
         background: #151515;
         border-bottom: 1px solid #333;
+        width: 100%;
+        box-sizing: border-box;
       }
 
       .nav-brand {
         display: inline-flex;
+        flex-direction: row;
         align-items: center;
         gap: 0.7rem;
         color: #f9d423;
         font-weight: 900;
         font-size: 1.2rem;
+        white-space: nowrap;
       }
 
       .nav-brand svg {
@@ -68,6 +74,25 @@
         display: flex;
         align-items: center;
         gap: 0.85rem;
+      }
+
+      .nav-user {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .nav-user-name {
+        color: #a8a8a8;
+        font-size: 0.9rem;
+        white-space: nowrap;
+      }
+
+      .navbar .btn-ghost {
+        width: auto;
+        padding: 0.45rem 0.85rem;
+        font-size: 0.85rem;
       }
 
       .nav-status {
@@ -1939,6 +1964,13 @@
           <span id="statusText">آماده</span>
         </div>
         <div id="recordTimer" class="nav-timer idle">00:00</div>
+        <a href="/dashboard" class="linkish">جلسات من</a>
+        <div class="nav-user">
+          <span id="userName" class="nav-user-name"></span>
+          <button type="button" id="logoutBtn" class="btn btn-ghost btn-sm">
+            خروج
+          </button>
+        </div>
       </div>
     </nav>
 

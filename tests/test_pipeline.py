@@ -74,8 +74,8 @@ class MockSTT:
 
 
 @pytest.fixture
-def store(tmp_path):
-    return TranscriptStore(db_path=str(tmp_path / "meetings.db"))
+def store(database_url):
+    return TranscriptStore(database_url=database_url)
 
 
 def test_pipeline_chunk_stt_diarize_align():

@@ -189,13 +189,15 @@ class DistillClient {
     const status = meeting.status || "stopped";
     this.meetingStatus = status;
     if (status === "recording") {
-      this.setStatus("recording", "جلسه در حال ضبط (تاریخچه بارگذاری شد)");
+      this.setStatus("recording", "در حال ضبط");
       this.setRecordingControls({ recording: true });
     } else if (status === "processing") {
       this.setStatus("processing", "در حال پردازش");
       this.setRecordingControls({ processing: true });
+    } else if (status === "created") {
+      this.setStatus("connected", "آماده");
     } else {
-      this.setStatus("connected", "تاریخچه جلسه بارگذاری شد");
+      this.setStatus("connected", "آماده");
     }
     this.updateReviewAvailability();
   }
@@ -1027,7 +1029,7 @@ class DistillClient {
         const res = await fetch(`/meetings/${this.meetingId}/start`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reset: !!this.hasRecording }),
+          body: JSON.stringify({ reset: !!this.hasRecording, title }),
         });
         if (!res.ok) throw new Error(await res.text());
         meeting = await res.json();
@@ -3598,6 +3600,16 @@ class DistillClient {
   }
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+  if (window.distillAuth) {
+    const user = await distillAuth.requireAuth();
+    if (!user) return;
+    const nameEl = document.getElementById("userName");
+    if (nameEl) nameEl.textContent = user.display_name || user.email;
+    const logoutBtn = document.getElementById("logoutBtn");
+    if (logoutBtn) {
+      logoutBtn.addEventListener("click", () => distillAuth.logout());
+    }
+  }
   window.distillClient = new DistillClient();
 });

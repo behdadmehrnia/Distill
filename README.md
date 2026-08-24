@@ -6,10 +6,12 @@
 
 ```
 api/                 # اپلیکیشن + UI
-  web/               # لندینگ (/) و دستیار (/assistant)
+  web/               # لندینگ، لاگین، داشبورد، دستیار (HTML/JS)
   routes/
+  auth/
   meeting/
   providers/
+docs/                # MODELS, LOCAL_RUN, AUTH
 tests/
 data/
 .env
@@ -19,6 +21,8 @@ data/
 
 **Model stack (diarize-only → full LLM/STT/diarize, model choice, env vars):**  
 [`docs/MODELS.md`](docs/MODELS.md)
+
+**Auth + PostgreSQL:** [`docs/AUTH.md`](docs/AUTH.md)
 
 **Quick local / hybrid:** [`docs/LOCAL_RUN.md`](docs/LOCAL_RUN.md) · [`runtime/README.md`](runtime/README.md)
 
@@ -116,15 +120,14 @@ See `runtime/README.md` and `diarize/README.md`.
 
 ## Docker
 
-کل API (لندینگ، دستیار، REST، WebSocket، `/docs`) داخل یک کانتینر اجرا می‌شود. ایمیج **CPU-only** است و torch/pyannote را هم شامل می‌شود. دادهٔ ماندگار روی volume به `/app/data` مپ می‌شود:
+کل API (لندینگ، دستیار، REST، WebSocket، `/docs`) داخل یک کانتینر اجرا می‌شود. ایمیج **CPU-only** است و torch/pyannote را هم شامل می‌شود. **کاربران و جلسات** در سرویس **PostgreSQL** ذخیره می‌شوند (جزئیات: [`docs/AUTH.md`](docs/AUTH.md)). دادهٔ فایلی روی volume به `/app/data` مپ می‌شود:
 
-- `meetings.db` — دیتابیس جلسات (WAL mode)
 - `uploads/` — فایل‌های آپلودی
 - `audio/` — صوت ضبط زنده
 - `stt_cache/` — کش رونویسی
 - `hf_cache/` / `torch_cache/` — کش مدل‌های diarization (تا بعد از rebuild دوباره دانلود نشوند)
 
-`HF_TOKEN` را در `.env` بگذارید و شرایط مدل‌های gated pyannote را در Hugging Face بپذیرید.
+`HF_TOKEN` را در `.env` بگذارید و شرایط مدل‌های gated pyannote را در Hugging Face بپذیرید. `JWT_SECRET` و `DATABASE_URL` را برای production تنظیم کنید.
 
 ```bash
 cp .env.example .env
@@ -154,19 +157,24 @@ pip install -r requirements.optional.txt
 
 ## متغیرهای محیطی
 
-مسیرهای ماندگار در کد ثابت‌اند و از env خوانده نمی‌شوند:
+مسیرهای فایلی ماندگار در کد ثابت‌اند و از env خوانده نمی‌شوند:
 
-- `data/meetings.db`
 - `data/uploads/`
 - `data/audio/`
 - `data/stt_cache/`
 - `data/hf_cache/` (در Docker)
 - `api/web/`
 
-در Docker همین‌ها زیر `/app/...` هستند؛ volume روی `/app/data` (اعلام‌شده در Dockerfile و bind در compose) کافی است.
+کاربران و جلسات در Postgres هستند (`DATABASE_URL`) — [`docs/AUTH.md`](docs/AUTH.md).
+
+در Docker مسیرهای فایلی زیر `/app/...` هستند؛ volume روی `/app/data` کافی است. سرویس `postgres` volume جداگانه دارد.
 
 | متغیر | پیش‌فرض | توضیح |
 |--------|---------|--------|
+| `DATABASE_URL` | `postgresql://distill:distill@127.0.0.1:5432/distill` | Postgres (users + meetings) |
+| `JWT_SECRET` | placeholder | کلید امضای JWT — در production عوض کنید |
+| `JWT_EXPIRE_MINUTES` | `10080` | عمر توکن/کوکی (دقیقه) |
+| `AUTH_COOKIE_SECURE` | `0` | `1` پشت HTTPS |
 | `LLM_ENDPOINT` | — | آدرس chat completions |
 | `LLM_API_KEY` | — | کلید LLM |
 | `LLM_MODEL_NAME` | — | نام مدل |
@@ -186,6 +194,8 @@ pip install -r requirements.optional.txt
 | `HF_TOKEN` | — | فقط برای دانلود یک‌بارهٔ وزن‌های gated pyannote |
 
 ## تست
+
+Postgres باید در دسترس باشد (مثلاً `docker compose up -d postgres`). جزئیات: [`docs/AUTH.md`](docs/AUTH.md).
 
 ```bash
 pip install -r requirements.txt

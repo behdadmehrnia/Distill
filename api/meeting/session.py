@@ -1095,9 +1095,12 @@ class MeetingManager:
         self,
         title: str = "Untitled Meeting",
         participants: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
         on_event: Optional[EventCallback] = None,
     ) -> MeetingSession:
-        record = MeetingRecord.create(title=title, participants=participants)
+        record = MeetingRecord.create(
+            title=title, participants=participants, user_id=user_id
+        )
         self.store.save_meeting(record)
         session = MeetingSession(
             record=record,
@@ -1152,6 +1155,35 @@ class MeetingManager:
         if record.status in (MeetingStatus.RECORDING, MeetingStatus.PROCESSING):
             return self._reset_cancelled_record(record)
         return record
+
+    async def delete_meeting(self, meeting_id: str, *, audio_dir: str) -> bool:
+        """Delete a meeting and derived artifacts (segments, insights, minutes, audio)."""
+        session = self._sessions.pop(meeting_id, None)
+        if session is not None:
+            try:
+                await session.cancel()
+            except Exception:
+                logger.exception("Meeting cancel during delete failed: %s", meeting_id)
+
+        record = self.store.get_meeting(meeting_id)
+        if not record:
+            return False
+
+        deleted = self.store.delete_meeting(meeting_id)
+        if not deleted:
+            return False
+
+        # Best-effort cleanup of the primary on-disk recordings.
+        for path in (
+            os.path.join(audio_dir, f"{meeting_id}.wav"),
+            record.audio_path,
+        ):
+            if path and os.path.isfile(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        return True
 
     def get_or_restore(
         self, meeting_id: str, on_event: Optional[EventCallback] = None

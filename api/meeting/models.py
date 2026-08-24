@@ -156,14 +156,20 @@ class MeetingRecord:
     audio_path: Optional[str] = None
     participants: List[str] = field(default_factory=list)
     speaker_map: Dict[str, str] = field(default_factory=dict)
+    user_id: Optional[str] = None
 
     @staticmethod
-    def create(title: str = "Untitled Meeting", participants: Optional[List[str]] = None) -> "MeetingRecord":
+    def create(
+        title: str = "Untitled Meeting",
+        participants: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+    ) -> "MeetingRecord":
         return MeetingRecord(
             id=str(uuid.uuid4()),
             title=title,
             status=MeetingStatus.CREATED,
             participants=participants or [],
+            user_id=user_id,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -178,4 +184,5 @@ class MeetingRecord:
             "audio_path": self.audio_path,
             "participants": self.participants,
             "speaker_map": self.speaker_map,
+            "user_id": self.user_id,
         }

@@ -1,22 +1,14 @@
 from fastapi.testclient import TestClient
 
-from api.app import create_app
-from api.config import Settings
+from tests.conftest import make_client, register_user
 
 
 def _make_client(tmp_path) -> TestClient:
-    base = Settings.from_env()
-    settings = Settings(
-        host="127.0.0.1",
-        port=0,
-        db_path=tmp_path / "meetings.db",
-        upload_dir=tmp_path / "uploads",
-        audio_dir=tmp_path / "audio",
-        stt_cache_dir=tmp_path / "stt_cache",
-        web_dir=base.web_dir,
-    )
-    app = create_app(settings)
-    return TestClient(app)
+    return make_client(tmp_path)
+
+
+def _auth(client):
+    register_user(client)
 
 
 def test_health(tmp_path):
@@ -42,6 +34,7 @@ def test_health(tmp_path):
 
 def test_create_meeting_without_start(tmp_path):
     with _make_client(tmp_path) as client:
+        _auth(client)
         resp = client.post("/meetings", json={"title": "تست", "start": False})
         assert resp.status_code == 201
         data = resp.json()
@@ -55,12 +48,14 @@ def test_create_meeting_without_start(tmp_path):
 
 def test_transcript_404(tmp_path):
     with _make_client(tmp_path) as client:
+        _auth(client)
         resp = client.get("/meetings/does-not-exist/transcript")
         assert resp.status_code == 404
 
 
 def test_meeting_debug_endpoint(tmp_path):
     with _make_client(tmp_path) as client:
+        _auth(client)
         created = client.post("/meetings", json={"title": "دیباگ", "start": False})
         assert created.status_code == 201
         meeting_id = created.json()["id"]
@@ -75,6 +70,7 @@ def test_meeting_debug_endpoint(tmp_path):
 
 def test_speaker_map_patch(tmp_path):
     with _make_client(tmp_path) as client:
+        _auth(client)
         created = client.post("/meetings", json={"title": "نام‌گذاری", "start": False})
         meeting_id = created.json()["id"]
         resp = client.patch(
@@ -91,6 +87,7 @@ def test_segment_text_patch(tmp_path):
     from api.meeting.models import TranscriptSegment
 
     with _make_client(tmp_path) as client:
+        _auth(client)
         created = client.post("/meetings", json={"title": "ویرایش متن", "start": False})
         meeting_id = created.json()["id"]
         store = client.app.state.manager.store
@@ -148,6 +145,7 @@ def test_speakers_list_and_sample_audio(tmp_path):
     from api.meeting.models import SpeakerInterval, TranscriptSegment
 
     with _make_client(tmp_path) as client:
+        _auth(client)
         created = client.post("/meetings", json={"title": "سخنگوها", "start": False})
         meeting_id = created.json()["id"]
         store = client.app.state.manager.store
@@ -224,6 +222,7 @@ def test_minutes_generate_get_put(tmp_path):
     from api.meeting.models import TranscriptSegment
 
     with _make_client(tmp_path) as client:
+        _auth(client)
         created = client.post("/meetings", json={"title": "صورتجلسه", "start": False})
         meeting_id = created.json()["id"]
         store = client.app.state.manager.store
@@ -271,6 +270,7 @@ def test_minutes_generate_returns_502_when_llm_unreachable(tmp_path):
             raise RuntimeError("زمان پاسخ مدل زبانی (LLM) در 81.29.248.136 به پایان رسید.")
 
     with _make_client(tmp_path) as client:
+        _auth(client)
         client.app.state.minutes = MeetingMinutesGenerator(BoomLLM())
         created = client.post("/meetings", json={"title": "صورتجلسه", "start": False})
         meeting_id = created.json()["id"]
@@ -295,6 +295,7 @@ def test_minutes_generate_returns_502_when_llm_unreachable(tmp_path):
 
 def test_recording_endpoint_and_restart(tmp_path):
     with _make_client(tmp_path) as client:
+        _auth(client)
         created = client.post("/meetings", json={"title": "ضبط", "start": False})
         meeting_id = created.json()["id"]
 
@@ -345,6 +346,7 @@ def test_websocket_disconnect_auto_cancels_recording(tmp_path):
     import time
 
     with _make_client(tmp_path) as client:
+        _auth(client)
         created = client.post("/meetings", json={"title": "تب بسته", "start": True})
         assert created.status_code == 201
         meeting_id = created.json()["id"]
@@ -375,6 +377,7 @@ def test_websocket_disconnect_auto_cancels_recording(tmp_path):
 
 def test_upload_rejects_invalid_audio(tmp_path):
     with _make_client(tmp_path) as client:
+        _auth(client)
         created = client.post("/meetings", json={"title": "آپلود", "start": False})
         meeting_id = created.json()["id"]
         resp = client.post(
@@ -390,6 +393,7 @@ def test_upload_rejects_invalid_audio(tmp_path):
 
 def test_upload_rejects_empty_body(tmp_path):
     with _make_client(tmp_path) as client:
+        _auth(client)
         created = client.post("/meetings", json={"title": "آپلود", "start": False})
         meeting_id = created.json()["id"]
         resp = client.post(
@@ -405,6 +409,7 @@ def test_cancel_resets_processing_meeting(tmp_path):
     from api.meeting.models import MeetingStatus
 
     with _make_client(tmp_path) as client:
+        _auth(client)
         created = client.post("/meetings", json={"title": "لغو", "start": False})
         meeting_id = created.json()["id"]
         meeting = client.app.state.manager.store.get_meeting(meeting_id)
@@ -424,6 +429,7 @@ def test_orphaned_recording_status_allows_restart(tmp_path):
     from api.meeting.models import MeetingStatus
 
     with _make_client(tmp_path) as client:
+        _auth(client)
         created = client.post("/meetings", json={"title": "یتیم", "start": False})
         meeting_id = created.json()["id"]
 
