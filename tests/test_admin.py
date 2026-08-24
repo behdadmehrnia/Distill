@@ -257,3 +257,63 @@ def test_admin_page_visible_to_admin(tmp_path):
         resp = client.get("/admin", follow_redirects=False)
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
+
+
+def test_dashboard_redirects_admin_to_admin_page(tmp_path):
+    with make_client(
+        tmp_path,
+        admin_username="admin@test.com",
+        admin_password="adminpass123",
+    ) as client:
+        client.post(
+            "/auth/login",
+            json={"email": "admin@test.com", "password": "adminpass123"},
+        )
+        resp = client.get("/dashboard", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/admin"
+
+
+def test_dashboard_still_serves_plain_users(tmp_path):
+    with make_client(
+        tmp_path,
+        admin_username="admin@test.com",
+        admin_password="adminpass123",
+    ) as client:
+        register_user(client, email="plain@test.com")
+        resp = client.get("/dashboard", follow_redirects=False)
+        assert resp.status_code == 200
+
+
+def test_admin_meetings_lists_everyone_with_owner_info(tmp_path):
+    with make_client(
+        tmp_path,
+        admin_username="admin@test.com",
+        admin_password="adminpass123",
+    ) as client:
+        client.post(
+            "/auth/login",
+            json={"email": "admin@test.com", "password": "adminpass123"},
+        )
+        register_user(client, email="member@test.com")
+        created = client.post(
+            "/meetings", json={"title": "team sync", "start": False}
+        )
+        assert created.status_code == 201
+
+        client.post(
+            "/auth/login",
+            json={"email": "admin@test.com", "password": "adminpass123"},
+        )
+        resp = client.get("/admin/meetings")
+        assert resp.status_code == 200
+        meetings = resp.json()["meetings"]
+        assert len(meetings) == 1
+        assert meetings[0]["title"] == "team sync"
+        assert meetings[0]["owner"]["email"] == "member@test.com"
+
+
+def test_non_admin_cannot_list_all_meetings(tmp_path):
+    with make_client(tmp_path) as client:
+        register_user(client, email="plain@test.com")
+        assert client.get("/admin/meetings").status_code == 403

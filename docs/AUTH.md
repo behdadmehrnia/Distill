@@ -128,13 +128,20 @@ All routes require `role=admin` (`403` otherwise):
 | `GET /admin/users` | List all users (id, email, display name, role, active, created_at) |
 | `PATCH /admin/users/{id}/role` | Body `{ "role": "admin" \| "user" }` — change a user's role. Blocked if it would leave zero admins. |
 | `PATCH /admin/users/{id}/active` | Body `{ "is_active": bool }` — enable/disable a user. Blocked for your own account when deactivating. |
+| `GET /admin/meetings` | List every meeting across all users (title, status, has_recording, created_at, and the owning user's public info under `owner`) |
 
 ### Admin page (`/admin`)
 
-`GET /admin` serves `admin.html` — a table of all users with buttons to
-promote/demote and activate/deactivate. Anonymous users are redirected to
-`/login?next=/admin`; non-admin users are redirected to `/dashboard`. Signed-in
-admins see a **"مدیریت"** link in the dashboard navbar.
+`GET /admin` serves `admin.html` — a single page with, top to bottom: a table
+of all users (promote/demote, activate/deactivate), a read-only table of
+every meeting on the platform showing which user created it, and finally the
+admin's own "جلسات من" section (create/open/delete — identical to the
+regular dashboard). Anonymous users are redirected to `/login?next=/admin`;
+non-admin users are redirected to `/dashboard`.
+
+Admins never see the plain per-user dashboard: `GET /dashboard` redirects an
+admin straight to `/admin` instead of rendering `dashboard.html`, so there is
+one page for admins rather than two pages to toggle between.
 
 ## Auth model
 
@@ -161,8 +168,8 @@ Clients may also send `Authorization: Bearer <token>`. WebSockets accept the coo
 
 | Surface | Behavior |
 |---------|----------|
-| `GET /dashboard` | Redirect to `/login?next=...` if anonymous |
-| `GET /admin`, `/admin/users`, `/admin/users/{id}/**` | Login required; `role=admin` required (`403` on the API, redirect to `/dashboard` on the page) |
+| `GET /dashboard` | Redirect to `/login?next=...` if anonymous; redirect to `/admin` if the signed-in user is an admin |
+| `GET /admin`, `/admin/users`, `/admin/users/{id}/**`, `/admin/meetings` | Login required; `role=admin` required (`403` on the API, redirect to `/dashboard` on the page) |
 | `GET /assistant`, `/assistant/{id}` | Login required; meeting must belong to the user |
 | `/meetings` and `/meetings/{id}/**` | Login required; meeting routes are scoped to the owner (`404` if not yours) |
 | `GET/PUT /tuning`, `POST /tuning/reset` | Login required |

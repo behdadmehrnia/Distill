@@ -67,6 +67,8 @@ async def serve_dashboard(
 ) -> Response:
     if not user:
         return RedirectResponse(url="/login?next=/dashboard", status_code=302)
+    if user.is_admin:
+        return RedirectResponse(url="/admin", status_code=302)
     return _web_file(request, "dashboard.html")
 
 

@@ -1,4 +1,17 @@
 const ROLE_LABELS = { admin: "مدیر", user: "کاربر" };
+const MEETING_STATUS_LABELS = {
+  created: "ایجاد شده",
+  recording: "در حال ضبط",
+  processing: "در حال پردازش",
+  stopped: "پایان یافته",
+  failed: "ناموفق",
+};
+
+function meetingStatusClass(status) {
+  if (status === "recording" || status === "processing") return "is-active";
+  if (status === "failed") return "is-failed";
+  return "is-done";
+}
 
 function formatDate(ts) {
   if (!ts) return "—";
@@ -149,6 +162,185 @@ async function loadUsers(currentUserId) {
   wrap.hidden = false;
 }
 
+function renderMeetingRow(m) {
+  const tr = document.createElement("tr");
+
+  const titleCell = document.createElement("td");
+  titleCell.textContent = m.title || "جلسه بدون عنوان";
+
+  const ownerCell = document.createElement("td");
+  if (m.owner) {
+    const name = document.createElement("div");
+    name.className = "admin-user-name";
+    name.textContent = m.owner.display_name || m.owner.email;
+    const email = document.createElement("div");
+    email.className = "admin-user-email";
+    email.textContent = m.owner.email;
+    ownerCell.append(name, email);
+  } else {
+    ownerCell.textContent = "—";
+  }
+
+  const statusCell = document.createElement("td");
+  const statusBadge = document.createElement("span");
+  statusBadge.className = `meeting-status ${meetingStatusClass(m.status)}`;
+  statusBadge.textContent = MEETING_STATUS_LABELS[m.status] || m.status;
+  statusCell.append(statusBadge);
+
+  const recordingCell = document.createElement("td");
+  recordingCell.textContent = m.has_recording ? "دارد" : "—";
+
+  const dateCell = document.createElement("td");
+  dateCell.textContent = formatDate(m.created_at);
+
+  tr.append(titleCell, ownerCell, statusCell, recordingCell, dateCell);
+  return tr;
+}
+
+async function loadAllMeetings() {
+  const loading = document.getElementById("meetingsAdminLoading");
+  const errorBox = document.getElementById("meetingsAdminError");
+  const empty = document.getElementById("meetingsAdminEmpty");
+  const wrap = document.getElementById("meetingsAdminTableWrap");
+  const body = document.getElementById("meetingsAdminTableBody");
+
+  loading.hidden = false;
+  errorBox.hidden = true;
+  empty.hidden = true;
+  wrap.hidden = true;
+
+  const res = await fetch("/admin/meetings");
+  loading.hidden = true;
+
+  if (res.status === 403) {
+    window.location.href = "/dashboard";
+    return;
+  }
+  if (res.status === 401) {
+    window.location.href = "/login?next=/admin";
+    return;
+  }
+  if (!res.ok) {
+    errorBox.textContent = "خطا در بارگذاری جلسات";
+    errorBox.hidden = false;
+    return;
+  }
+
+  const data = await res.json();
+  const meetings = data.meetings || [];
+  if (!meetings.length) {
+    empty.hidden = false;
+    return;
+  }
+
+  body.innerHTML = "";
+  meetings.forEach((m) => body.appendChild(renderMeetingRow(m)));
+  wrap.hidden = false;
+}
+
+async function createMeeting() {
+  const res = await fetch("/meetings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: "", start: false }),
+  });
+  if (res.status === 401) {
+    window.location.href = "/login?next=" + encodeURIComponent("/admin");
+    return;
+  }
+  if (!res.ok) throw new Error("create failed");
+  const data = await res.json();
+  window.location.href = `/assistant/${data.id}`;
+}
+
+async function deleteOwnMeeting(id, cardEl) {
+  if (!confirm("این جلسه حذف شود؟")) return;
+  const res = await fetch(`/meetings/${id}`, { method: "DELETE" });
+  if (!res.ok) {
+    alert("حذف ناموفق بود");
+    return;
+  }
+  cardEl.remove();
+  const list = document.getElementById("meetingsList");
+  if (!list.children.length) {
+    list.hidden = true;
+    document.getElementById("meetingsEmpty").hidden = false;
+  }
+}
+
+function renderOwnMeeting(m) {
+  const li = document.createElement("li");
+  li.className = "meeting-card";
+
+  const meta = document.createElement("div");
+  meta.className = "meeting-card-main";
+
+  const title = document.createElement("h2");
+  title.className = "meeting-card-title";
+  title.textContent = m.title || "جلسه بدون عنوان";
+
+  const status = document.createElement("span");
+  status.className = `meeting-status ${meetingStatusClass(m.status)}`;
+  status.textContent = MEETING_STATUS_LABELS[m.status] || m.status;
+
+  const info = document.createElement("p");
+  info.className = "meeting-card-meta";
+  const parts = [formatDate(m.created_at)];
+  if (m.has_recording) parts.push("ضبط موجود");
+  info.textContent = parts.join(" · ");
+
+  meta.append(title, status, info);
+
+  const actions = document.createElement("div");
+  actions.className = "meeting-card-actions";
+
+  const openBtn = document.createElement("a");
+  openBtn.className = "btn btn-primary btn-sm";
+  openBtn.href = `/assistant/${m.id}`;
+  openBtn.textContent =
+    m.status === "recording" || m.status === "processing" ? "ادامه" : "باز کردن";
+
+  const delBtn = document.createElement("button");
+  delBtn.type = "button";
+  delBtn.className = "btn btn-ghost btn-sm";
+  delBtn.textContent = "حذف";
+  delBtn.addEventListener("click", () => deleteOwnMeeting(m.id, li));
+
+  actions.append(openBtn, delBtn);
+  li.append(meta, actions);
+  return li;
+}
+
+async function loadOwnMeetings() {
+  const loading = document.getElementById("meetingsLoading");
+  const empty = document.getElementById("meetingsEmpty");
+  const list = document.getElementById("meetingsList");
+
+  const res = await fetch("/meetings");
+  loading.hidden = true;
+
+  if (res.status === 401) {
+    window.location.href = "/login?next=/admin";
+    return;
+  }
+  if (!res.ok) {
+    loading.textContent = "خطا در بارگذاری جلسات";
+    loading.hidden = false;
+    return;
+  }
+
+  const data = await res.json();
+  const meetings = data.meetings || [];
+  if (!meetings.length) {
+    empty.hidden = false;
+    return;
+  }
+
+  list.innerHTML = "";
+  meetings.forEach((m) => list.appendChild(renderOwnMeeting(m)));
+  list.hidden = false;
+}
+
 (async function init() {
   const user = await distillAuth.requireAuth();
   if (!user) return;
@@ -164,5 +356,8 @@ async function loadUsers(currentUserId) {
     distillAuth.logout();
   });
 
-  await loadUsers(user.id);
+  document.getElementById("newMeetingBtn").addEventListener("click", createMeeting);
+  document.getElementById("emptyNewBtn").addEventListener("click", createMeeting);
+
+  await Promise.all([loadUsers(user.id), loadAllMeetings(), loadOwnMeetings()]);
 })();

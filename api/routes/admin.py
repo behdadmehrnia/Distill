@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.auth.deps import require_admin
 from api.auth.models import ROLE_ADMIN, VALID_ROLES, UserRecord
+from api.routes.meetings import _resolve_recording_path
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -21,6 +22,35 @@ async def list_users(
 ) -> Dict[str, Any]:
     users = request.app.state.user_store.list_users()
     return {"users": [u.to_public_dict() for u in users]}
+
+
+@router.get("/meetings")
+async def list_all_meetings(
+    request: Request,
+    _: UserRecord = Depends(require_admin),
+    limit: int = 200,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    settings = request.app.state.settings
+    meetings = request.app.state.manager.store.list_all_meetings(
+        limit=limit, offset=offset
+    )
+    users_by_id = {u.id: u for u in request.app.state.user_store.list_users()}
+
+    out = []
+    for m in meetings:
+        data = m.to_dict()
+        path = _resolve_recording_path(
+            m.id,
+            m.audio_path,
+            audio_dir=settings.audio_dir,
+            upload_dir=settings.upload_dir,
+        )
+        data["has_recording"] = path is not None
+        owner = users_by_id.get(m.user_id) if m.user_id else None
+        data["owner"] = owner.to_public_dict() if owner else None
+        out.append(data)
+    return {"meetings": out}
 
 
 @router.patch("/users/{user_id}/role")

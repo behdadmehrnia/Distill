@@ -189,6 +189,22 @@ class TranscriptStore:
                 ).fetchall()
                 return [self._row_to_meeting(r) for r in rows]
 
+    def list_all_meetings(
+        self, *, limit: int = 200, offset: int = 0
+    ) -> List[MeetingRecord]:
+        """All meetings across all users, newest first (admin use)."""
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM meetings
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (limit, offset),
+                ).fetchall()
+                return [self._row_to_meeting(r) for r in rows]
+
     def delete_meeting(self, meeting_id: str) -> bool:
         """Delete meeting and all derived artifacts."""
         with self._lock:

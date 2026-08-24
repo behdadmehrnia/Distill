@@ -9,7 +9,7 @@
   </head>
   <body>
     <nav class="navbar">
-      <a href="/dashboard" class="nav-brand">
+      <a href="/admin" class="nav-brand">
         <svg
           width="42"
           height="20"
@@ -30,7 +30,6 @@
         Distill
       </a>
       <div class="nav-meta">
-        <a href="/dashboard" class="btn btn-ghost btn-sm">جلسات</a>
         <div class="nav-user">
           <span id="userName" class="nav-user-name"></span>
           <button type="button" id="logoutBtn" class="btn btn-ghost btn-sm">
@@ -65,6 +64,53 @@
           <tbody id="usersTableBody"></tbody>
         </table>
       </div>
+
+      <div class="dash-toolbar admin-section-toolbar">
+        <div>
+          <h1 class="dash-title">همه جلسات</h1>
+          <p class="dash-subtitle">جلسات ثبت‌شده توسط تمام کاربران.</p>
+        </div>
+      </div>
+
+      <div id="meetingsAdminLoading" class="dash-loading">در حال بارگذاری…</div>
+      <div id="meetingsAdminError" class="dash-empty" hidden></div>
+      <div id="meetingsAdminEmpty" class="dash-empty" hidden>
+        <p>هنوز هیچ جلسه‌ای ثبت نشده است.</p>
+      </div>
+
+      <div class="admin-table-wrap" id="meetingsAdminTableWrap" hidden>
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>عنوان جلسه</th>
+              <th>ایجادکننده</th>
+              <th>وضعیت</th>
+              <th>ضبط</th>
+              <th>تاریخ ایجاد</th>
+            </tr>
+          </thead>
+          <tbody id="meetingsAdminTableBody"></tbody>
+        </table>
+      </div>
+
+      <div class="dash-toolbar admin-section-toolbar">
+        <div>
+          <h1 class="dash-title">جلسات من</h1>
+        </div>
+        <button type="button" id="newMeetingBtn" class="btn btn-primary">
+          جلسه جدید
+        </button>
+      </div>
+
+      <div id="meetingsLoading" class="dash-loading">در حال بارگذاری…</div>
+      <div id="meetingsEmpty" class="dash-empty" hidden>
+        <div class="dash-empty-icon" aria-hidden="true">🎙️</div>
+        <p>هنوز جلسه‌ای ندارید.</p>
+        <button type="button" class="btn btn-primary" id="emptyNewBtn">
+          اولین جلسه را بسازید
+        </button>
+      </div>
+      <ul id="meetingsList" class="meeting-list" hidden></ul>
     </main>
 
     <script src="/auth.js"></script>
