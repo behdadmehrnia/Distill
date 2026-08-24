@@ -134,6 +134,10 @@ async function loadMeetings() {
   document.getElementById("userName").textContent =
     user.display_name || user.email;
 
+  if (user.role === "admin") {
+    document.getElementById("adminLink").hidden = false;
+  }
+
   document.getElementById("logoutBtn").addEventListener("click", () => {
     distillAuth.logout();
   });

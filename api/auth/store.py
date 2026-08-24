@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, Mapping, Optional
+from typing import Any, List, Mapping, Optional
 
 from api.db import connect
 
-from .models import UserRecord
+from .models import ROLE_USER, UserRecord
 
 
 class UserStore:
@@ -30,9 +30,14 @@ class UserStore:
                         password_hash TEXT NOT NULL,
                         display_name TEXT NOT NULL DEFAULT '',
                         created_at DOUBLE PRECISION NOT NULL,
-                        is_active BOOLEAN NOT NULL DEFAULT TRUE
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                        role TEXT NOT NULL DEFAULT 'user'
                     )
                     """
+                )
+                # Upgrade path for databases created before the role column existed.
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'"
                 )
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)"
@@ -45,13 +50,14 @@ class UserStore:
                 conn.execute(
                     """
                     INSERT INTO users (
-                        id, email, password_hash, display_name, created_at, is_active
-                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                        id, email, password_hash, display_name, created_at, is_active, role
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         email = EXCLUDED.email,
                         password_hash = EXCLUDED.password_hash,
                         display_name = EXCLUDED.display_name,
-                        is_active = EXCLUDED.is_active
+                        is_active = EXCLUDED.is_active,
+                        role = EXCLUDED.role
                     """,
                     (
                         user.id,
@@ -60,6 +66,7 @@ class UserStore:
                         user.display_name,
                         user.created_at,
                         bool(user.is_active),
+                        user.role,
                     ),
                 )
                 conn.commit()
@@ -85,6 +92,22 @@ class UserStore:
                     return None
                 return self._row_to_user(row)
 
+    def list_users(self) -> List[UserRecord]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM users ORDER BY created_at ASC"
+                ).fetchall()
+                return [self._row_to_user(row) for row in rows]
+
+    def has_admin(self) -> bool:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM users WHERE role = 'admin' LIMIT 1"
+                ).fetchone()
+                return row is not None
+
     @staticmethod
     def _row_to_user(row: Mapping[str, Any]) -> UserRecord:
         return UserRecord(
@@ -94,4 +117,5 @@ class UserStore:
             display_name=row["display_name"] or "",
             created_at=float(row["created_at"]),
             is_active=bool(row["is_active"]),
+            role=row["role"] or ROLE_USER,
         )

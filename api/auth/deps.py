@@ -101,6 +101,14 @@ async def get_optional_user(
     )
 
 
+async def require_admin(
+    user: UserRecord = Depends(get_current_user),
+) -> UserRecord:
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="admin access required")
+    return user
+
+
 async def require_meeting(
     meeting_id: str,
     request: Request,

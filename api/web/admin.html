@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>جلسات من — Distill</title>
+    <title>مدیریت کاربران — Distill</title>
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -30,7 +30,7 @@
         Distill
       </a>
       <div class="nav-meta">
-        <a href="/admin" id="adminLink" class="btn btn-ghost btn-sm" hidden>مدیریت</a>
+        <a href="/dashboard" class="btn btn-ghost btn-sm">جلسات</a>
         <div class="nav-user">
           <span id="userName" class="nav-user-name"></span>
           <button type="button" id="logoutBtn" class="btn btn-ghost btn-sm">
@@ -43,25 +43,31 @@
     <main class="page dash-page">
       <div class="dash-toolbar">
         <div>
-          <h1 class="dash-title">جلسات من</h1>
+          <h1 class="dash-title">مدیریت کاربران</h1>
+          <p class="dash-subtitle">نقش و وضعیت فعال بودن کاربران را مدیریت کنید.</p>
         </div>
-        <button type="button" id="newMeetingBtn" class="btn btn-primary">
-          جلسه جدید
-        </button>
       </div>
 
-      <div id="meetingsLoading" class="dash-loading">در حال بارگذاری…</div>
-      <div id="meetingsEmpty" class="dash-empty" hidden>
-        <div class="dash-empty-icon" aria-hidden="true">🎙️</div>
-        <p>هنوز جلسه‌ای ندارید.</p>
-        <button type="button" class="btn btn-primary" id="emptyNewBtn">
-          اولین جلسه را بسازید
-        </button>
+      <div id="usersLoading" class="dash-loading">در حال بارگذاری…</div>
+      <div id="usersError" class="dash-empty" hidden></div>
+
+      <div class="admin-table-wrap" id="usersTableWrap" hidden>
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>کاربر</th>
+              <th>نقش</th>
+              <th>وضعیت</th>
+              <th>تاریخ ثبت‌نام</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="usersTableBody"></tbody>
+        </table>
       </div>
-      <ul id="meetingsList" class="meeting-list" hidden></ul>
     </main>
 
     <script src="/auth.js"></script>
-    <script src="/dashboard.js"></script>
+    <script src="/admin.js"></script>
   </body>
 </html>

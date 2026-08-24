@@ -40,6 +40,8 @@ Open:
 | `JWT_SECRET` | long insecure placeholder | HS256 signing key — **change in production** (use a long random string) |
 | `JWT_EXPIRE_MINUTES` | `10080` (7 days) | Cookie / token lifetime |
 | `AUTH_COOKIE_SECURE` | `0` | Set `1` when the app is served over HTTPS so the cookie is `Secure` |
+| `ADMIN_USERNAME` | unset | Email used to bootstrap the admin account (see [Roles](#roles-admin-vs-user) below) |
+| `ADMIN_PASSWORD` | unset | Password for the bootstrapped admin account |
 
 Paths under `data/` (uploads, audio, STT cache) stay on disk; they are **not** in Postgres. The old SQLite file `data/meetings.db` is unused after the Postgres migration and is not read by the app.
 
@@ -51,7 +53,7 @@ Paths under `data/` (uploads, audio, STT cache) stay on disk; they are **not** i
 
 Tables are created automatically on API startup (`CREATE TABLE IF NOT EXISTS`):
 
-- **users** — id, email (unique), password hash (bcrypt), display name, created_at, is_active
+- **users** — id, email (unique), password hash (bcrypt), display name, created_at, is_active, role (`admin` | `user`, default `user`)
 - **meetings** — metadata including `user_id` (owner)
 - **segments**, **insights**, **speaker_intervals**, **minutes** — meeting content
 
@@ -101,6 +103,39 @@ pytest
 
 ---
 
+## Roles: admin vs. user
+
+Every user has a `role` of `admin` or `user` (default `user`).
+
+### Bootstrapping the first admin
+
+On every API startup, if **no admin user exists yet**, and `ADMIN_USERNAME` +
+`ADMIN_PASSWORD` are both set:
+
+- if a user with that email already exists, it is **promoted** to `admin` (and reactivated);
+- otherwise a **new** user is created with that email/password and `role=admin`.
+
+Once at least one admin exists, this is a no-op on every subsequent startup —
+env vars are only a bootstrap mechanism, not a standing credential the app
+keeps re-applying. Manage roles afterward from `/admin` or the API below.
+
+### Admin API
+
+All routes require `role=admin` (`403` otherwise):
+
+| Route | Purpose |
+|-------|---------|
+| `GET /admin/users` | List all users (id, email, display name, role, active, created_at) |
+| `PATCH /admin/users/{id}/role` | Body `{ "role": "admin" \| "user" }` — change a user's role. Blocked if it would leave zero admins. |
+| `PATCH /admin/users/{id}/active` | Body `{ "is_active": bool }` — enable/disable a user. Blocked for your own account when deactivating. |
+
+### Admin page (`/admin`)
+
+`GET /admin` serves `admin.html` — a table of all users with buttons to
+promote/demote and activate/deactivate. Anonymous users are redirected to
+`/login?next=/admin`; non-admin users are redirected to `/dashboard`. Signed-in
+admins see a **"مدیریت"** link in the dashboard navbar.
+
 ## Auth model
 
 ### Email / password
@@ -127,6 +162,7 @@ Clients may also send `Authorization: Bearer <token>`. WebSockets accept the coo
 | Surface | Behavior |
 |---------|----------|
 | `GET /dashboard` | Redirect to `/login?next=...` if anonymous |
+| `GET /admin`, `/admin/users`, `/admin/users/{id}/**` | Login required; `role=admin` required (`403` on the API, redirect to `/dashboard` on the page) |
 | `GET /assistant`, `/assistant/{id}` | Login required; meeting must belong to the user |
 | `/meetings` and `/meetings/{id}/**` | Login required; meeting routes are scoped to the owner (`404` if not yours) |
 | `GET/PUT /tuning`, `POST /tuning/reset` | Login required |
@@ -144,6 +180,7 @@ Served by FastAPI from `api/web/` (not a separate frontend package):
 
 - `login.html` / `register.html` — forms calling `/auth/*`
 - `dashboard.html` + `dashboard.js` — list / create / open / delete meetings
+- `admin.html` + `admin.js` — user list with role/active management (admins only)
 - `auth.js` — shared helpers (me, logout, redirects)
 - Landing CTA → `/dashboard` (login if needed)
 
@@ -167,6 +204,7 @@ No extra env vars yet for Google/GitHub/Microsoft or SAML.
 3. Point `DATABASE_URL` at a managed or private Postgres; do not expose `5432` publicly.
 4. Change the default `distill`/`distill` DB password when the database is reachable beyond localhost.
 5. Prefer Compose/K8s secrets for `JWT_SECRET` and `DATABASE_URL` instead of committing `.env`.
+6. Set `ADMIN_USERNAME`/`ADMIN_PASSWORD` for the first deploy so an admin account exists; a strong, non-default password is required since this account has full user-management access.
 
 ---
 

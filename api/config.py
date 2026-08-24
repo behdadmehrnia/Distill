@@ -71,6 +71,10 @@ class Settings:
     jwt_expire_minutes: int = 10080
     auth_cookie_secure: bool = False
 
+    # --- Bootstrap admin account (created/promoted on startup if no admin exists) ---
+    admin_username: str | None = None
+    admin_password: str | None = None
+
     @classmethod
     def from_env(cls) -> "Settings":
         # Prefer MEETING_PORT; fall back to PORT (common on PaaS like Hamdocker)
@@ -107,6 +111,9 @@ class Settings:
             or "postgresql://distill:distill@127.0.0.1:5432/distill"
         )
 
+        admin_username = _env_str("ADMIN_USERNAME")
+        admin_password = _env_str("ADMIN_PASSWORD")
+
         return cls(
             host=_env_str("MEETING_HOST", "0.0.0.0") or "0.0.0.0",
             port=port,
@@ -139,6 +146,8 @@ class Settings:
             jwt_secret=jwt_secret,
             jwt_expire_minutes=jwt_expire_minutes,
             auth_cookie_secure=auth_cookie_secure,
+            admin_username=admin_username,
+            admin_password=admin_password,
         )
 
     def ensure_dirs(self) -> None:

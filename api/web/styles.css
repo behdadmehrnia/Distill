@@ -850,3 +850,69 @@ a { color: inherit; text-decoration: none; }
     justify-content: flex-end;
   }
 }
+
+/* ===== Admin users table ===== */
+.admin-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 0.85rem 1rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.admin-table thead th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.8rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-table tbody tr + tr {
+  border-top: 1px solid var(--line);
+}
+
+.admin-table tbody tr:hover {
+  background: var(--card-hover);
+}
+
+.admin-user-name {
+  font-weight: 600;
+}
+
+.admin-user-email {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.role-badge {
+  display: inline-block;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.role-badge.is-admin {
+  color: var(--yellow);
+  border-color: rgba(255, 200, 40, 0.35);
+  background: var(--yellow-soft);
+}
+
+.admin-row-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}

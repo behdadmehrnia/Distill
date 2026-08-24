@@ -74,7 +74,7 @@ def database_url() -> Iterator[str]:
 
 
 @contextmanager
-def make_client(tmp_path) -> Iterator[TestClient]:
+def make_client(tmp_path, **settings_overrides) -> Iterator[TestClient]:
     base = Settings.from_env()
     url, schema = create_test_schema(base.database_url)
     settings = Settings(
@@ -87,6 +87,7 @@ def make_client(tmp_path) -> Iterator[TestClient]:
         stt_cache_dir=tmp_path / "stt_cache",
         web_dir=base.web_dir,
         jwt_secret="test-secret-please-use-longer-key-for-jwt",
+        **settings_overrides,
     )
     app = create_app(settings)
     try:

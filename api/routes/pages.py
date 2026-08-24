@@ -98,6 +98,18 @@ async def serve_assistant_session(
     return _web_file(request, "assistant.html")
 
 
+@router.get("/admin", response_class=HTMLResponse)
+async def serve_admin(
+    request: Request,
+    user: Optional[UserRecord] = Depends(get_optional_user),
+) -> Response:
+    if not user:
+        return RedirectResponse(url="/login?next=/admin", status_code=302)
+    if not user.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=302)
+    return _web_file(request, "admin.html")
+
+
 @router.get("/styles.css")
 async def serve_css(request: Request) -> Response:
     return _web_file(request, "styles.css")
@@ -121,6 +133,11 @@ async def serve_auth_js(request: Request) -> Response:
 @router.get("/dashboard.js")
 async def serve_dashboard_js(request: Request) -> Response:
     return _web_file(request, "dashboard.js")
+
+
+@router.get("/admin.js")
+async def serve_admin_js(request: Request) -> Response:
+    return _web_file(request, "admin.js")
 
 
 @router.get("/logo.svg")

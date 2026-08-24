@@ -17,6 +17,7 @@ from api.providers.llm import OpenAICompatibleLLM
 from api.providers.stt import OpenAICompatibleSTT
 from api.routes import setup_routes
 from api.tuning import make_tuning
+from api.auth.bootstrap import ensure_admin_user
 from api.auth.store import UserStore
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,11 @@ def _build_services(settings: Settings) -> Dict[str, Any]:
     )
     store = TranscriptStore(database_url=settings.database_url)
     user_store = UserStore(database_url=settings.database_url)
+    ensure_admin_user(
+        user_store,
+        admin_username=settings.admin_username,
+        admin_password=settings.admin_password,
+    )
     # Never load pyannote/torch here — it OOMs small pods and blocks readiness.
     # Prefer DIARIZATION_ENDPOINT (remote sidecar) when set.
     diarizer = SpeakerDiarizer(
