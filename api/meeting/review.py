@@ -459,7 +459,16 @@ def _is_faithful_edit(original: str, edited: str) -> bool:
     return True
 
 
-def _apply_llm_edit(original: str, action: str, edited: str) -> tuple[str, str]:
+# A segment the cheap heuristic already scored this clean is unlikely to be a
+# genuine hallucination — don't let one small-model "drop" verdict erase real
+# speech the heuristic gate found no fault with. Below this ceiling the LLM's
+# own judgment (usually backed by heuristic reasons too) is trusted as before.
+_LLM_DROP_SCORE_CEILING = 0.6
+
+
+def _apply_llm_edit(
+    original: str, action: str, edited: str, *, original_score: float = 0.0
+) -> tuple[str, str]:
     """
     Apply an LLM keep/fix/drop with a faithfulness guard.
     Returns (text, effective_action). Empty text means drop.
@@ -468,7 +477,15 @@ def _apply_llm_edit(original: str, action: str, edited: str) -> tuple[str, str]:
     if action not in {"keep", "fix", "drop"}:
         action = "keep"
     if action == "drop":
-        return "", "drop"
+        if original_score >= _LLM_DROP_SCORE_CEILING:
+            logger.info(
+                "Rejected LLM drop of heuristically-clean text (score=%.2f): %r",
+                original_score,
+                (original or "")[:80],
+            )
+            action = "keep"
+        else:
+            return "", "drop"
 
     candidate = str(edited or "").strip() if action == "fix" else str(edited or original).strip()
     if action == "keep":
@@ -729,8 +746,10 @@ class TranscriptReviewAgent:
         self.llm = llm
         self.enabled = enabled and llm is not None
 
-    async def review_text(self, text: str, *, language: str = "fa") -> ReviewResult:
-        heuristic = gate_stt_text(text, language=language)
+    async def review_text(
+        self, text: str, *, language: str = "fa", min_score: float = 0.35
+    ) -> ReviewResult:
+        heuristic = gate_stt_text(text, min_score=min_score, language=language)
         if heuristic.action == "drop":
             return heuristic
         if not self.enabled:
@@ -754,7 +773,8 @@ class TranscriptReviewAgent:
             data = _parse_review_json(raw) or {}
             action = str(data.get("action") or "keep").lower()
             out_text, action = _apply_llm_edit(
-                candidate, action, str(data.get("text") or "")
+                candidate, action, str(data.get("text") or ""),
+                original_score=heuristic.score,
             )
             reason = str(data.get("reason") or "llm_review")
             if action == "drop":
@@ -902,8 +922,10 @@ class TranscriptReviewAgent:
                     original = batch_id_to_text.get(sid)
                     if original is None:
                         continue
+                    orig_score, _ = score_stt_text(original, language=language)
                     fixed, _eff = _apply_llm_edit(
-                        original, action, str(item.get("text") or "")
+                        original, action, str(item.get("text") or ""),
+                        original_score=orig_score,
                     )
                     reviewed_map[original] = fixed
             except Exception as exc:

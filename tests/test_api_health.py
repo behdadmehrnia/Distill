@@ -439,7 +439,7 @@ def test_orphaned_recording_status_allows_restart(tmp_path):
 
         stuck = client.get(f"/meetings/{meeting_id}")
         assert stuck.status_code == 200
-        assert stuck.json()["status"] == "created"
+        assert stuck.json()["status"] == "stopped"
 
         started = client.post(f"/meetings/{meeting_id}/start", json={})
         assert started.status_code == 200

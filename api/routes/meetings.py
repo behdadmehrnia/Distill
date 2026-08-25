@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -499,14 +499,11 @@ async def stop_meeting(
     if not session:
         raise HTTPException(status_code=404, detail="meeting not found")
 
-    async def _watch_disconnect() -> None:
-        while True:
-            if await request.is_disconnected():
-                session.request_cancel()
-                return
-            await asyncio.sleep(0.25)
-
-    watch = asyncio.create_task(_watch_disconnect())
+    # Deliberately do NOT cancel on client disconnect: a dropped connection
+    # (navigation, refresh, flaky network, server restart racing the
+    # request) is not the same as the user pressing cancel. Processing
+    # keeps running and persisting to completion; only the explicit
+    # POST /meetings/{id}/cancel route wipes the meeting.
     try:
         record = await session.stop()
     except ProcessingCancelled:
@@ -515,10 +512,6 @@ async def stop_meeting(
     except asyncio.CancelledError:
         record = await session.cancel()
         raise HTTPException(status_code=409, detail="processing cancelled") from None
-    finally:
-        watch.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await watch
 
     settings = request.app.state.settings
     path = _resolve_recording_path(
@@ -646,14 +639,11 @@ async def upload_audio(
 
     logger.info("Uploaded %s (%d bytes) for meeting %s", dest, size, meeting_id)
 
-    async def _watch_disconnect() -> None:
-        while True:
-            if await request.is_disconnected():
-                session.request_cancel()
-                return
-            await asyncio.sleep(0.25)
-
-    watch = asyncio.create_task(_watch_disconnect())
+    # Deliberately do NOT cancel on client disconnect: a dropped connection
+    # (navigation, refresh, flaky network, server restart racing the
+    # request) is not the same as the user pressing cancel. Processing
+    # keeps running and persisting to completion; only the explicit
+    # POST /meetings/{id}/cancel route wipes the meeting.
     try:
         segments = await session.process_uploaded_file(dest)
     except ValueError as exc:
@@ -663,10 +653,6 @@ async def upload_audio(
     except asyncio.CancelledError:
         await session.cancel(extra_paths=[dest])
         raise HTTPException(status_code=409, detail="processing cancelled") from None
-    finally:
-        watch.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await watch
     return {
         "meeting_id": meeting_id,
         "audio_path": dest,
@@ -789,6 +775,11 @@ async def update_minutes(
         minutes_kwargs["created_at"] = existing.created_at
     minutes = MeetingMinutes(**minutes_kwargs)
     store.save_minutes(minutes)
+    if meeting.status != MeetingStatus.STOPPED:
+        meeting.status = MeetingStatus.STOPPED
+        if meeting.stopped_at is None:
+            meeting.stopped_at = time.time()
+        store.save_meeting(meeting)
     await broadcast(
         request.app, meeting_id, {"type": "minutes", "minutes": minutes.to_dict()}
     )
@@ -859,17 +850,33 @@ async def audio_ws(websocket: WebSocket, meeting_id: str) -> None:
             session._running or session._stopping or session._pipeline_active
         ):
             asyncio.create_task(
-                _auto_cancel_after_disconnect(session, meeting_id),
-                name=f"auto-cancel-{meeting_id}",
+                _auto_finalize_after_disconnect(
+                    app.state.manager, session, meeting_id
+                ),
+                name=f"auto-finalize-{meeting_id}",
             )
 
 
-async def _auto_cancel_after_disconnect(session, meeting_id: str) -> None:
+async def _auto_finalize_after_disconnect(
+    manager, session, meeting_id: str
+) -> None:
+    """Best-effort finalize when the last client disconnects (refresh/tab close).
+
+    Unlike explicit POST /cancel, this must preserve captured work.
+    """
     try:
-        await session.cancel()
+        if session._running and not session._stopping:
+            await session.stop()
+        elif session._stopping or session._pipeline_active:
+            # Stop/upload processing already in flight — let it finish.
+            return
+        else:
+            record = manager.store.get_meeting(meeting_id)
+            if record is not None:
+                manager.heal_orphaned_recording(record)
     except Exception:
         logger.exception(
-            "Auto-cancel after WebSocket disconnect failed for %s", meeting_id
+            "Auto-finalize after WebSocket disconnect failed for %s", meeting_id
         )
 
 

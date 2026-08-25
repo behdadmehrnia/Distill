@@ -200,23 +200,46 @@ class DistillClient {
       this.setStatus("connected", "آماده");
     }
     this.updateReviewAvailability();
+
+    if (status === "stopped" && this.hasTranscriptContext()) {
+      try {
+        const minutesRes = await fetch(`/meetings/${this.meetingId}/minutes`);
+        if (minutesRes.ok) {
+          await this.openExistingMinutes();
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
   }
 
   onPageHide(ev) {
     // bfcache (back/forward) — page may return; do not finalize.
     if (ev && ev.persisted) return;
-    if (!this.shouldCancelOnLeave()) return;
-    this.isRecording = false;
-    this.cancelProcessingOnLeave();
+    if (!this.meetingId) return;
+    // Refresh/navigation is not an explicit cancel. Finalize live capture when
+    // possible; otherwise let server-side processing finish and heal on reload.
+    if (this.isRecording) {
+      this.isRecording = false;
+      this.finalizeOnLeave();
+      return;
+    }
+    if (this._processingAbortController) {
+      try {
+        this._processingAbortController.abort();
+      } catch (_) {}
+    }
+    try {
+      if (this.ws) {
+        this.ws.onclose = null;
+        this.ws.close();
+      }
+    } catch (_) {}
+    this.ws = null;
   }
 
   shouldCancelOnLeave() {
-    return (
-      !!this.meetingId &&
-      (this.isRecording ||
-        this.meetingStatus === "processing" ||
-        !!this._processingAbortController)
-    );
+    return false;
   }
 
   startProcessingRequest() {
@@ -235,6 +258,20 @@ class DistillClient {
 
   isLeaveAbort(err) {
     return !!(err && (err.name === "AbortError" || err.code === 20));
+  }
+
+  finalizeOnLeave() {
+    if (!this.meetingId) return;
+    try {
+      if (this.ws) {
+        this.ws.onclose = null;
+        this.ws.close();
+      }
+    } catch (_) {}
+    this.ws = null;
+    try {
+      fetch(`/meetings/${this.meetingId}/stop`, { method: "POST", keepalive: true });
+    } catch (_) {}
   }
 
   cancelProcessingOnLeave() {
@@ -273,8 +310,7 @@ class DistillClient {
     this.startBtn.addEventListener("click", () => this.startLive());
     this.stopBtn.addEventListener("click", () => this.stopLive());
     this.uploadBtn.addEventListener("click", () => this.uploadRecording());
-    // Tab close does not reliably run async stopLive — ping the server so the
-    // meeting is not left stuck in "recording" / "already recording".
+    // Tab close / refresh: finalize live capture when possible; do not cancel.
     window.addEventListener("pagehide", (ev) => this.onPageHide(ev));
     window.addEventListener("beforeunload", () => this.onPageHide());
     if (this.confirmCancelBtn) {

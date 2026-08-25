@@ -203,7 +203,9 @@ class MeetingSession:
             return localize_nonspeech_events(cleaned)
 
         if mode == "live" and self.review_agent is not None:
-            result = await self.review_agent.review_text(text, language=lang)
+            result = await self.review_agent.review_text(
+                text, language=lang, min_score=self._review_min_score()
+            )
         else:
             result = gate_stt_text(
                 text, min_score=self._review_min_score(), language=lang
@@ -1117,7 +1119,14 @@ class MeetingManager:
         return self._sessions.get(meeting_id)
 
     def heal_orphaned_recording(self, record: MeetingRecord) -> MeetingRecord:
-        """Reset stale recording/processing with no live worker to a clean created state."""
+        """Recover a meeting stuck at recording/processing with no live
+        in-memory session (e.g. after a server restart or crash mid-flight).
+
+        This must NOT discard already-captured work: segments, minutes, and
+        insights computed before the interruption are legitimate and stay.
+        Only the status/timestamps are healed so the meeting becomes usable
+        again instead of being stuck (or silently wiped) forever.
+        """
         if record.status not in (MeetingStatus.RECORDING, MeetingStatus.PROCESSING):
             return record
         live = self._sessions.get(record.id)
@@ -1125,7 +1134,11 @@ class MeetingManager:
             live._running or live._stopping or live._pipeline_active
         ):
             return record
-        return self._reset_cancelled_record(record)
+        record.status = MeetingStatus.STOPPED
+        if record.stopped_at is None:
+            record.stopped_at = time.time()
+        self.store.save_meeting(record)
+        return record
 
     def _reset_cancelled_record(self, record: MeetingRecord) -> MeetingRecord:
         self.store.replace_meeting_segments(record.id, [])
