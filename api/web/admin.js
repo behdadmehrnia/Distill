@@ -6,6 +6,16 @@ const MEETING_STATUS_LABELS = {
   stopped: "پایان یافته",
   failed: "ناموفق",
 };
+const SPEAKER_COLORS = [
+  "#60a5fa",
+  "#f472b6",
+  "#34d399",
+  "#fbbf24",
+  "#a78bfa",
+  "#fb7185",
+  "#2dd4bf",
+  "#f97316",
+];
 
 function meetingStatusClass(status) {
   if (status === "recording" || status === "processing") return "is-active";
@@ -23,6 +33,42 @@ function formatDate(ts) {
   } catch (_) {
     return new Date(ts * 1000).toLocaleString("fa-IR");
   }
+}
+
+function escapeHtml(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function toPersianDigits(value) {
+  return String(value).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]);
+}
+
+function formatTs(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
+function speakerColor(speakerId) {
+  const n = parseInt(String(speakerId).replace(/\D/g, ""), 10);
+  const idx = Number.isFinite(n) ? n % SPEAKER_COLORS.length : 0;
+  return SPEAKER_COLORS[idx];
+}
+
+function speakerLabel(speakerId, speakerMap) {
+  const mapped = speakerMap && speakerMap[speakerId];
+  if (mapped) return mapped;
+  const match = String(speakerId || "").match(/(\d+)\s*$/);
+  if (!match) return String(speakerId || "سخنگو");
+  const n = parseInt(match[1], 10);
+  if (!Number.isFinite(n)) return String(speakerId);
+  return `سخنگوی ${toPersianDigits(n + 1)}`;
 }
 
 async function setRole(userId, role) {
@@ -164,6 +210,10 @@ async function loadUsers(currentUserId) {
 
 function renderMeetingRow(m) {
   const tr = document.createElement("tr");
+  tr.className = "is-clickable";
+  tr.tabIndex = 0;
+  tr.dataset.meetingId = m.id;
+  tr.title = "برای نظارت کلیک کنید";
 
   const titleCell = document.createElement("td");
   titleCell.textContent = m.title || "جلسه بدون عنوان";
@@ -194,6 +244,16 @@ function renderMeetingRow(m) {
   dateCell.textContent = formatDate(m.created_at);
 
   tr.append(titleCell, ownerCell, statusCell, recordingCell, dateCell);
+
+  const openMonitor = () => openMeetingMonitor(m.id);
+  tr.addEventListener("click", openMonitor);
+  tr.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      openMonitor();
+    }
+  });
+
   return tr;
 }
 
@@ -266,6 +326,7 @@ async function deleteOwnMeeting(id, cardEl) {
     list.hidden = true;
     document.getElementById("meetingsEmpty").hidden = false;
   }
+  await loadAllMeetings();
 }
 
 function renderOwnMeeting(m) {
@@ -341,6 +402,523 @@ async function loadOwnMeetings() {
   list.hidden = false;
 }
 
+/* ===== Meeting monitor ===== */
+
+function setMonitorTab(tab) {
+  document.querySelectorAll("[data-monitor-tab]").forEach((btn) => {
+    const active = btn.dataset.monitorTab === tab;
+    btn.classList.toggle("is-active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll("[data-tab-panel]").forEach((panel) => {
+    panel.classList.toggle("hidden", panel.dataset.tabPanel !== tab);
+  });
+}
+
+function closeMeetingMonitor() {
+  const overlay = document.getElementById("monitorOverlay");
+  if (overlay) overlay.classList.add("hidden");
+}
+
+function renderMonitorInfo(meeting) {
+  const owner = meeting.owner;
+  const ownerLabel = owner
+    ? `${owner.display_name || owner.email} (${owner.email})`
+    : "—";
+  const speakers = Object.values(meeting.speaker_map || {}).filter(Boolean);
+  const participants = (meeting.participants || []).filter(Boolean);
+  return `
+    <dl class="monitor-meta-grid">
+      <div class="monitor-meta-item">
+        <dt>عنوان</dt>
+        <dd>${escapeHtml(meeting.title || "جلسه بدون عنوان")}</dd>
+      </div>
+      <div class="monitor-meta-item">
+        <dt>وضعیت</dt>
+        <dd>${escapeHtml(MEETING_STATUS_LABELS[meeting.status] || meeting.status)}</dd>
+      </div>
+      <div class="monitor-meta-item">
+        <dt>ایجادکننده</dt>
+        <dd>${escapeHtml(ownerLabel)}</dd>
+      </div>
+      <div class="monitor-meta-item">
+        <dt>شناسه جلسه</dt>
+        <dd dir="ltr">${escapeHtml(meeting.id)}</dd>
+      </div>
+      <div class="monitor-meta-item">
+        <dt>تاریخ ایجاد</dt>
+        <dd>${escapeHtml(formatDate(meeting.created_at))}</dd>
+      </div>
+      <div class="monitor-meta-item">
+        <dt>شروع</dt>
+        <dd>${escapeHtml(formatDate(meeting.started_at))}</dd>
+      </div>
+      <div class="monitor-meta-item">
+        <dt>پایان</dt>
+        <dd>${escapeHtml(formatDate(meeting.stopped_at))}</dd>
+      </div>
+      <div class="monitor-meta-item">
+        <dt>ضبط</dt>
+        <dd>${meeting.has_recording ? "دارد" : "ندارد"}</dd>
+      </div>
+      <div class="monitor-meta-item">
+        <dt>سخنگوها</dt>
+        <dd>${escapeHtml(speakers.length ? speakers.join("، ") : "—")}</dd>
+      </div>
+      <div class="monitor-meta-item">
+        <dt>شرکت‌کنندگان</dt>
+        <dd>${escapeHtml(participants.length ? participants.join("، ") : "—")}</dd>
+      </div>
+    </dl>
+  `;
+}
+
+function renderMonitorSummary(minutes, insights) {
+  const summary =
+    (minutes && minutes.summary && minutes.summary.trim()) ||
+    (insights && insights.summary && insights.summary.trim()) ||
+    "";
+  if (!summary) {
+    return '<p class="monitor-empty-hint">خلاصه‌ای برای این جلسه ثبت نشده است.</p>';
+  }
+  const extras = [];
+  if (insights) {
+    if ((insights.highlights || []).length) {
+      extras.push(
+        `<div class="monitor-meta-item"><dt>نکات برجسته</dt><dd>${escapeHtml(
+          insights.highlights.join(" · ")
+        )}</dd></div>`
+      );
+    }
+    if ((insights.decisions || []).length) {
+      extras.push(
+        `<div class="monitor-meta-item"><dt>تصمیمات (insights)</dt><dd>${escapeHtml(
+          insights.decisions.join(" · ")
+        )}</dd></div>`
+      );
+    }
+    if ((insights.action_items || []).length) {
+      extras.push(
+        `<div class="monitor-meta-item"><dt>اقدامات</dt><dd>${escapeHtml(
+          insights.action_items.join(" · ")
+        )}</dd></div>`
+      );
+    }
+  }
+  return `
+    <p class="monitor-summary-text">${escapeHtml(summary)}</p>
+    ${extras.length ? `<dl class="monitor-meta-grid" style="margin-top:1rem">${extras.join("")}</dl>` : ""}
+  `;
+}
+
+function renderMonitorTranscript(segments, speakerMap) {
+  const list = (segments || []).filter(
+    (s) => !s.provisional && (s.text || "").trim()
+  );
+  if (!list.length) {
+    return '<p class="monitor-empty-hint">متن STT برای این جلسه موجود نیست.</p>';
+  }
+  const rows = list
+    .slice()
+    .sort((a, b) => (a.start_ms || 0) - (b.start_ms || 0))
+    .map((seg) => {
+      const speakers = seg.is_overlap
+        ? seg.overlap_speakers && seg.overlap_speakers.length
+          ? seg.overlap_speakers
+          : [seg.speaker_id]
+        : [seg.speaker_id];
+      const chips = speakers
+        .map((spk) => {
+          const color = speakerColor(spk);
+          const label = speakerLabel(spk, speakerMap);
+          return `<span class="monitor-speaker-chip">
+            <span class="monitor-speaker-dot" style="background:${color}"></span>
+            <span style="color:${color}">${escapeHtml(label)}</span>
+          </span>`;
+        })
+        .join("");
+      return `<div class="monitor-transcript-row">
+        <div class="monitor-transcript-meta">
+          <span>${chips}</span>
+          <span>${formatTs(seg.start_ms)} – ${formatTs(seg.end_ms)}</span>
+        </div>
+        <div class="monitor-transcript-text">${escapeHtml(seg.text || "")}</div>
+      </div>`;
+    })
+    .join("");
+  return `<div class="monitor-transcript-list">${rows}</div>`;
+}
+
+function buildMinutesPrintSheet(data, meetingId) {
+  const subject = escapeHtml(data.subject || "");
+  const dateFull = escapeHtml(data.meeting_date || "");
+  const dateOnly = escapeHtml(
+    String(data.meeting_date || "").split(/\s+/)[0] || ""
+  );
+  const timeOnly = escapeHtml(
+    (String(data.meeting_date || "").match(/\d{1,2}:\d{2}/) || [""])[0]
+  );
+  const location = escapeHtml(data.location || "");
+  const secretary = escapeHtml(data.secretary || "");
+  const attendees = escapeHtml((data.attendees || []).join("، "));
+  const absentees = escapeHtml((data.absentees || []).join("، "));
+  const idLabel = escapeHtml(meetingId || "—");
+
+  const decisions = [...(data.decisions || [])].filter(
+    (d) => d.description || d.executor || d.due_date
+  );
+  const minRows = 8;
+  while (decisions.length < minRows) {
+    decisions.push({ description: "", executor: "", due_date: "", status: "" });
+  }
+
+  const decisionRows = decisions
+    .map((d, idx) => {
+      const numbered = !!(d.description || d.executor || d.due_date);
+      return `<tr>
+          <td class="num">${numbered ? toPersianDigits(idx + 1) : ""}</td>
+          <td class="desc">${escapeHtml(d.description || "")}</td>
+          <td class="center">${escapeHtml(d.executor || "")}</td>
+          <td class="center">${escapeHtml(d.due_date || "")}</td>
+        </tr>`;
+    })
+    .join("");
+
+  return `
+<style>
+  .monitor-minutes-preview .minutes-print-sheet {
+    width: 100%;
+    min-height: 240mm;
+    display: flex;
+    flex-direction: column;
+    border: 1.6px solid #000;
+    overflow: hidden;
+    background: #fff;
+    color: #000;
+    font-family: Vazirmatn, Tahoma, 'Segoe UI', sans-serif;
+    font-size: 10pt;
+    line-height: 1.45;
+    direction: rtl;
+  }
+  .monitor-minutes-preview .minutes-print-sheet * {
+    font-family: inherit;
+    box-sizing: border-box;
+  }
+  .monitor-minutes-preview table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  .monitor-minutes-preview td,
+  .monitor-minutes-preview th {
+    border: 1px solid #000;
+    padding: 5px 6px;
+    vertical-align: middle;
+    overflow: hidden;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+  }
+  .monitor-minutes-preview .head-logo {
+    width: 20%;
+    text-align: center;
+    padding: 8px 4px;
+  }
+  .monitor-minutes-preview .head-title {
+    width: 48%;
+    text-align: center;
+    font-size: 16pt;
+    font-weight: 700;
+  }
+  .monitor-minutes-preview .head-id {
+    width: 32%;
+    text-align: center;
+    font-size: 7.5pt;
+    line-height: 1.35;
+    padding: 6px 8px;
+    word-break: break-all;
+  }
+  .monitor-minutes-preview .head-id .id-label {
+    display: block;
+    font-weight: 700;
+    margin-bottom: 3px;
+    font-size: 8pt;
+  }
+  .monitor-minutes-preview .head-id .id-value {
+    display: block;
+    font-size: 7pt;
+    direction: ltr;
+    unicode-bidi: isolate;
+  }
+  .monitor-minutes-preview .brand {
+    margin-top: 2px;
+    font-size: 8.5pt;
+    font-weight: 700;
+  }
+  .monitor-minutes-preview .lbl {
+    width: 11%;
+    font-weight: 700;
+    white-space: nowrap;
+    font-size: 9.5pt;
+    background: #fafafa;
+  }
+  .monitor-minutes-preview .val {
+    font-size: 9.5pt;
+    max-width: 0;
+  }
+  .monitor-minutes-preview .field {
+    font-size: 9.5pt;
+    white-space: nowrap;
+  }
+  .monitor-minutes-preview .field b {
+    font-weight: 700;
+    margin-inline-end: 6px;
+  }
+  .monitor-minutes-preview .vlabel {
+    width: 28px;
+    max-width: 28px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 9pt;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    letter-spacing: 0.12em;
+    padding: 6px 2px;
+    background: #fafafa;
+  }
+  .monitor-minutes-preview .people {
+    vertical-align: top;
+    font-size: 9.5pt;
+    line-height: 1.6;
+    min-height: 36px;
+  }
+  .monitor-minutes-preview .attach {
+    width: 28%;
+    text-align: center;
+    font-size: 8.5pt;
+    white-space: nowrap;
+  }
+  .monitor-minutes-preview .box {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 1px solid #000;
+    margin-inline: 2px 3px;
+    vertical-align: -1px;
+  }
+  .monitor-minutes-preview .time-cell { padding: 0; }
+  .monitor-minutes-preview .time-cell table td {
+    border: 0;
+    border-bottom: 1px solid #000;
+    padding: 4px 6px;
+    font-size: 9pt;
+  }
+  .monitor-minutes-preview .time-cell table tr:last-child td { border-bottom: 0; }
+  .monitor-minutes-preview .grow {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .monitor-minutes-preview .grow > table {
+    flex: 1 1 auto;
+    height: 100%;
+  }
+  .monitor-minutes-preview .decisions thead th {
+    background: #f6e59a;
+    text-align: center;
+    font-weight: 700;
+    font-size: 9pt;
+    padding: 4px 3px;
+  }
+  .monitor-minutes-preview .decisions tbody td {
+    height: 7.2mm;
+    font-size: 9pt;
+    vertical-align: top;
+    padding: 3px 4px;
+  }
+  .monitor-minutes-preview .num { width: 8%; text-align: center; vertical-align: middle !important; }
+  .monitor-minutes-preview .desc { width: 54%; }
+  .monitor-minutes-preview .center { width: 19%; text-align: center; vertical-align: middle !important; }
+  .monitor-minutes-preview .sign-wrap { height: 28mm; }
+  .monitor-minutes-preview .sign-wrap td { height: 28mm; vertical-align: top; }
+  .monitor-minutes-preview .summary-box {
+    border: 1px solid #000;
+    border-top: 0;
+    padding: 8px 10px;
+    font-size: 9.5pt;
+    white-space: pre-wrap;
+    min-height: 48px;
+  }
+</style>
+<div class="minutes-print-sheet">
+  <table>
+    <tr>
+      <td class="head-logo">
+        <svg width="68" height="32" viewBox="0 0 36 17" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M8.5 0.5C12.9183 0.5 16.5 4.08172 16.5 8.5C16.5 12.9183 12.9183 16.5 8.5 16.5C4.08172 16.5 0.5 12.9183 0.5 8.5C0.5 4.08172 4.08172 0.5 8.5 0.5Z" stroke="#B8860B" stroke-width="1.2"/>
+          <path d="M27.5 17C32.1944 17 36 13.1944 36 8.5C36 3.80558 32.1944 0 27.5 0C22.8056 0 19 3.80558 19 8.5C19 13.1944 22.8056 17 27.5 17Z" fill="#B8860B"/>
+        </svg>
+        <div class="brand">Distill</div>
+      </td>
+      <td class="head-title">فرم صورت جلسه</td>
+      <td class="head-id">
+        <span class="id-label">شناسه جلسه</span>
+        <span class="id-value">${idLabel}</span>
+      </td>
+    </tr>
+  </table>
+
+  <table>
+    <tr>
+      <td class="lbl">موضوع:</td>
+      <td class="val" colspan="2">${subject}</td>
+      <td class="field"><b>تاریخ:</b>${dateOnly || dateFull}</td>
+      <td class="val" style="text-align:center; width:14%;">
+        <b>صفحه</b><br/>${toPersianDigits(1)} از ${toPersianDigits(1)}
+      </td>
+    </tr>
+    <tr>
+      <td class="lbl">محل برگزاری:</td>
+      <td class="val" colspan="2">${location}</td>
+      <td class="time-cell" colspan="2">
+        <table>
+          <tr><td><b>شروع:</b> ${timeOnly || dateFull}</td></tr>
+          <tr><td><b>دبیرجلسه:</b> ${secretary}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <table>
+    <tr>
+      <td class="vlabel">حاضرین</td>
+      <td class="people" style="width:64%;">${attendees}</td>
+      <td class="attach">
+        <span><span class="box"></span>پیوست دارد</span>
+        &nbsp;
+        <span><span class="box"></span>ندارد</span>
+      </td>
+    </tr>
+  </table>
+
+  <table>
+    <tr>
+      <td class="vlabel">غائبین</td>
+      <td class="people">${absentees}</td>
+    </tr>
+  </table>
+
+  <div class="summary-box"><b>خلاصه:</b> ${escapeHtml(data.summary || "")}</div>
+
+  <div class="grow">
+    <table class="decisions">
+      <thead>
+        <tr>
+          <th class="num">ردیف</th>
+          <th class="desc">شرح مصوبات/ پیشنهادات/ پیگیری ها</th>
+          <th class="center">مجری</th>
+          <th class="center">سر رسید</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${decisionRows}
+      </tbody>
+    </table>
+  </div>
+
+  <table class="sign-wrap">
+    <tr>
+      <td class="vlabel">امضاء حاضرین</td>
+      <td></td>
+    </tr>
+  </table>
+</div>`;
+}
+
+function renderMonitorMinutes(minutes, meetingId) {
+  if (!minutes) {
+    return '<p class="monitor-empty-hint">صورت جلسه‌ای برای این جلسه ثبت نشده است.</p>';
+  }
+  return `<div class="monitor-minutes-preview">${buildMinutesPrintSheet(
+    minutes,
+    meetingId
+  )}</div>`;
+}
+
+function populateMonitor(data) {
+  const meeting = data.meeting || {};
+  const titleEl = document.getElementById("monitorTitle");
+  titleEl.textContent = meeting.title
+    ? `نظارت: ${meeting.title}`
+    : "نظارت بر جلسه";
+
+  document.getElementById("monitorTabInfo").innerHTML =
+    renderMonitorInfo(meeting);
+  document.getElementById("monitorTabSummary").innerHTML = renderMonitorSummary(
+    data.minutes,
+    data.insights
+  );
+  document.getElementById("monitorTabTranscript").innerHTML =
+    renderMonitorTranscript(data.segments, meeting.speaker_map || {});
+  document.getElementById("monitorTabMinutes").innerHTML = renderMonitorMinutes(
+    data.minutes,
+    meeting.id
+  );
+}
+
+async function openMeetingMonitor(meetingId) {
+  const overlay = document.getElementById("monitorOverlay");
+  const loading = document.getElementById("monitorLoading");
+  const errorBox = document.getElementById("monitorError");
+  const body = document.getElementById("monitorBody");
+
+  overlay.classList.remove("hidden");
+  loading.hidden = false;
+  errorBox.hidden = true;
+  body.classList.add("hidden");
+  setMonitorTab("info");
+
+  const res = await fetch(`/admin/meetings/${meetingId}`);
+  loading.hidden = true;
+
+  if (res.status === 401) {
+    window.location.href = "/login?next=/admin";
+    return;
+  }
+  if (res.status === 403) {
+    window.location.href = "/dashboard";
+    return;
+  }
+  if (!res.ok) {
+    errorBox.textContent =
+      res.status === 404 ? "جلسه یافت نشد." : "خطا در بارگذاری جزئیات جلسه";
+    errorBox.hidden = false;
+    return;
+  }
+
+  const data = await res.json();
+  populateMonitor(data);
+  body.classList.remove("hidden");
+}
+
+function bindMonitorUi() {
+  const overlay = document.getElementById("monitorOverlay");
+  const closeBtn = document.getElementById("monitorCloseBtn");
+
+  closeBtn.addEventListener("click", closeMeetingMonitor);
+  overlay.addEventListener("click", (ev) => {
+    if (ev.target === overlay) closeMeetingMonitor();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !overlay.classList.contains("hidden")) {
+      closeMeetingMonitor();
+    }
+  });
+  document.querySelectorAll("[data-monitor-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => setMonitorTab(btn.dataset.monitorTab));
+  });
+}
+
 (async function init() {
   const user = await distillAuth.requireAuth();
   if (!user) return;
@@ -358,6 +936,8 @@ async function loadOwnMeetings() {
 
   document.getElementById("newMeetingBtn").addEventListener("click", createMeeting);
   document.getElementById("emptyNewBtn").addEventListener("click", createMeeting);
+
+  bindMonitorUi();
 
   await Promise.all([loadUsers(user.id), loadAllMeetings(), loadOwnMeetings()]);
 })();

@@ -313,7 +313,70 @@ def test_admin_meetings_lists_everyone_with_owner_info(tmp_path):
         assert meetings[0]["owner"]["email"] == "member@test.com"
 
 
+def test_admin_can_monitor_any_meeting(tmp_path):
+    from api.meeting.models import MeetingMinutes, MinutesDecision, TranscriptSegment
+
+    with make_client(
+        tmp_path,
+        admin_username="admin@test.com",
+        admin_password="adminpass123",
+    ) as client:
+        client.post(
+            "/auth/login",
+            json={"email": "admin@test.com", "password": "adminpass123"},
+        )
+        register_user(client, email="member@test.com")
+        created = client.post(
+            "/meetings", json={"title": "monitor me", "start": False}
+        )
+        assert created.status_code == 201
+        meeting_id = created.json()["id"]
+
+        store = client.app.state.manager.store
+        store.save_segment(
+            TranscriptSegment.create(
+                meeting_id=meeting_id,
+                speaker_id="SPEAKER_00",
+                start_ms=0,
+                end_ms=1500,
+                text="سلام، جلسه شروع شد",
+            )
+        )
+        store.save_minutes(
+            MeetingMinutes(
+                meeting_id=meeting_id,
+                subject="جلسه تست",
+                summary="خلاصه نظارت",
+                decisions=[
+                    MinutesDecision(
+                        id="d1",
+                        description="پیگیری بودجه",
+                        executor="علی",
+                        due_date="1404/01/01",
+                    )
+                ],
+            )
+        )
+
+        # As admin (not owner), owner-scoped routes stay forbidden/hidden
+        client.post(
+            "/auth/login",
+            json={"email": "admin@test.com", "password": "adminpass123"},
+        )
+        assert client.get(f"/meetings/{meeting_id}/minutes").status_code == 404
+
+        resp = client.get(f"/admin/meetings/{meeting_id}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["meeting"]["title"] == "monitor me"
+        assert body["meeting"]["owner"]["email"] == "member@test.com"
+        assert body["minutes"]["summary"] == "خلاصه نظارت"
+        assert body["segments"][0]["text"] == "سلام، جلسه شروع شد"
+        assert client.get("/admin/meetings/does-not-exist").status_code == 404
+
+
 def test_non_admin_cannot_list_all_meetings(tmp_path):
     with make_client(tmp_path) as client:
         register_user(client, email="plain@test.com")
         assert client.get("/admin/meetings").status_code == 403
+        assert client.get("/admin/meetings/any-id").status_code == 403

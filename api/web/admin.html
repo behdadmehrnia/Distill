@@ -113,6 +113,85 @@
       <ul id="meetingsList" class="meeting-list" hidden></ul>
     </main>
 
+    <div
+      id="monitorOverlay"
+      class="insights-overlay hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="monitorTitle"
+    >
+      <div class="review-modal monitor-modal">
+        <div class="review-modal-head">
+          <div class="monitor-head-row">
+            <h3 id="monitorTitle">نظارت بر جلسه</h3>
+            <button type="button" id="monitorCloseBtn" class="linkish">
+              بستن
+            </button>
+          </div>
+          <div class="review-stepper monitor-tabs" role="tablist">
+            <button
+              type="button"
+              class="review-step-dot is-active"
+              data-monitor-tab="info"
+              role="tab"
+              aria-selected="true"
+            >
+              اطلاعات
+            </button>
+            <button
+              type="button"
+              class="review-step-dot"
+              data-monitor-tab="summary"
+              role="tab"
+              aria-selected="false"
+            >
+              خلاصه
+            </button>
+            <button
+              type="button"
+              class="review-step-dot"
+              data-monitor-tab="transcript"
+              role="tab"
+              aria-selected="false"
+            >
+              متن STT
+            </button>
+            <button
+              type="button"
+              class="review-step-dot"
+              data-monitor-tab="minutes"
+              role="tab"
+              aria-selected="false"
+            >
+              صورت جلسه
+            </button>
+          </div>
+        </div>
+
+        <div id="monitorLoading" class="review-loading">در حال بارگذاری…</div>
+        <div id="monitorError" class="dash-empty" hidden></div>
+
+        <div id="monitorBody" class="monitor-body hidden">
+          <div id="monitorTabInfo" class="monitor-tab" data-tab-panel="info"></div>
+          <div
+            id="monitorTabSummary"
+            class="monitor-tab hidden"
+            data-tab-panel="summary"
+          ></div>
+          <div
+            id="monitorTabTranscript"
+            class="monitor-tab hidden"
+            data-tab-panel="transcript"
+          ></div>
+          <div
+            id="monitorTabMinutes"
+            class="monitor-tab hidden"
+            data-tab-panel="minutes"
+          ></div>
+        </div>
+      </div>
+    </div>
+
     <script src="/auth.js"></script>
     <script src="/admin.js"></script>
   </body>

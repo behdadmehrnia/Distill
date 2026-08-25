@@ -53,6 +53,46 @@ async def list_all_meetings(
     return {"meetings": out}
 
 
+@router.get("/meetings/{meeting_id}")
+async def get_meeting_monitor(
+    meeting_id: str,
+    request: Request,
+    _: UserRecord = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Admin-only meeting detail for monitoring (minutes, STT, owner)."""
+    settings = request.app.state.settings
+    store = request.app.state.manager.store
+    meeting = store.get_meeting(meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="meeting not found")
+
+    data = meeting.to_dict()
+    path = _resolve_recording_path(
+        meeting.id,
+        meeting.audio_path,
+        audio_dir=settings.audio_dir,
+        upload_dir=settings.upload_dir,
+    )
+    data["has_recording"] = path is not None
+
+    owner = None
+    if meeting.user_id:
+        owner_rec = request.app.state.user_store.get_user_by_id(meeting.user_id)
+        owner = owner_rec.to_public_dict() if owner_rec else None
+    data["owner"] = owner
+
+    minutes = store.get_minutes(meeting_id)
+    insights = store.get_insights(meeting_id)
+    segments = store.get_segments(meeting_id)
+
+    return {
+        "meeting": data,
+        "minutes": minutes.to_dict() if minutes else None,
+        "insights": insights.to_dict() if insights else None,
+        "segments": [s.to_dict() for s in segments],
+    }
+
+
 @router.patch("/users/{user_id}/role")
 async def set_user_role(
     user_id: str,
