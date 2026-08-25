@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Distill</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="brand-row">
+      <img class="logo" src="../icons/logo.svg" alt="" width="40" height="19" />
+      <div>
+        <div class="brand">Distill</div>
+        <div class="subtitle">ضبط گوگل میت</div>
+      </div>
+    </header>
+
+    <section id="login-panel" class="panel hidden">
+      <label>
+        ایمیل
+        <input id="email" type="email" autocomplete="username" dir="ltr" />
+      </label>
+      <label>
+        رمز عبور
+        <input
+          id="password"
+          type="password"
+          autocomplete="current-password"
+          dir="ltr"
+        />
+      </label>
+      <button id="login-btn" class="primary" type="button">ورود</button>
+    </section>
+
+    <section id="session-panel" class="panel hidden">
+      <div class="row">
+        <span id="user-label" class="muted" dir="ltr"></span>
+        <button id="logout-btn" class="ghost" type="button">خروج</button>
+      </div>
+
+      <label>
+        عنوان جلسه
+        <input
+          id="meeting-title"
+          type="text"
+          placeholder="جلسه گوگل میت"
+        />
+      </label>
+
+      <div class="status-card">
+        <div><strong>وضعیت</strong> <span id="status-text">آماده</span></div>
+        <div class="muted" id="meeting-id" dir="ltr"></div>
+        <div class="muted" id="streams-text"></div>
+      </div>
+
+      <div class="actions">
+        <button id="start-btn" class="primary" type="button">شروع ضبط</button>
+        <button id="stop-btn" class="danger" type="button" disabled>
+          توقف
+        </button>
+      </div>
+
+      <p class="hint">
+        ابتدا وارد یک تماس Google Meet شوید، سپس ضبط را شروع کنید. صدای هر
+        شرکت‌کننده جداگانه به Distill ارسال می‌شود.
+      </p>
+    </section>
+
+    <p id="error" class="error hidden"></p>
+    <script src="popup.js"></script>
+  </body>
+</html>

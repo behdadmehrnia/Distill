@@ -1,4 +1,44 @@
-@import url("https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap");
+/* Self-hosted — avoids Google Fonts (often blocked on deploy / in IR). */
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("/fonts/Vazirmatn-Regular.woff2") format("woff2"),
+    url("/fonts/Vazirmatn-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("/fonts/Vazirmatn-Medium.woff2") format("woff2"),
+    url("/fonts/Vazirmatn-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("/fonts/Vazirmatn-Bold.woff2") format("woff2"),
+    url("/fonts/Vazirmatn-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("/fonts/Vazirmatn-Bold.woff2") format("woff2"),
+    url("/fonts/Vazirmatn-Bold.ttf") format("truetype");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("/fonts/Vazirmatn-Bold.woff2") format("woff2"),
+    url("/fonts/Vazirmatn-Bold.ttf") format("truetype");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
 
 :root {
   --bg: #121212;
@@ -608,7 +648,7 @@ a { color: inherit; text-decoration: none; }
   color: var(--yellow);
 }
 
-/* Shared app navbar (dashboard + pages using styles.css) */
+/* Shared app navbar (dashboard + assistant + admin) */
 .navbar {
   position: sticky;
   top: 0;
@@ -616,11 +656,10 @@ a { color: inherit; text-decoration: none; }
   flex-shrink: 0;
   display: flex;
   flex-direction: row;
-  flex-wrap: wrap;
-  row-gap: 0.5rem;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.75rem 1rem;
   padding: 0.7rem 1.25rem;
   min-height: 56px;
   background: #151515;
@@ -638,6 +677,7 @@ a { color: inherit; text-decoration: none; }
   font-weight: 900;
   font-size: 1.2rem;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .nav-brand svg {
@@ -648,16 +688,29 @@ a { color: inherit; text-decoration: none; }
 .nav-meta {
   display: flex;
   flex-direction: row;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.6rem 0.85rem;
+  min-width: 0;
+}
+
+/* Timer + status must stay on one row (broken when this rule is missing). */
+.nav-session {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.45rem;
+  flex-shrink: 0;
 }
 
 .nav-user {
   display: flex;
   flex-direction: row;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.75rem;
+  flex-shrink: 0;
 }
 
 .nav-user-name {
@@ -669,6 +722,11 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 560px) {
   .navbar {
     padding: 0.6rem 0.85rem;
+    gap: 0.5rem;
+  }
+
+  .nav-meta {
+    gap: 0.4rem 0.5rem;
   }
 
   /* The display name is a nice-to-have; on narrow screens the rest of the

@@ -30,7 +30,8 @@ a {
   text-decoration: none;
 }
 
-/* .navbar/.nav-brand/.nav-meta/.nav-user are shared from styles.css. .btn
+/* .navbar/.nav-brand/.nav-meta/.nav-user/.nav-session layout lives in
+   styles.css so a stale/cached assistant.css can't stack the timer. .btn
    and .btn-sm have equal specificity, so without this the page's own
    generic .btn (below) would win the padding/font-size tie for navbar
    buttons since this stylesheet loads after styles.css. */
@@ -41,14 +42,10 @@ a {
   font-size: 0.85rem;
 }
 
-.nav-session {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-}
-
 .nav-status {
   display: inline-flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.45rem;
   background: var(--card);
@@ -60,6 +57,8 @@ a {
   color: #999;
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition:
     border-color 0.15s,
     color 0.15s;
@@ -110,7 +109,9 @@ a {
   font-weight: 700;
   font-size: 0.9rem;
   line-height: 1;
-  min-width: 0;
+  min-width: 3.2ch;
+  flex-shrink: 0;
+  white-space: nowrap;
   text-align: center;
   transition:
     color 0.2s ease,
@@ -118,10 +119,6 @@ a {
 }
 
 @media (max-width: 560px) {
-  .nav-meta {
-    gap: 0.4rem 0.5rem;
-  }
-
   .nav-session {
     gap: 0.35rem;
   }

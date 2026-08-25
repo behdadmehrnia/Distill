@@ -861,6 +861,14 @@ async def update_minutes(
     return minutes.to_dict()
 
 
+async def _ws_send_json(ws: WebSocket, payload: dict) -> None:
+    """Best-effort JSON send; never raise if the socket is already closing."""
+    try:
+        await ws.send_json(payload)
+    except Exception:
+        logger.debug("websocket send skipped (socket closing)", exc_info=True)
+
+
 @router.websocket("/meetings/{meeting_id}/audio")
 async def audio_ws(websocket: WebSocket, meeting_id: str) -> None:
     app = websocket.app
@@ -883,17 +891,21 @@ async def audio_ws(websocket: WebSocket, meeting_id: str) -> None:
 
     session = app.state.manager.get_or_restore(meeting_id, on_event=on_event)
     if not session:
-        await websocket.send_json({"type": "error", "message": "meeting not found"})
-        await websocket.close()
+        await _ws_send_json(websocket, {"type": "error", "message": "meeting not found"})
+        try:
+            await websocket.close()
+        except Exception:
+            pass
         return
 
     app.state.ws_by_meeting.setdefault(meeting_id, set()).add(websocket)
-    await websocket.send_json(
+    await _ws_send_json(
+        websocket,
         {
             "type": "status",
             "status": session.record.status.value,
             "meeting_id": meeting_id,
-        }
+        },
     )
 
     try:
@@ -905,27 +917,36 @@ async def audio_ws(websocket: WebSocket, meeting_id: str) -> None:
                 try:
                     payload = json.loads(message["text"])
                 except json.JSONDecodeError:
-                    await websocket.send_json(
-                        {"type": "error", "message": "invalid json"}
+                    await _ws_send_json(
+                        websocket, {"type": "error", "message": "invalid json"}
                     )
                     continue
                 await _handle_ws_message(session, websocket, payload)
             elif "bytes" in message and message["bytes"] is not None:
-                samples = np.frombuffer(message["bytes"], dtype=np.int16)
+                raw = message["bytes"]
                 if session.is_multi_stream:
-                    await websocket.send_json(
-                        {
-                            "type": "error",
-                            "message": (
-                                "multi_stream meetings require JSON audio messages "
-                                "with speaker_id"
-                            ),
-                        }
-                    )
+                    speaker_id, samples = _parse_multistream_pcm_frame(raw)
+                    if not speaker_id:
+                        await _ws_send_json(
+                            websocket,
+                            {
+                                "type": "error",
+                                "message": (
+                                    "multi_stream binary frame must be "
+                                    "[u8 name_len][utf8 speaker_id][int16le pcm]"
+                                ),
+                            },
+                        )
+                        continue
+                    await session.append_stream_audio_int16(speaker_id, samples)
                 else:
+                    samples = np.frombuffer(raw, dtype=np.int16)
                     await session.append_audio_int16(samples)
     except WebSocketDisconnect:
         pass
+    except RuntimeError as exc:
+        # e.g. send/receive after close during proxy teardown
+        logger.debug("websocket runtime error for %s: %s", meeting_id, exc)
     finally:
         sockets = app.state.ws_by_meeting.get(meeting_id, set())
         sockets.discard(websocket)
@@ -941,6 +962,28 @@ async def audio_ws(websocket: WebSocket, meeting_id: str) -> None:
                 ),
                 name=f"auto-finalize-{meeting_id}",
             )
+
+
+def _parse_multistream_pcm_frame(
+    raw: bytes,
+) -> tuple[Optional[str], np.ndarray]:
+    """Parse [u8 name_len][utf8 speaker_id][int16le pcm] binary frames."""
+    if not raw or len(raw) < 2:
+        return None, np.zeros(0, dtype=np.int16)
+    name_len = raw[0]
+    if name_len < 1 or name_len > 64 or len(raw) < 1 + name_len:
+        return None, np.zeros(0, dtype=np.int16)
+    try:
+        speaker_id = raw[1 : 1 + name_len].decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None, np.zeros(0, dtype=np.int16)
+    if not speaker_id:
+        return None, np.zeros(0, dtype=np.int16)
+    pcm = raw[1 + name_len :]
+    if len(pcm) % 2:
+        pcm = pcm[:-1]
+    samples = np.frombuffer(pcm, dtype=np.int16) if pcm else np.zeros(0, dtype=np.int16)
+    return speaker_id, samples
 
 
 async def _auto_finalize_after_disconnect(
@@ -973,8 +1016,9 @@ async def _handle_ws_message(session, ws: WebSocket, payload: dict) -> None:
         samples = np.asarray(payload.get("data") or [], dtype=np.int16)
         if session.is_multi_stream:
             if not speaker_id:
-                await ws.send_json(
-                    {"type": "error", "message": "speaker_id is required for multi_stream"}
+                await _ws_send_json(
+                    ws,
+                    {"type": "error", "message": "speaker_id is required for multi_stream"},
                 )
                 return
             await session.append_stream_audio_int16(str(speaker_id), samples)
@@ -982,36 +1026,41 @@ async def _handle_ws_message(session, ws: WebSocket, payload: dict) -> None:
             await session.append_audio_int16(samples)
     elif msg_type == "register_stream":
         if not session.is_multi_stream:
-            await ws.send_json(
+            await _ws_send_json(
+                ws,
                 {
                     "type": "error",
                     "message": "register_stream requires multi_stream capture_mode",
-                }
+                },
             )
             return
         speaker_id = str(payload.get("speaker_id") or payload.get("id") or "").strip()
         name = str(payload.get("name") or payload.get("label") or "").strip() or None
         if not speaker_id:
-            await ws.send_json({"type": "error", "message": "speaker_id is required"})
+            await _ws_send_json(ws, {"type": "error", "message": "speaker_id is required"})
             return
         sid = session.register_stream(speaker_id, name=name)
-        await ws.send_json(
+        await _ws_send_json(
+            ws,
             {
                 "type": "stream_registered",
                 "speaker_id": sid,
                 "name": session.record.speaker_map.get(sid),
-            }
+            },
         )
     elif msg_type == "stop":
         record = await session.stop()
-        await ws.send_json(
+        await _ws_send_json(
+            ws,
             {
                 "type": "status",
                 "status": record.status.value,
                 "meeting_id": session.meeting_id,
-            }
+            },
         )
     elif msg_type == "ping":
-        await ws.send_json({"type": "pong"})
+        await _ws_send_json(ws, {"type": "pong"})
     else:
-        await ws.send_json({"type": "error", "message": f"unknown type: {msg_type}"})
+        await _ws_send_json(
+            ws, {"type": "error", "message": f"unknown type: {msg_type}"}
+        )

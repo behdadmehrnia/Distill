@@ -420,8 +420,17 @@ class MeetingSession:
         return self.record
 
     async def cancel(self, extra_paths: Optional[Sequence[str]] = None) -> MeetingRecord:
-        self.request_cancel()
         async with self._stop_lock:
+            if self.record.status not in (
+                MeetingStatus.RECORDING,
+                MeetingStatus.PROCESSING,
+            ):
+                # Nothing is actually in flight — e.g. a stray page-unload
+                # cancel beacon arriving after the meeting already finished
+                # and was saved. A cancel here must be a no-op, not destroy
+                # completed work.
+                return self.record
+            self.request_cancel()
             return await self._apply_cancel(extra_paths=extra_paths)
 
     async def start(self, *, reset: bool = False) -> None:
@@ -1018,6 +1027,12 @@ class MeetingSession:
                 if self._running:
                     self._stopping = False
                 raise
+            finally:
+                # A completed stop() must not leave the session looking
+                # "still in progress" forever — a stray later cancel() (e.g.
+                # a page-unload beacon racing an already-finished meeting)
+                # must be able to tell this session is idle, not active.
+                self._stopping = False
 
     async def _finalize_multi_stream_stop(self) -> None:
         """Finalize transcript and speaker intervals without diarization."""

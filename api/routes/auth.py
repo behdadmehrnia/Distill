@@ -76,7 +76,7 @@ async def register(request: Request) -> Dict[str, Any]:
         secret=settings.jwt_secret,
         expire_minutes=settings.jwt_expire_minutes,
     )
-    body = {"user": user.to_public_dict()}
+    body = {"user": user.to_public_dict(), "access_token": token}
     response = JSONResponse(content=body, status_code=201)
     _set_auth_cookie(response, token, settings)
     return response  # type: ignore[return-value]
@@ -109,7 +109,7 @@ async def login(request: Request) -> Dict[str, Any]:
         secret=settings.jwt_secret,
         expire_minutes=settings.jwt_expire_minutes,
     )
-    body = {"user": user.to_public_dict()}
+    body = {"user": user.to_public_dict(), "access_token": token}
     response = JSONResponse(content=body)
     _set_auth_cookie(response, token, settings)
     return response  # type: ignore[return-value]
