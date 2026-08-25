@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 EventCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 
 _STT_BACKOFF_S = (0.5, 1.0, 2.0)
+# Multi-stream final STT: large non-overlapping windows (not live hops).
+_MULTI_STREAM_BATCH_S = 300  # 5 minutes per STT request — full buffer if shorter
+_MULTI_STREAM_MIN_SAMPLES = 1600  # ≥100ms @ 16 kHz
+
 
 # (start_ms, end_ms, text, optional absolute word timings)
 PendingStt = Tuple[int, int, str, Optional[Sequence[Tuple[str, int, int]]]]
@@ -445,10 +449,14 @@ class MeetingSession:
         self.record.started_at = time.time()
         self.record.audio_path = self.ingest.audio_path
         self.store.save_meeting(self.record)
-        n_workers = self._stt_workers()
-        self._worker_tasks = [
-            asyncio.create_task(self._stt_worker()) for _ in range(n_workers)
-        ]
+        if not self._is_multi_stream:
+            n_workers = self._stt_workers()
+            self._worker_tasks = [
+                asyncio.create_task(self._stt_worker()) for _ in range(n_workers)
+            ]
+        else:
+            # Multi-stream: buffer only during capture; STT runs once at stop.
+            self._worker_tasks = []
         await self._emit(
             {
                 "type": "status",
@@ -490,17 +498,22 @@ class MeetingSession:
     async def append_stream_audio_int16(
         self, speaker_id: str, samples: np.ndarray
     ) -> None:
-        """Append tagged PCM for one participant stream (multi-stream mode)."""
+        """Append tagged PCM for one participant stream (multi-stream mode).
+
+        Live STT is intentionally skipped — audio is buffered and transcribed
+        in full (per speaker) when the meeting stops.
+        """
         if not self._running or not self._is_multi_stream:
             return
-        if self._multi_ingest is None or self._multi_chunkers is None:
+        if self._multi_ingest is None:
             return
         sid = self.register_stream(speaker_id)
+        stream = self._multi_ingest.register_stream(sid)
+        start_ms = stream.duration_ms
         self._multi_ingest.append_int16(sid, samples)
-        buf = self._multi_ingest.get_buffer(sid)
-        for chunk in self._multi_chunkers.pop_ready(sid, buf):
-            self._record_stream_activity(sid, chunk.start_ms, chunk.end_ms)
-            await self._stt_queue.put(_SttWorkItem(chunk=chunk, speaker_id=sid))
+        end_ms = stream.duration_ms
+        if end_ms > start_ms:
+            self._record_stream_activity(sid, start_ms, end_ms)
 
     def _words_abs(
         self, chunk_start_ms: int, result
@@ -965,34 +978,23 @@ class MeetingSession:
 
                 self._check_cancelled()
                 await self._emit_phase("flush_stt")
-                if self._is_multi_stream and self._multi_ingest and self._multi_chunkers:
-                    buffers = {
-                        sid: self._multi_ingest.get_buffer(sid)
-                        for sid in self._multi_ingest.stream_ids
-                    }
-                    for sid, buf in buffers.items():
-                        rem = self._multi_chunkers.flush(sid, buf)
-                        if rem is not None:
-                            self._record_stream_activity(
-                                sid, rem.start_ms, rem.end_ms
-                            )
-                            await self._stt_queue.put(
-                                _SttWorkItem(chunk=rem, speaker_id=sid)
-                            )
+                if self._is_multi_stream:
+                    # No live STT workers — batch transcription happens in finalize.
+                    pass
                 else:
                     rem = self.chunker.flush_remainder(self.ingest.get_buffer())
                     if rem is not None:
                         await self._stt_queue.put(_SttWorkItem(chunk=rem))
 
-                n_workers = len(self._worker_tasks) or 1
-                for _ in range(n_workers):
-                    await self._stt_queue.put(None)
-                if self._worker_tasks:
-                    if self._cancel_requested:
-                        await self._halt_workers()
-                        return await self._apply_cancel()
-                    await asyncio.gather(*self._worker_tasks)
-                self._worker_tasks = []
+                    n_workers = len(self._worker_tasks) or 1
+                    for _ in range(n_workers):
+                        await self._stt_queue.put(None)
+                    if self._worker_tasks:
+                        if self._cancel_requested:
+                            await self._halt_workers()
+                            return await self._apply_cancel()
+                        await asyncio.gather(*self._worker_tasks)
+                    self._worker_tasks = []
 
                 self._check_cancelled()
                 if self._is_multi_stream:
@@ -1034,23 +1036,152 @@ class MeetingSession:
                 # must be able to tell this session is idle, not active.
                 self._stopping = False
 
-    async def _finalize_multi_stream_stop(self) -> None:
-        """Finalize transcript and speaker intervals without diarization."""
-        await self._emit_phase("review")
-        async with self._transcript_lock:
-            segments = self._segments_from_stream_pending(provisional=False)
-            await self._emit_stream_speaker_update(provisional=False)
+    async def _transcribe_stream_batch(
+        self, speaker_id: str, audio: np.ndarray
+    ) -> List[TranscriptSegment]:
+        """Run STT on one speaker's full buffer (large windows, no live hops)."""
+        if audio is None or len(audio) < _MULTI_STREAM_MIN_SAMPLES:
+            return []
 
+        lang = str(self.tuning.get("stt_language") or "fa")
+        batch_samples = max(
+            self.sample_rate,
+            int(self.sample_rate * _MULTI_STREAM_BATCH_S),
+        )
+        segments: List[TranscriptSegment] = []
+        prev_prompt: Optional[str] = None
+        total = len(audio)
+        offset = 0
+        while offset < total:
+            self._check_cancelled()
+            end = min(total, offset + batch_samples)
+            chunk = audio[offset:end]
+            # Skip near-silent slabs to save STT cost.
+            rms = float(np.sqrt(np.mean(np.square(chunk)))) if len(chunk) else 0.0
+            start_ms = int(offset * 1000 / self.sample_rate)
+            end_ms = int(end * 1000 / self.sample_rate)
+            if rms < float(self.tuning.get("min_speech_rms", 0.008)):
+                offset = end
+                continue
+
+            result = await self._transcribe_with_retry(
+                chunk, lang, prompt=prev_prompt
+            )
+            offset = end
+            if result is None:
+                continue
+            raw = (result.text or "").strip()
+            if not raw:
+                continue
+            text = await self._gate_stt_text(raw)
+            if not text:
+                continue
+            prev_prompt = text[-240:] if len(text) >= 8 else prev_prompt
+
+            words = self._words_abs(start_ms, result)
+            if words:
+                # Collapse word timings into one span (keep full text).
+                w0 = words[0][1]
+                w1 = words[-1][2]
+                segments.append(
+                    TranscriptSegment.create(
+                        self.meeting_id,
+                        speaker_id,
+                        w0,
+                        max(w1, w0 + 1),
+                        text,
+                        provisional=False,
+                    )
+                )
+            else:
+                segments.append(
+                    TranscriptSegment.create(
+                        self.meeting_id,
+                        speaker_id,
+                        start_ms,
+                        end_ms,
+                        text,
+                        provisional=False,
+                    )
+                )
+
+        return segments
+
+    async def _finalize_multi_stream_stop(self) -> None:
+        """Buffer-only capture → full per-speaker STT (no diarization, no live hops)."""
+        if self._multi_ingest is None:
+            return
+
+        await self._emit_phase("flush_stt")
+        await self._emit(
+            {
+                "type": "status",
+                "status": "processing",
+                "phase": "flush_stt",
+                "meeting_id": self.meeting_id,
+                "message": "در حال پیاده‌سازی کامل هر گوینده…",
+            }
+        )
+
+        all_segments: List[TranscriptSegment] = []
+        intervals: List[SpeakerInterval] = []
+
+        for sid in self._multi_ingest.stream_ids:
+            self._check_cancelled()
+            audio = self._multi_ingest.get_buffer(sid)
+            if len(audio) < _MULTI_STREAM_MIN_SAMPLES:
+                continue
+            duration_ms = int(len(audio) * 1000 / self.sample_rate)
+            intervals.append(SpeakerInterval(sid, 0, duration_ms, False))
+            try:
+                parts = await self._transcribe_stream_batch(sid, audio)
+                all_segments.extend(parts)
+            except Exception as exc:
+                logger.exception(
+                    "Multi-stream batch STT failed for %s: %s", sid, exc
+                )
+                await self._emit(
+                    {
+                        "type": "warning",
+                        "meeting_id": self.meeting_id,
+                        "code": "stream_stt_failed",
+                        "message": f"STT failed for {sid}: {exc}",
+                    }
+                )
+
+        intervals = merge_speaker_intervals(intervals)
+        self._speaker_intervals = intervals
+        self.store.replace_speaker_intervals(self.meeting_id, intervals)
+        await self._emit(
+            {
+                "type": "speaker_update",
+                "backend": "stream",
+                "intervals": [iv.to_dict() for iv in intervals],
+                "overlaps": [],
+            }
+        )
+
+        all_segments.sort(key=lambda s: (s.start_ms, s.speaker_id))
+        all_segments = dedupe_overlapping_transcripts(
+            all_segments,
+            similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
+            min_time_overlap_ratio=float(
+                self.tuning.get("dedupe_time_overlap", 0.35)
+            ),
+        )
+
+        await self._emit_phase("review")
         try:
-            reviewed = await self._finalize_review(segments)
+            reviewed = await self._finalize_review(all_segments)
         except Exception as exc:
             logger.exception("Multi-stream finalize review failed: %s", exc)
-            reviewed = segments
+            reviewed = all_segments
 
-        if not reviewed and segments:
-            reviewed = segments
+        if not reviewed and all_segments:
+            reviewed = all_segments
 
         async with self._transcript_lock:
+            self._stream_pending_stt = {}
             self.store.replace_meeting_segments(self.meeting_id, reviewed)
             await self._emit(
                 {

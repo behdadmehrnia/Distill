@@ -133,13 +133,18 @@ GET /health
 1. POST /auth/login                         → access_token
 2. POST /meetings  { capture_mode: multi_stream, streams?: [...], start: true }
 3. Optional: POST /meetings/{id}/streams    → register late joiners
-4. WSS  /meetings/{id}/audio?token=…        → send tagged PCM
-5. Receive JSON events (transcript, status, …) on the same socket
+4. WSS  /meetings/{id}/audio?token=…        → send tagged PCM (buffered only)
+5. On stop: server runs **full-stream STT per speaker** (no live window hops,
+   no diarization), then review
 6. JSON {"type":"stop"}  and/or  POST /meetings/{id}/stop
 7. GET  /meetings/{id}/transcript
 8. Optional: POST /meetings/{id}/insights , /minutes/generate
 ```
 
+During capture, multi-stream meetings **do not** emit live transcript segments.
+Audio is accumulated per `speaker_id`; after stop, each speaker’s full buffer is
+transcribed in large batches (default 5‑minute windows, one call if shorter).
+That avoids cutting off the last seconds and reduces hop-merge errors.
 ### B) Mono live capture (browser mic)
 
 ```text

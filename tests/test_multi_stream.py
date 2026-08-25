@@ -111,13 +111,17 @@ async def test_multi_stream_session_skips_diarization(store, tmp_path):
     await session.start()
     tone = _tone(16000, 1.0, 300, amp=0.25)
     pcm = (tone * 32768).astype(np.int16)
+    stt = session.stt
     await session.append_stream_audio_int16("alice", pcm)
     await session.append_stream_audio_int16("bob", pcm)
-    await asyncio.sleep(0.3)
+    # Live path must not call STT — only buffer.
+    assert stt.calls == 0
+    await asyncio.sleep(0.05)
     record = await session.stop()
 
     assert record.status.value == "stopped"
     assert record.speaker_map.get("SPEAKER_alice") == "Alice"
+    assert stt.calls >= 1  # batch STT on stop
     segments = store.get_segments(record.id)
     assert segments
     speakers = {s.speaker_id for s in segments}
@@ -128,3 +132,5 @@ async def test_multi_stream_session_skips_diarization(store, tmp_path):
     speaker_updates = [e for e in events if e.get("type") == "speaker_update"]
     assert speaker_updates
     assert speaker_updates[-1].get("backend") == "stream"
+    texts = " ".join(s.text for s in segments)
+    assert "سلام" in texts or "استریم" in texts
