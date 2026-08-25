@@ -13,18 +13,22 @@ const SAMPLE_RATE = 16000;
  *   user: object|null,
  *   capturing: boolean,
  *   meetingId: string|null,
+ *   lastMeetingId: string|null,
  *   tabId: number|null,
  *   streams: Array<{id: string, name: string}>,
  *   lastError: string|null,
+ *   progress: string|null,
  * }} */
 let state = {
   token: null,
   user: null,
   capturing: false,
   meetingId: null,
+  lastMeetingId: null,
   tabId: null,
   streams: [],
   lastError: null,
+  progress: null,
 };
 
 async function loadPersisted() {
@@ -47,8 +51,13 @@ function publicState() {
     user: state.user,
     capturing: state.capturing,
     meetingId: state.meetingId,
+    lastMeetingId: state.lastMeetingId,
+    assistantUrl: state.lastMeetingId
+      ? `${API_BASE}/assistant/${state.lastMeetingId}`
+      : null,
     streams: state.streams,
     lastError: state.lastError,
+    progress: state.progress,
   };
 }
 
@@ -208,9 +217,11 @@ async function startCapture(tabId, title) {
   });
 
   state.meetingId = meeting.id;
+  state.lastMeetingId = meeting.id;
   state.tabId = tabId;
   state.streams = [];
   state.lastError = null;
+  state.progress = "اتصال برقرار شد — در حال ضبط";
 
   const res = await chrome.tabs.sendMessage(tabId, {
     type: "distill_start",
@@ -219,6 +230,13 @@ async function startCapture(tabId, title) {
     sampleRate: SAMPLE_RATE,
   });
   if (!res?.ok) {
+    // Meeting was created; mark it stopped so it does not stay orphaned.
+    try {
+      await apiFetch(`/meetings/${meeting.id}/stop`, { method: "POST" });
+    } catch (_) {
+      /* ignore */
+    }
+    state.meetingId = null;
     throw new Error(res?.error || "اتصال WebSocket در تب Meet برقرار نشد");
   }
 
@@ -230,19 +248,22 @@ async function startCapture(tabId, title) {
 async function stopCapture({ finalize = true } = {}) {
   const tabId = state.tabId;
   const meetingId = state.meetingId;
+  let framesSent = 0;
+  let streamCount = state.streams.length;
 
   if (tabId != null) {
     try {
-      await chrome.tabs.sendMessage(tabId, {
+      const res = await chrome.tabs.sendMessage(tabId, {
         type: "distill_stop",
         finalize,
       });
+      if (res?.framesSent != null) framesSent = res.framesSent;
+      if (res?.streams != null) streamCount = res.streams;
     } catch (_) {
       /* tab may be closed */
     }
   }
 
-  // REST stop as safety net (WS stop may already have finalized).
   if (finalize && meetingId && state.token) {
     try {
       await apiFetch(`/meetings/${meetingId}/stop`, { method: "POST" });
@@ -253,7 +274,24 @@ async function stopCapture({ finalize = true } = {}) {
 
   state.capturing = false;
   state.tabId = null;
-  state.lastError = null;
+  state.meetingId = null;
+  state.progress = null;
+  if (finalize && meetingId) {
+    state.lastMeetingId = meetingId;
+    if (framesSent === 0 && streamCount === 0) {
+      state.lastError =
+        "هیچ صدایی ارسال نشد. روی تب Meet کلیک کنید، میکروفون را اجازه دهید، یا صفحه Meet را رفرش کنید و دوباره شروع کنید. " +
+        `جلسه خالی: ${API_BASE}/assistant/${meetingId}`;
+    } else {
+      state.lastError = null;
+      // framesSent is now batched packets (~1.5s), not ScriptProcessor ticks.
+      state.progress =
+        `توقف انجام شد — ${streamCount} گوینده، ${framesSent} بسته صوت (~۱٫۵ث). ` +
+        `Open meeting in Distill.`;
+    }
+  } else {
+    state.lastError = null;
+  }
   broadcastState();
   return publicState();
 }
@@ -292,8 +330,35 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
       if (msg?.type === "stream_registered") {
         const id = String(msg.speakerId || "").trim();
-        if (id && !state.streams.some((s) => s.id === id)) {
-          state.streams.push({ id, name: msg.name || id });
+        if (id) {
+          const existing = state.streams.find((s) => s.id === id);
+          const name = msg.name || id;
+          if (existing) {
+            if (existing.name !== name) {
+              existing.name = name;
+              state.progress = `نام گوینده: ${name}`;
+              broadcastState();
+            }
+          } else {
+            state.streams.push({ id, name });
+            state.progress = `گوینده جدید: ${name}`;
+            broadcastState();
+          }
+        }
+        sendResponse({ ok: true });
+        return;
+      }
+      if (msg?.type === "capture_progress") {
+        if (state.capturing) {
+          state.progress = msg.message || state.progress;
+          broadcastState();
+        }
+        sendResponse({ ok: true });
+        return;
+      }
+      if (msg?.type === "capture_transcript_hint") {
+        if (state.capturing) {
+          state.progress = `رونوشت زنده: ${msg.segments || 0} بخش`;
           broadcastState();
         }
         sendResponse({ ok: true });
@@ -302,7 +367,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg?.type === "capture_ws_closed") {
         if (state.capturing) {
           state.capturing = false;
+          state.meetingId = null;
           state.lastError = msg.error || `WebSocket closed (${msg.code})`;
+          state.progress = null;
           broadcastState();
         }
         sendResponse({ ok: true });

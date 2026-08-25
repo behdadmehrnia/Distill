@@ -38,31 +38,49 @@
         <button id="logout-btn" class="ghost" type="button">خروج</button>
       </div>
 
-      <label>
-        عنوان جلسه
-        <input
-          id="meeting-title"
-          type="text"
-          placeholder="جلسه گوگل میت"
-        />
-      </label>
-
-      <div class="status-card">
-        <div><strong>وضعیت</strong> <span id="status-text">آماده</span></div>
-        <div class="muted" id="meeting-id" dir="ltr"></div>
-        <div class="muted" id="streams-text"></div>
+      <div id="setup-block" class="stack">
+        <label>
+          عنوان جلسه
+          <input
+            id="meeting-title"
+            type="text"
+            placeholder="جلسه گوگل میت"
+          />
+        </label>
+        <button id="start-btn" class="primary" type="button">شروع ضبط</button>
       </div>
 
-      <div class="actions">
-        <button id="start-btn" class="primary" type="button">شروع ضبط</button>
-        <button id="stop-btn" class="danger" type="button" disabled>
-          توقف
+      <div id="recording-block" class="stack hidden">
+        <div class="status-card">
+          <div><strong>وضعیت</strong> <span>در حال ضبط</span></div>
+          <div class="muted" id="progress-text"></div>
+          <div class="muted" id="meeting-id" dir="ltr"></div>
+          <div class="muted" id="streams-text"></div>
+        </div>
+        <button id="stop-btn" class="danger full" type="button">توقف</button>
+      </div>
+
+      <div id="done-block" class="stack hidden">
+        <div class="status-card">
+          <div><strong>وضعیت</strong> <span>پایان یافت</span></div>
+          <div class="muted" id="done-progress"></div>
+          <div class="muted" id="done-meeting-id" dir="ltr"></div>
+        </div>
+        <a
+          id="open-meeting"
+          class="primary link-btn"
+          href="#"
+          target="_blank"
+          rel="noopener"
+          >Open meeting in Distill</a
+        >
+        <button id="new-capture-btn" class="ghost full" type="button">
+          ضبط جدید
         </button>
       </div>
 
-      <p class="hint">
-        ابتدا وارد یک تماس Google Meet شوید، سپس ضبط را شروع کنید. صدای هر
-        شرکت‌کننده جداگانه به Distill ارسال می‌شود.
+      <p id="hint" class="hint">
+        تب Meet را رفرش کنید، روی صفحه کلیک کنید، سپس شروع ضبط را بزنید.
       </p>
     </section>
 

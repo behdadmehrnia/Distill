@@ -15,17 +15,24 @@
   let pingTimer = null;
   /** @type {chrome.runtime.Port|null} */
   let keepAlivePort = null;
-  const registered = new Set();
   let capturing = false;
+  let framesSent = 0;
+  let meetingId = null;
 
   function injectHook() {
-    if (document.documentElement.dataset.distillInjected === "1") return;
+    // Always (re)inject if the page hook vanished after SPA navigation.
+    if (
+      document.documentElement.dataset.distillInjected === "1" &&
+      document.querySelector("script[data-distill-hook]")
+    ) {
+      return;
+    }
     document.documentElement.dataset.distillInjected = "1";
     const script = document.createElement("script");
     script.src = chrome.runtime.getURL("content/meet-injected.js");
+    script.dataset.distillHook = "1";
     script.async = false;
     (document.head || document.documentElement).appendChild(script);
-    script.remove();
   }
 
   injectHook();
@@ -114,9 +121,9 @@
     }
   }
 
-  function openAudioWs(meetingId, token) {
+  function openAudioWs(id, token) {
     return new Promise((resolve, reject) => {
-      const url = `${API_BASE.replace(/^http/, "ws")}/meetings/${meetingId}/audio?token=${encodeURIComponent(token)}`;
+      const url = `${API_BASE.replace(/^http/, "ws")}/meetings/${id}/audio?token=${encodeURIComponent(token)}`;
       const socket = new WebSocket(url);
       socket.binaryType = "arraybuffer";
       const timer = setTimeout(() => {
@@ -138,7 +145,7 @@
               /* ignore */
             }
           }
-        }, 20000);
+        }, 15000);
         resolve(socket);
       };
       socket.onerror = () => {
@@ -148,7 +155,7 @@
       socket.onclose = (ev) => {
         clearPing();
         if (ws === socket) ws = null;
-        if (capturing && !ev.wasClean) {
+        if (capturing && !ev.wasClean && ev.code !== 1000) {
           capturing = false;
           notifyBackground({
             type: "capture_ws_closed",
@@ -167,36 +174,63 @@
               name: data.name,
             });
           }
+          if (data.type === "transcript") {
+            notifyBackground({
+              type: "capture_transcript_hint",
+              segments: (data.segments || []).length,
+            });
+          }
         } catch (_) {
-          /* binary or non-json */
+          /* ignore */
         }
       };
     });
   }
 
+  const registeredNames = new Map();
+
   function ensureRegistered(speakerId, name) {
-    if (!ws || ws.readyState !== WebSocket.OPEN || registered.has(speakerId)) {
-      return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    let clean = String(name || "").trim();
+    if (
+      !clean ||
+      /[\/\\]/.test(clean) ||
+      /^(spaces|devices)\b/i.test(clean) ||
+      /^شرکت‌?کننده/.test(clean) ||
+      /^participant\s*\d*$/i.test(clean) ||
+      clean.length > 64
+    ) {
+      // Keep a previous good name if we already have one.
+      if (registeredNames.has(speakerId)) return;
+      clean =
+        speakerId === "local" || speakerId === "SPEAKER_local"
+          ? "شما"
+          : `شرکت‌کننده ${registeredNames.size || 1}`;
     }
-    registered.add(speakerId);
+    if (registeredNames.get(speakerId) === clean) return;
+    registeredNames.set(speakerId, clean);
     ws.send(
       JSON.stringify({
         type: "register_stream",
         speaker_id: speakerId,
-        name: name || speakerId,
+        name: clean,
       })
     );
     notifyBackground({
       type: "stream_registered",
       speakerId,
-      name: name || speakerId,
+      name: clean,
     });
   }
 
   async function startCapture(msg) {
     if (capturing) return { ok: true };
     injectHook();
-    registered.clear();
+    // Give the injected script a tick to install listeners.
+    await new Promise((r) => setTimeout(r, 50));
+    registeredNames.clear();
+    framesSent = 0;
+    meetingId = msg.meetingId;
     openKeepAlive();
     ws = await openAudioWs(msg.meetingId, msg.token);
     capturing = true;
@@ -208,30 +242,43 @@
       },
       "*"
     );
+    notifyBackground({
+      type: "capture_progress",
+      message: "در حال شنود ترک‌های صوتی Meet…",
+    });
     return { ok: true };
   }
 
   async function stopCapture({ finalize = true } = {}) {
+    const sent = framesSent;
+    const streamCount = registeredNames.size;
     window.postMessage({ source: SOURCE, type: "DISTILL_STOP" }, "*");
+    // Allow final batched flush from the page hook.
+    await new Promise((r) => setTimeout(r, 200));
+
     if (finalize && ws && ws.readyState === WebSocket.OPEN) {
       try {
         ws.send(JSON.stringify({ type: "stop" }));
       } catch (_) {
         /* ignore */
       }
+      await new Promise((r) => setTimeout(r, 400));
     }
+
     capturing = false;
     closeWs({ intentional: true });
     closeKeepAlive();
-    registered.clear();
-    return { ok: true };
+    registeredNames.clear();
+    meetingId = null;
+    framesSent = 0;
+    return { ok: true, framesSent: sent, streams: streamCount };
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (async () => {
       try {
         if (msg?.type === "distill_ping") {
-          sendResponse({ ok: true });
+          sendResponse({ ok: true, capturing, framesSent, streams: registeredNames.size });
           return;
         }
         if (msg?.type === "distill_start") {
@@ -257,6 +304,38 @@
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.source !== "distill-page") return;
+
+    if (data.type === "DISTILL_WARN" || data.type === "DISTILL_STARTED") {
+      notifyBackground({
+        type: "capture_progress",
+        message: data.message || `ترک‌های فعال: ${data.taps || 0}`,
+        taps: data.taps,
+      });
+      return;
+    }
+
+    if (data.type === "DISTILL_TAP") {
+      ensureRegistered(data.speakerId, data.name);
+      notifyBackground({
+        type: "stream_registered",
+        speakerId: data.speakerId,
+        name: data.name,
+      });
+      return;
+    }
+
+    if (data.type === "DISTILL_STATS") {
+      const sec = data.audioSec != null ? data.audioSec : "?";
+      notifyBackground({
+        type: "capture_progress",
+        message: `ارسال صوت… ${sec}ث · ${data.batchesSent || 0} بسته · ${data.taps || 0} ترک`,
+        taps: data.taps,
+        batchesSent: data.batchesSent,
+        audioSec: data.audioSec,
+      });
+      return;
+    }
+
     if (data.type !== "DISTILL_PCM" || !capturing) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
@@ -268,6 +347,7 @@
     if (frame) {
       try {
         ws.send(frame);
+        framesSent += 1;
       } catch (_) {
         /* ignore */
       }

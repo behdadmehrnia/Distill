@@ -139,6 +139,37 @@ button:disabled {
   gap: 8px;
 }
 
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.full {
+  width: 100%;
+}
+
+.danger.full {
+  background: transparent;
+  color: #ffb4b4;
+  border: 1px solid #5a2a2a;
+}
+
+.link-btn {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--yellow);
+  color: #121212;
+  font-weight: 700;
+}
+
+.link-btn:hover {
+  background: #ffd84a;
+}
+
 .status-card {
   background: var(--card);
   border: 1px solid var(--line);
@@ -160,6 +191,17 @@ button:disabled {
   color: var(--muted);
   font-size: 0.78rem;
   word-break: break-all;
+}
+
+.meeting-link {
+  color: var(--yellow);
+  font-size: 0.8rem;
+  margin-top: 4px;
+  text-decoration: none;
+}
+
+.meeting-link:hover {
+  text-decoration: underline;
 }
 
 .hint {
