@@ -342,7 +342,10 @@ def test_recording_endpoint_and_restart(tmp_path):
 
 
 def test_websocket_disconnect_auto_cancels_recording(tmp_path):
-    """Closing the audio WS without POST /stop must cancel capture, not finish processing."""
+    """Closing the audio WS without POST /stop must gracefully finalize
+    (preserve whatever was captured) rather than wipe it — a dropped
+    connection (tab close, refresh, flaky network) is not an explicit
+    user cancel and must not destroy already-completed work."""
     import time
 
     with _make_client(tmp_path) as client:
@@ -363,10 +366,10 @@ def test_websocket_disconnect_auto_cancels_recording(tmp_path):
             meta = client.get(f"/meetings/{meeting_id}")
             assert meta.status_code == 200
             status = meta.json()["status"]
-            if status == "created":
+            if status == "stopped":
                 break
             time.sleep(0.05)
-        assert status == "created"
+        assert status == "stopped"
 
         again = client.post(f"/meetings/{meeting_id}/start", json={"reset": True})
         assert again.status_code == 200
@@ -387,8 +390,13 @@ def test_upload_rejects_invalid_audio(tmp_path):
         assert resp.status_code == 400
         assert "decode" in resp.json()["detail"].lower()
 
+        # The failed upload leaves status stuck at "processing" with no live
+        # session; healing recovers it to "stopped" (not a destructive wipe
+        # back to "created") so a stray failure never leaves a meeting
+        # silently reset — same recovery path applies whether or not the
+        # attempt captured anything.
         meeting = client.get(f"/meetings/{meeting_id}")
-        assert meeting.json()["status"] == "created"
+        assert meeting.json()["status"] == "stopped"
 
 
 def test_upload_rejects_empty_body(tmp_path):
@@ -420,8 +428,12 @@ def test_cancel_resets_processing_meeting(tmp_path):
         assert resp.status_code == 200
         assert resp.json()["status"] == "created"
 
+        # The DB row was set to "processing" out-of-band above without
+        # touching the live session's own in-memory record, so the /cancel
+        # above no-ops (nothing was actually in flight) and this GET is what
+        # triggers healing — recovering to "stopped", not a destructive wipe.
         again = client.get(f"/meetings/{meeting_id}")
-        assert again.json()["status"] == "created"
+        assert again.json()["status"] == "stopped"
 
 
 def test_orphaned_recording_status_allows_restart(tmp_path):

@@ -2,6 +2,8 @@
 
 Browser extension that taps **per-participant audio** inside Google Meet and streams it to a Distill `multi_stream` meeting — **no diarization**.
 
+Full API protocol for any client (bots, adapters, CLIs): [`docs/CLIENT.md`](../docs/CLIENT.md).
+
 Default API: `https://api.distill.app` (hardcoded; not configurable in the UI).
 
 ## Auth note

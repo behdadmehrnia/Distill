@@ -11,7 +11,7 @@ api/                 # اپلیکیشن + UI
   auth/
   meeting/
   providers/
-docs/                # MODELS, LOCAL_RUN, AUTH
+docs/                # MODELS, LOCAL_RUN, AUTH, CLIENT
 tests/
 data/
 .env
@@ -23,6 +23,8 @@ data/
 [`docs/MODELS.md`](docs/MODELS.md)
 
 **Auth + PostgreSQL:** [`docs/AUTH.md`](docs/AUTH.md)
+
+**HTTP / WebSocket client API (meetings, multi-stream, audio protocol):** [`docs/CLIENT.md`](docs/CLIENT.md)
 
 **Quick local / hybrid:** [`docs/LOCAL_RUN.md`](docs/LOCAL_RUN.md) · [`runtime/README.md`](runtime/README.md)
 
