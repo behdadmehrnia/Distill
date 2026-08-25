@@ -15,6 +15,13 @@ class MeetingStatus(str, Enum):
     FAILED = "failed"
 
 
+class CaptureMode(str, Enum):
+    """How audio is captured for a meeting."""
+
+    MONO = "mono"
+    MULTI_STREAM = "multi_stream"
+
+
 @dataclass
 class TranscriptSegment:
     id: str
@@ -157,19 +164,35 @@ class MeetingRecord:
     participants: List[str] = field(default_factory=list)
     speaker_map: Dict[str, str] = field(default_factory=dict)
     user_id: Optional[str] = None
+    capture_mode: CaptureMode = CaptureMode.MONO
+    stream_paths: Dict[str, str] = field(default_factory=dict)
 
     @staticmethod
     def create(
         title: str = "Untitled Meeting",
         participants: Optional[List[str]] = None,
         user_id: Optional[str] = None,
+        *,
+        capture_mode: CaptureMode = CaptureMode.MONO,
+        streams: Optional[Dict[str, str]] = None,
     ) -> "MeetingRecord":
+        from .multi_stream import normalize_speaker_id
+
+        speaker_map: Dict[str, str] = {}
+        if streams:
+            speaker_map = {
+                normalize_speaker_id(k): str(v).strip()
+                for k, v in streams.items()
+                if str(k).strip() and str(v).strip()
+            }
         return MeetingRecord(
             id=str(uuid.uuid4()),
             title=title,
             status=MeetingStatus.CREATED,
             participants=participants or [],
             user_id=user_id,
+            capture_mode=capture_mode,
+            speaker_map=speaker_map,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -185,4 +208,6 @@ class MeetingRecord:
             "participants": self.participants,
             "speaker_map": self.speaker_map,
             "user_id": self.user_id,
+            "capture_mode": self.capture_mode.value,
+            "stream_paths": self.stream_paths,
         }

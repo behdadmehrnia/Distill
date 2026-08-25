@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import time
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -12,10 +13,16 @@ from .aligner import (
     align_stt_with_diarization,
     dedupe_overlapping_transcripts,
 )
-from .chunker import OverlappingChunker
+from .chunker import AudioChunk, OverlappingChunker
 from .diarization import SpeakerDiarizer
 from .ingest import AudioIngest
-from .models import MeetingRecord, MeetingStatus, SpeakerInterval, TranscriptSegment
+from .models import CaptureMode, MeetingRecord, MeetingStatus, SpeakerInterval, TranscriptSegment
+from .multi_stream import (
+    MultiStreamChunkerRegistry,
+    MultiStreamIngest,
+    merge_speaker_intervals,
+    normalize_speaker_id,
+)
 from .review import (
     TranscriptReviewAgent,
     gate_stt_text,
@@ -33,6 +40,12 @@ _STT_BACKOFF_S = (0.5, 1.0, 2.0)
 
 # (start_ms, end_ms, text, optional absolute word timings)
 PendingStt = Tuple[int, int, str, Optional[Sequence[Tuple[str, int, int]]]]
+
+
+@dataclass
+class _SttWorkItem:
+    chunk: AudioChunk
+    speaker_id: Optional[str] = None
 
 
 class ProcessingCancelled(Exception):
@@ -92,6 +105,24 @@ class MeetingSession:
         self._last_diarize_ms = 0
         self._speaker_intervals = []
         self._pending_stt: List[PendingStt] = []
+        self._stream_pending_stt: Dict[str, List[PendingStt]] = {}
+        self._is_multi_stream = record.capture_mode == CaptureMode.MULTI_STREAM
+        self._multi_ingest: Optional[MultiStreamIngest] = None
+        self._multi_chunkers: Optional[MultiStreamChunkerRegistry] = None
+        if self._is_multi_stream:
+            self._multi_ingest = MultiStreamIngest(
+                sample_rate=sample_rate,
+                audio_dir=audio_dir,
+                meeting_id=record.id,
+            )
+            self._multi_chunkers = MultiStreamChunkerRegistry(
+                sample_rate=sample_rate,
+                window_ms=win,
+                hop_ms=hop,
+                min_speech_rms=float(self.tuning.get("min_speech_rms", 0.008)),
+            )
+            for speaker_id in record.speaker_map:
+                self._multi_ingest.register_stream(speaker_id)
         self._running = False
         self._stopping = False
         self._cancel_requested = False
@@ -117,6 +148,33 @@ class MeetingSession:
             self.chunker.min_speech_rms = float(tuning["min_speech_rms"])
         if hasattr(self.diarizer, "apply_tuning"):
             self.diarizer.apply_tuning(tuning)
+
+    @property
+    def is_multi_stream(self) -> bool:
+        return self._is_multi_stream
+
+    @property
+    def uses_diarization(self) -> bool:
+        return not self._is_multi_stream
+
+    def register_stream(self, speaker_id: str, name: Optional[str] = None) -> str:
+        """Register a participant audio stream (multi-stream mode only)."""
+        if not self._is_multi_stream or self._multi_ingest is None:
+            raise RuntimeError("multi-stream capture is not enabled for this meeting")
+        sid = normalize_speaker_id(speaker_id)
+        self._multi_ingest.register_stream(sid)
+        if name and str(name).strip():
+            self.record.speaker_map[sid] = str(name).strip()
+            self.store.save_meeting(self.record)
+        return sid
+
+    def _record_stream_activity(
+        self, speaker_id: str, start_ms: int, end_ms: int
+    ) -> None:
+        self._speaker_intervals.append(
+            SpeakerInterval(speaker_id, start_ms, end_ms, False)
+        )
+        self._speaker_intervals = merge_speaker_intervals(self._speaker_intervals)
 
     def set_speaker_map(self, mapping: Dict[str, str]) -> MeetingRecord:
         cleaned = {
@@ -169,7 +227,13 @@ class MeetingSession:
             "stt_cache_hits": hits,
             "stt_cache_misses": misses,
             "stt_cache_hit_rate": round(hits / total_cache, 3) if total_cache else None,
-            "diarization_backend": self.diarizer.backend,
+            "diarization_backend": (
+                "stream" if self._is_multi_stream else self.diarizer.backend
+            ),
+            "capture_mode": self.record.capture_mode.value,
+            "stream_ids": (
+                self._multi_ingest.stream_ids if self._multi_ingest else []
+            ),
             "speakers_detected": len(speakers),
             "speaker_ids": sorted(speakers),
             "speaker_map": dict(self.record.speaker_map),
@@ -284,7 +348,12 @@ class MeetingSession:
         self.ingest.clear()
         self.chunker.reset()
         self._pending_stt = []
+        self._stream_pending_stt = {}
         self._speaker_intervals = []
+        if self._multi_ingest is not None:
+            self._multi_ingest.clear()
+        if self._multi_chunkers is not None:
+            self._multi_chunkers.reset()
         self._last_diarize_ms = 0
         self._stopping = False
         self._stt_calls = 0
@@ -379,7 +448,7 @@ class MeetingSession:
                 "diarization_backend": self.diarizer.backend,
             }
         )
-        if self.diarizer.backend not in {"pyannote", "nemo"}:
+        if self.diarizer.backend not in {"pyannote", "nemo"} and not self._is_multi_stream:
             await self._emit(
                 {
                     "type": "warning",
@@ -394,20 +463,35 @@ class MeetingSession:
             )
 
     async def append_audio_int16(self, samples: np.ndarray) -> None:
-        """Append PCM int16 without dropping — always keeps recording."""
-        if not self._running:
+        """Append PCM int16 without dropping — always keeps recording (mono mode)."""
+        if not self._running or self._is_multi_stream:
             return
         self.ingest.append_int16(samples)
         buf = self.ingest.get_buffer()
         chunks = self.chunker.pop_ready_chunks(buf)
         for chunk in chunks:
-            await self._stt_queue.put(chunk)
+            await self._stt_queue.put(_SttWorkItem(chunk=chunk))
 
         if (
             self.diarize_every_ms > 0
             and self.ingest.duration_ms - self._last_diarize_ms >= self.diarize_every_ms
         ):
             asyncio.create_task(self._refresh_diarization(provisional=True))
+
+    async def append_stream_audio_int16(
+        self, speaker_id: str, samples: np.ndarray
+    ) -> None:
+        """Append tagged PCM for one participant stream (multi-stream mode)."""
+        if not self._running or not self._is_multi_stream:
+            return
+        if self._multi_ingest is None or self._multi_chunkers is None:
+            return
+        sid = self.register_stream(speaker_id)
+        self._multi_ingest.append_int16(sid, samples)
+        buf = self._multi_ingest.get_buffer(sid)
+        for chunk in self._multi_chunkers.pop_ready(sid, buf):
+            self._record_stream_activity(sid, chunk.start_ms, chunk.end_ms)
+            await self._stt_queue.put(_SttWorkItem(chunk=chunk, speaker_id=sid))
 
     def _words_abs(
         self, chunk_start_ms: int, result
@@ -478,31 +562,41 @@ class MeetingSession:
         await self._emit({"type": "error", "message": f"STT error: {last_exc}"})
         return None
 
-    def _stt_context_prompt(self) -> Optional[str]:
+    def _stt_context_prompt(self, speaker_id: Optional[str] = None) -> Optional[str]:
         """Previous accepted transcript — Whisper's intended `prompt` usage."""
-        if not self._pending_stt:
+        if speaker_id:
+            pending = self._stream_pending_stt.get(speaker_id) or []
+        else:
+            pending = self._pending_stt
+        if not pending:
             return None
-        text = (self._pending_stt[-1][2] or "").strip()
+        text = (pending[-1][2] or "").strip()
         if len(text) < 8:
             return None
         return text[-240:]
 
     async def _stt_worker(self) -> None:
         while True:
-            chunk = await self._stt_queue.get()
-            if chunk is None:
+            item = await self._stt_queue.get()
+            if item is None:
                 self._stt_queue.task_done()
                 break
             try:
+                if isinstance(item, _SttWorkItem):
+                    chunk = item.chunk
+                    speaker_id = item.speaker_id
+                else:
+                    chunk = item
+                    speaker_id = None
                 lang = str(self.tuning.get("stt_language") or "fa")
+                prompt = self._stt_context_prompt(speaker_id)
                 result = await self._transcribe_with_retry(
-                    chunk.audio, lang, prompt=self._stt_context_prompt()
+                    chunk.audio, lang, prompt=prompt
                 )
                 if result is None:
                     continue
                 raw = (result.text or "").strip()
                 if not raw:
-                    # Common for quiet hops that still clear min_speech_rms
                     logger.debug(
                         "STT empty chunk %dms-%dms (rms gate passed, model returned '')",
                         chunk.start_ms,
@@ -516,11 +610,24 @@ class MeetingSession:
                 if words:
                     self._stt_with_timings += 1
                 async with self._transcript_lock:
-                    self._upsert_pending_stt(
-                        chunk.start_ms, chunk.end_ms, text, words
-                    )
+                    if speaker_id:
+                        pending = self._stream_pending_stt.setdefault(speaker_id, [])
+                        self._upsert_pending_stt(
+                            chunk.start_ms,
+                            chunk.end_ms,
+                            text,
+                            words,
+                            target=pending,
+                        )
+                    else:
+                        self._upsert_pending_stt(
+                            chunk.start_ms, chunk.end_ms, text, words
+                        )
                     self._chunks_processed += 1
-                    await self._publish_live_transcript_unlocked()
+                    if speaker_id:
+                        await self._publish_live_transcript_multi_unlocked()
+                    else:
+                        await self._publish_live_transcript_unlocked()
             except Exception as exc:
                 logger.exception("STT chunk failed: %s", exc)
                 self._stt_dropped += 1
@@ -534,12 +641,10 @@ class MeetingSession:
         end_ms: int,
         text: str,
         words: Optional[Sequence[Tuple[str, int, int]]],
+        *,
+        target: Optional[List[PendingStt]] = None,
     ) -> None:
-        """Append-only live buffer: update same span, otherwise keep a new row.
-
-        No stitch/same-utterance heuristics — those wiped earlier speech when a
-        later partial hop arrived. Words are stored but live UI uses `text`.
-        """
+        """Append-only live buffer: update same span, otherwise keep a new row."""
         from api.meeting.aligner import (
             _merge_word_timings,
             _overlap_ms,
@@ -547,13 +652,14 @@ class MeetingSession:
             _token_containment,
         )
 
+        pending = self._pending_stt if target is None else target
         text = (text or "").strip()
         if not text:
             return
 
         best_idx = None
         best_ratio = 0.0
-        for i, (ps, pe, _pt, _pw) in enumerate(self._pending_stt):
+        for i, (ps, pe, _pt, _pw) in enumerate(pending):
             ov = _overlap_ms(ps, pe, start_ms, end_ms)
             shorter = max(1, min(pe - ps, end_ms - start_ms))
             ratio = ov / shorter
@@ -562,29 +668,27 @@ class MeetingSession:
                 best_idx = i
 
         if best_idx is not None and best_ratio >= 0.5:
-            ps, pe, pt, pw = self._pending_stt[best_idx]
+            ps, pe, pt, pw = pending[best_idx]
             pt = pt or ""
             new_tokens = len(text.split())
             old_tokens = len(pt.split())
             related = (not pt) or _same_utterance(pt, text) or _token_containment(
                 pt, text
             ) >= 0.4
-            # Same span: take fuller text only when it is related. Dissimilar
-            # longer hallucinations must not wipe an established sentence.
             if related and new_tokens >= old_tokens:
                 chosen_text, chosen_words = text, words
             else:
                 chosen_text, chosen_words = pt, pw
-            self._pending_stt[best_idx] = (
+            pending[best_idx] = (
                 min(ps, start_ms),
                 max(pe, end_ms),
                 chosen_text,
                 _merge_word_timings(pw, words) or chosen_words,
             )
         else:
-            self._pending_stt.append((start_ms, end_ms, text, words))
+            pending.append((start_ms, end_ms, text, words))
 
-        self._pending_stt.sort(key=lambda row: row[0])
+        pending.sort(key=lambda row: row[0])
 
     async def _publish_live_transcript_unlocked(self) -> None:
         """Caller must hold `_transcript_lock`."""
@@ -617,9 +721,65 @@ class MeetingSession:
             }
         )
 
+    def _segments_from_stream_pending(
+        self, *, provisional: bool
+    ) -> List[TranscriptSegment]:
+        rows: List[TranscriptSegment] = []
+        for speaker_id, pending in self._stream_pending_stt.items():
+            for start_ms, end_ms, text, _words in pending:
+                if not (text or "").strip():
+                    continue
+                rows.append(
+                    TranscriptSegment.create(
+                        self.meeting_id,
+                        speaker_id,
+                        start_ms,
+                        end_ms,
+                        text,
+                        provisional=provisional,
+                    )
+                )
+        rows.sort(key=lambda s: (s.start_ms, s.speaker_id))
+        return dedupe_overlapping_transcripts(
+            rows,
+            similarity_threshold=float(self.tuning.get("dedupe_similarity", 0.45)),
+            min_time_overlap_ratio=float(self.tuning.get("dedupe_time_overlap", 0.35)),
+        )
+
+    async def _publish_live_transcript_multi_unlocked(self) -> None:
+        """Caller must hold `_transcript_lock`. Multi-stream: skip diarization align."""
+        segments = self._segments_from_stream_pending(provisional=True)
+        if not segments:
+            return
+        self.store.replace_meeting_segments(self.meeting_id, segments)
+        await self._emit(
+            {
+                "type": "transcript",
+                "meeting_id": self.meeting_id,
+                "segments": [s.to_dict() for s in segments],
+            }
+        )
+
+    async def _emit_stream_speaker_update(self, *, provisional: bool) -> None:
+        intervals = merge_speaker_intervals(self._speaker_intervals)
+        self._speaker_intervals = intervals
+        if not provisional:
+            self.store.replace_speaker_intervals(self.meeting_id, intervals)
+        await self._emit(
+            {
+                "type": "speaker_update",
+                "backend": "stream",
+                "intervals": [iv.to_dict() for iv in intervals],
+                "overlaps": [iv.to_dict() for iv in intervals if iv.is_overlap],
+            }
+        )
+
     async def _refresh_diarization(
         self, provisional: bool = True, review_phase: Optional[str] = None
     ) -> None:
+        if self._is_multi_stream:
+            await self._emit_stream_speaker_update(provisional=provisional)
+            return
         # Ignore late live-diarize tasks once stop() has started — they can race
         # the final pass and wipe/replace the transcript mid-processing.
         if provisional and self._stopping:
@@ -772,18 +932,48 @@ class MeetingSession:
 
                 self._check_cancelled()
                 await self._emit_phase("save_audio")
-                try:
-                    path = self.ingest.save_wav()
-                    self.record.audio_path = path
-                    self.store.save_meeting(self.record)
-                except Exception as exc:
-                    logger.warning("Could not save WAV: %s", exc)
+                if self._is_multi_stream and self._multi_ingest is not None:
+                    try:
+                        self.record.stream_paths = self._multi_ingest.save_stream_wavs()
+                        mixed = self._multi_ingest.mix_down()
+                        if len(mixed) > 0:
+                            self.ingest.replace_buffer(mixed)
+                            path = self.ingest.save_wav()
+                            self.record.audio_path = path
+                        elif self.record.stream_paths:
+                            first_path = next(iter(self.record.stream_paths.values()))
+                            self.record.audio_path = first_path
+                        self.store.save_meeting(self.record)
+                    except Exception as exc:
+                        logger.warning("Could not save multi-stream WAV: %s", exc)
+                else:
+                    try:
+                        path = self.ingest.save_wav()
+                        self.record.audio_path = path
+                        self.store.save_meeting(self.record)
+                    except Exception as exc:
+                        logger.warning("Could not save WAV: %s", exc)
 
                 self._check_cancelled()
                 await self._emit_phase("flush_stt")
-                rem = self.chunker.flush_remainder(self.ingest.get_buffer())
-                if rem is not None:
-                    await self._stt_queue.put(rem)
+                if self._is_multi_stream and self._multi_ingest and self._multi_chunkers:
+                    buffers = {
+                        sid: self._multi_ingest.get_buffer(sid)
+                        for sid in self._multi_ingest.stream_ids
+                    }
+                    for sid, buf in buffers.items():
+                        rem = self._multi_chunkers.flush(sid, buf)
+                        if rem is not None:
+                            self._record_stream_activity(
+                                sid, rem.start_ms, rem.end_ms
+                            )
+                            await self._stt_queue.put(
+                                _SttWorkItem(chunk=rem, speaker_id=sid)
+                            )
+                else:
+                    rem = self.chunker.flush_remainder(self.ingest.get_buffer())
+                    if rem is not None:
+                        await self._stt_queue.put(_SttWorkItem(chunk=rem))
 
                 n_workers = len(self._worker_tasks) or 1
                 for _ in range(n_workers):
@@ -796,13 +986,18 @@ class MeetingSession:
                 self._worker_tasks = []
 
                 self._check_cancelled()
-                await self._emit_phase("diarize")
-                try:
-                    await self._refresh_diarization(
-                        provisional=False, review_phase="review"
-                    )
-                except Exception as exc:
-                    logger.exception("Final diarize/review failed during stop: %s", exc)
+                if self._is_multi_stream:
+                    await self._finalize_multi_stream_stop()
+                else:
+                    await self._emit_phase("diarize")
+                    try:
+                        await self._refresh_diarization(
+                            provisional=False, review_phase="review"
+                        )
+                    except Exception as exc:
+                        logger.exception(
+                            "Final diarize/review failed during stop: %s", exc
+                        )
 
                 self._running = False
                 self.record.status = MeetingStatus.STOPPED
@@ -823,6 +1018,32 @@ class MeetingSession:
                 if self._running:
                     self._stopping = False
                 raise
+
+    async def _finalize_multi_stream_stop(self) -> None:
+        """Finalize transcript and speaker intervals without diarization."""
+        await self._emit_phase("review")
+        async with self._transcript_lock:
+            segments = self._segments_from_stream_pending(provisional=False)
+            await self._emit_stream_speaker_update(provisional=False)
+
+        try:
+            reviewed = await self._finalize_review(segments)
+        except Exception as exc:
+            logger.exception("Multi-stream finalize review failed: %s", exc)
+            reviewed = segments
+
+        if not reviewed and segments:
+            reviewed = segments
+
+        async with self._transcript_lock:
+            self.store.replace_meeting_segments(self.meeting_id, reviewed)
+            await self._emit(
+                {
+                    "type": "transcript",
+                    "meeting_id": self.meeting_id,
+                    "segments": [s.to_dict() for s in reviewed],
+                }
+            )
 
     async def _diarize_upload_audio(
         self, audio: np.ndarray
@@ -1099,9 +1320,16 @@ class MeetingManager:
         participants: Optional[List[str]] = None,
         user_id: Optional[str] = None,
         on_event: Optional[EventCallback] = None,
+        *,
+        capture_mode: CaptureMode = CaptureMode.MONO,
+        streams: Optional[Dict[str, str]] = None,
     ) -> MeetingSession:
         record = MeetingRecord.create(
-            title=title, participants=participants, user_id=user_id
+            title=title,
+            participants=participants,
+            user_id=user_id,
+            capture_mode=capture_mode,
+            streams=streams,
         )
         self.store.save_meeting(record)
         session = MeetingSession(

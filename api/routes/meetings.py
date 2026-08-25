@@ -24,7 +24,13 @@ from fastapi.responses import FileResponse, Response
 from api.auth.deps import authenticate_websocket, get_current_user, require_meeting
 from api.auth.models import UserRecord
 from api.meeting.ingest import AudioIngest
-from api.meeting.models import MeetingMinutes, MeetingRecord, MeetingStatus, MinutesDecision
+from api.meeting.models import (
+    CaptureMode,
+    MeetingMinutes,
+    MeetingRecord,
+    MeetingStatus,
+    MinutesDecision,
+)
 from api.meeting.session import ProcessingCancelled
 from api.realtime import broadcast
 
@@ -168,6 +174,27 @@ async def create_meeting(
         title = "جلسه جدید"
     participants = raw.get("participants") or []
     start = bool(raw.get("start", True))
+    capture_raw = str(raw.get("capture_mode") or "mono").strip().lower()
+    try:
+        capture_mode = CaptureMode(capture_raw)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="capture_mode must be 'mono' or 'multi_stream'",
+        )
+    streams: Dict[str, str] = {}
+    for item in raw.get("streams") or []:
+        if not isinstance(item, dict):
+            continue
+        sid = str(item.get("speaker_id") or item.get("id") or "").strip()
+        name = str(item.get("name") or item.get("label") or "").strip()
+        if sid and name:
+            streams[sid] = name
+    stream_map = raw.get("stream_map")
+    if isinstance(stream_map, dict):
+        for sid, name in stream_map.items():
+            if str(sid).strip() and str(name).strip():
+                streams[str(sid).strip()] = str(name).strip()
     app = request.app
 
     async def on_event(event: Dict[str, Any]) -> None:
@@ -182,10 +209,48 @@ async def create_meeting(
         participants=participants,
         user_id=user.id,
         on_event=on_event,
+        capture_mode=capture_mode,
+        streams=streams or None,
     )
     if start:
         await session.start()
     return _meeting_payload(session.record, has_recording=False)
+
+
+@router.post("/meetings/{meeting_id}/streams", status_code=201)
+async def register_stream(
+    request: Request,
+    meeting: MeetingRecord = Depends(require_meeting),
+) -> Dict[str, Any]:
+    """Register a participant audio stream for multi-stream capture."""
+    if meeting.capture_mode != CaptureMode.MULTI_STREAM:
+        raise HTTPException(
+            status_code=400,
+            detail="meeting is not configured for multi_stream capture",
+        )
+    try:
+        raw = await request.json()
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    speaker_id = str(raw.get("speaker_id") or raw.get("id") or "").strip()
+    name = str(raw.get("name") or raw.get("label") or "").strip() or None
+    if not speaker_id:
+        raise HTTPException(status_code=400, detail="speaker_id is required")
+
+    session = request.app.state.manager.get_or_restore(meeting.id)
+    if not session:
+        raise HTTPException(status_code=404, detail="meeting session not found")
+    sid = session.register_stream(speaker_id, name=name)
+    return {
+        "meeting_id": meeting.id,
+        "speaker_id": sid,
+        "name": session.record.speaker_map.get(sid),
+        "stream_ids": (
+            session._multi_ingest.stream_ids if session._multi_ingest else [sid]
+        ),
+    }
 
 
 @router.get("/meetings/{meeting_id}")
@@ -448,6 +513,16 @@ async def get_speaker_sample_audio(
         audio_dir=settings.audio_dir,
         upload_dir=settings.upload_dir,
     )
+    stream_path = meeting.stream_paths.get(speaker_id)
+    if stream_path:
+        per_stream = _resolve_recording_path(
+            meeting_id,
+            stream_path,
+            audio_dir=settings.audio_dir,
+            upload_dir=settings.upload_dir,
+        )
+        if per_stream:
+            path = per_stream
     if not path:
         raise HTTPException(status_code=404, detail="recording not found")
 
@@ -837,7 +912,18 @@ async def audio_ws(websocket: WebSocket, meeting_id: str) -> None:
                 await _handle_ws_message(session, websocket, payload)
             elif "bytes" in message and message["bytes"] is not None:
                 samples = np.frombuffer(message["bytes"], dtype=np.int16)
-                await session.append_audio_int16(samples)
+                if session.is_multi_stream:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": (
+                                "multi_stream meetings require JSON audio messages "
+                                "with speaker_id"
+                            ),
+                        }
+                    )
+                else:
+                    await session.append_audio_int16(samples)
     except WebSocketDisconnect:
         pass
     finally:
@@ -883,8 +969,39 @@ async def _auto_finalize_after_disconnect(
 async def _handle_ws_message(session, ws: WebSocket, payload: dict) -> None:
     msg_type = payload.get("type")
     if msg_type == "audio":
+        speaker_id = payload.get("speaker_id")
         samples = np.asarray(payload.get("data") or [], dtype=np.int16)
-        await session.append_audio_int16(samples)
+        if session.is_multi_stream:
+            if not speaker_id:
+                await ws.send_json(
+                    {"type": "error", "message": "speaker_id is required for multi_stream"}
+                )
+                return
+            await session.append_stream_audio_int16(str(speaker_id), samples)
+        else:
+            await session.append_audio_int16(samples)
+    elif msg_type == "register_stream":
+        if not session.is_multi_stream:
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "register_stream requires multi_stream capture_mode",
+                }
+            )
+            return
+        speaker_id = str(payload.get("speaker_id") or payload.get("id") or "").strip()
+        name = str(payload.get("name") or payload.get("label") or "").strip() or None
+        if not speaker_id:
+            await ws.send_json({"type": "error", "message": "speaker_id is required"})
+            return
+        sid = session.register_stream(speaker_id, name=name)
+        await ws.send_json(
+            {
+                "type": "stream_registered",
+                "speaker_id": sid,
+                "name": session.record.speaker_map.get(sid),
+            }
+        )
     elif msg_type == "stop":
         record = await session.stop()
         await ws.send_json(

@@ -44,8 +44,22 @@ class TranscriptStore:
                         audio_path TEXT,
                         user_id TEXT,
                         participants TEXT NOT NULL DEFAULT '[]',
-                        speaker_map TEXT NOT NULL DEFAULT '{}'
+                        speaker_map TEXT NOT NULL DEFAULT '{}',
+                        capture_mode TEXT NOT NULL DEFAULT 'mono',
+                        stream_paths TEXT NOT NULL DEFAULT '{}'
                     )
+                    """
+                )
+                conn.execute(
+                    """
+                    ALTER TABLE meetings
+                        ADD COLUMN IF NOT EXISTS capture_mode TEXT NOT NULL DEFAULT 'mono'
+                    """
+                )
+                conn.execute(
+                    """
+                    ALTER TABLE meetings
+                        ADD COLUMN IF NOT EXISTS stream_paths TEXT NOT NULL DEFAULT '{}'
                     """
                 )
                 conn.execute(
@@ -134,8 +148,9 @@ class TranscriptStore:
                     """
                     INSERT INTO meetings (
                         id, title, status, sample_rate, created_at, started_at,
-                        stopped_at, audio_path, user_id, participants, speaker_map
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        stopped_at, audio_path, user_id, participants, speaker_map,
+                        capture_mode, stream_paths
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         title = EXCLUDED.title,
                         status = EXCLUDED.status,
@@ -145,7 +160,9 @@ class TranscriptStore:
                         audio_path = EXCLUDED.audio_path,
                         user_id = EXCLUDED.user_id,
                         participants = EXCLUDED.participants,
-                        speaker_map = EXCLUDED.speaker_map
+                        speaker_map = EXCLUDED.speaker_map,
+                        capture_mode = EXCLUDED.capture_mode,
+                        stream_paths = EXCLUDED.stream_paths
                     """,
                     (
                         meeting.id,
@@ -159,6 +176,8 @@ class TranscriptStore:
                         meeting.user_id,
                         json.dumps(meeting.participants, ensure_ascii=False),
                         json.dumps(meeting.speaker_map, ensure_ascii=False),
+                        meeting.capture_mode.value,
+                        json.dumps(meeting.stream_paths, ensure_ascii=False),
                     ),
                 )
                 conn.commit()
@@ -590,6 +609,13 @@ class TranscriptStore:
 
     @staticmethod
     def _row_to_meeting(row: Mapping[str, Any]) -> MeetingRecord:
+        from .models import CaptureMode
+
+        capture_raw = row.get("capture_mode") or "mono"
+        try:
+            capture_mode = CaptureMode(capture_raw)
+        except ValueError:
+            capture_mode = CaptureMode.MONO
         return MeetingRecord(
             id=row["id"],
             title=row["title"],
@@ -602,6 +628,8 @@ class TranscriptStore:
             participants=json.loads(row["participants"] or "[]"),
             speaker_map=json.loads(row["speaker_map"] or "{}"),
             user_id=row.get("user_id"),
+            capture_mode=capture_mode,
+            stream_paths=json.loads(row.get("stream_paths") or "{}"),
         )
 
     @staticmethod
