@@ -3663,10 +3663,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!user) return;
     const nameEl = document.getElementById("userName");
     if (nameEl) nameEl.textContent = user.display_name || user.email;
-    const logoutBtn = document.getElementById("logoutBtn");
-    if (logoutBtn) {
-      logoutBtn.addEventListener("click", () => distillAuth.logout());
-    }
   }
   window.distillClient = new DistillClient();
 });

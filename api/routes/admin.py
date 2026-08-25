@@ -149,3 +149,38 @@ async def set_user_active(
     target.is_active = is_active
     user_store.save_user(target)
     return {"user": target.to_public_dict()}
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: str,
+    request: Request,
+    admin: UserRecord = Depends(require_admin),
+) -> None:
+    user_store = request.app.state.user_store
+    target = user_store.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    if target.id == admin.id:
+        raise HTTPException(status_code=400, detail="cannot delete your own account")
+
+    if target.is_active:
+        raise HTTPException(status_code=400, detail="deactivate user before deleting")
+
+    if target.role == ROLE_ADMIN:
+        users = user_store.list_users()
+        if _remaining_admin_count(users, excluding_id=target.id) == 0:
+            raise HTTPException(
+                status_code=400, detail="cannot delete the only remaining admin"
+            )
+
+    settings = request.app.state.settings
+    manager = request.app.state.manager
+    meetings = manager.store.list_meetings(user_id=target.id, limit=10_000)
+    for meeting in meetings:
+        await manager.delete_meeting(meeting.id, audio_dir=str(settings.audio_dir))
+        request.app.state.ws_by_meeting.pop(meeting.id, None)
+
+    if not user_store.delete_user(target.id):
+        raise HTTPException(status_code=404, detail="user not found")

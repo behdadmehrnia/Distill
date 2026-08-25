@@ -128,6 +128,7 @@ All routes require `role=admin` (`403` otherwise):
 | `GET /admin/users` | List all users (id, email, display name, role, active, created_at) |
 | `PATCH /admin/users/{id}/role` | Body `{ "role": "admin" \| "user" }` — change a user's role. Blocked if it would leave zero admins. |
 | `PATCH /admin/users/{id}/active` | Body `{ "is_active": bool }` — enable/disable a user. Blocked for your own account when deactivating. |
+| `DELETE /admin/users/{id}` | Permanently delete an **inactive** user and all of their meetings. Blocked for your own account and the last remaining admin. |
 | `GET /admin/meetings` | List every meeting across all users (title, status, has_recording, created_at, and the owning user's public info under `owner`) |
 | `GET /admin/meetings/{id}` | Meeting monitor payload: `meeting` (with `owner` + `has_recording`), `minutes`, `insights`, and STT `segments` |
 

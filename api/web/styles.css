@@ -610,6 +610,9 @@ a { color: inherit; text-decoration: none; }
 
 /* Shared app navbar (dashboard + pages using styles.css) */
 .navbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
   flex-shrink: 0;
   display: flex;
   flex-direction: row;
@@ -1137,15 +1140,46 @@ a { color: inherit; text-decoration: none; }
   margin-inline: auto;
 }
 
-.linkish {
-  background: none;
-  border: 0;
-  color: var(--muted);
-  font: inherit;
-  cursor: pointer;
-  padding: 0;
+.monitor-minutes-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.75rem;
 }
 
-.linkish:hover {
-  color: var(--yellow);
+#minutesPrintRoot {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+
+  html,
+  body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  body.is-printing-minutes {
+    display: block !important;
+  }
+
+  body.is-printing-minutes > *:not(#minutesPrintRoot) {
+    display: none !important;
+  }
+
+  body.is-printing-minutes #minutesPrintRoot {
+    display: block !important;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    background: #fff;
+    color: #000;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
 }

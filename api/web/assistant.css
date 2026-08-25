@@ -41,6 +41,12 @@ a {
   font-size: 0.85rem;
 }
 
+.nav-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
 .nav-status {
   display: inline-flex;
   align-items: center;
@@ -50,6 +56,7 @@ a {
   border-radius: 999px;
   padding: 0.35rem 0.75rem;
   font-size: 0.82rem;
+  line-height: 1;
   color: #999;
   cursor: pointer;
   user-select: none;
@@ -95,11 +102,15 @@ a {
 }
 
 .nav-timer {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-variant-numeric: tabular-nums;
   color: var(--yellow);
   font-weight: 700;
   font-size: 0.9rem;
-  min-width: 4.2rem;
+  line-height: 1;
+  min-width: 0;
   text-align: center;
   transition:
     color 0.2s ease,
@@ -111,13 +122,16 @@ a {
     gap: 0.4rem 0.5rem;
   }
 
+  .nav-session {
+    gap: 0.35rem;
+  }
+
   .nav-status {
     padding: 0.3rem 0.55rem;
     font-size: 0.75rem;
   }
 
   .nav-timer {
-    min-width: 3rem;
     font-size: 0.8rem;
   }
 

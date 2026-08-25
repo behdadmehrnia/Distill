@@ -244,6 +244,75 @@ def test_admin_can_deactivate_other_user(tmp_path):
         assert blocked.status_code == 403
 
 
+def test_admin_can_delete_inactive_user_and_their_meetings(tmp_path):
+    with make_client(
+        tmp_path,
+        admin_username="admin@test.com",
+        admin_password="adminpass123",
+    ) as client:
+        client.post(
+            "/auth/login",
+            json={"email": "admin@test.com", "password": "adminpass123"},
+        )
+        other = register_user(client, email="member@test.com")
+        created = client.post(
+            "/meetings", json={"title": "to delete", "start": False}
+        )
+        assert created.status_code == 201
+        meeting_id = created.json()["id"]
+
+        client.post(
+            "/auth/login",
+            json={"email": "admin@test.com", "password": "adminpass123"},
+        )
+        deactivated = client.patch(
+            f"/admin/users/{other['id']}/active", json={"is_active": False}
+        )
+        assert deactivated.status_code == 200
+
+        deleted = client.delete(f"/admin/users/{other['id']}")
+        assert deleted.status_code == 204
+
+        users = client.get("/admin/users").json()["users"]
+        assert all(u["id"] != other["id"] for u in users)
+        assert client.get(f"/admin/meetings/{meeting_id}").status_code == 404
+
+
+def test_admin_cannot_delete_active_user(tmp_path):
+    with make_client(
+        tmp_path,
+        admin_username="admin@test.com",
+        admin_password="adminpass123",
+    ) as client:
+        client.post(
+            "/auth/login",
+            json={"email": "admin@test.com", "password": "adminpass123"},
+        )
+        other = register_user(client, email="member@test.com")
+        client.post(
+            "/auth/login",
+            json={"email": "admin@test.com", "password": "adminpass123"},
+        )
+
+        resp = client.delete(f"/admin/users/{other['id']}")
+        assert resp.status_code == 400
+
+
+def test_admin_cannot_delete_self(tmp_path):
+    with make_client(
+        tmp_path,
+        admin_username="admin@test.com",
+        admin_password="adminpass123",
+    ) as client:
+        me = client.post(
+            "/auth/login",
+            json={"email": "admin@test.com", "password": "adminpass123"},
+        ).json()["user"]
+
+        resp = client.delete(f"/admin/users/{me['id']}")
+        assert resp.status_code == 400
+
+
 def test_admin_page_visible_to_admin(tmp_path):
     with make_client(
         tmp_path,

@@ -100,6 +100,13 @@ class UserStore:
                 ).fetchall()
                 return [self._row_to_user(row) for row in rows]
 
+    def delete_user(self, user_id: str) -> bool:
+        with self._lock:
+            with self._connect() as conn:
+                cur = conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
+                conn.commit()
+                return cur.rowcount > 0
+
     def has_admin(self) -> bool:
         with self._lock:
             with self._connect() as conn:

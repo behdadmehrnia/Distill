@@ -107,6 +107,24 @@ async function setActive(userId, isActive) {
   return true;
 }
 
+async function deleteUser(userId, email) {
+  const label = email || "این کاربر";
+  if (!confirm(`${label} به‌طور دائمی حذف شود؟ این عمل قابل بازگشت نیست.`)) {
+    return false;
+  }
+  const res = await fetch(`/admin/users/${userId}`, { method: "DELETE" });
+  if (!res.ok) {
+    let detail = "حذف کاربر ناموفق بود";
+    try {
+      const err = await res.json();
+      if (err.detail) detail = String(err.detail);
+    } catch (_) {}
+    alert(detail);
+    return false;
+  }
+  return true;
+}
+
 function renderRow(u, currentUserId, onChange) {
   const tr = document.createElement("tr");
 
@@ -138,34 +156,61 @@ function renderRow(u, currentUserId, onChange) {
   const actions = document.createElement("div");
   actions.className = "admin-row-actions";
 
-  const roleBtn = document.createElement("button");
-  roleBtn.type = "button";
-  roleBtn.className = "btn btn-ghost btn-sm";
-  roleBtn.textContent = u.role === "admin" ? "تنزل به کاربر" : "ارتقا به مدیر";
-  roleBtn.addEventListener("click", async () => {
-    const nextRole = u.role === "admin" ? "user" : "admin";
-    roleBtn.disabled = true;
-    const ok = await setRole(u.id, nextRole);
-    roleBtn.disabled = false;
-    if (ok) onChange();
-  });
+  if (u.is_active) {
+    const roleBtn = document.createElement("button");
+    roleBtn.type = "button";
+    roleBtn.className = "btn btn-ghost btn-sm";
+    roleBtn.textContent = u.role === "admin" ? "تنزل به کاربر" : "ارتقا به مدیر";
+    roleBtn.addEventListener("click", async () => {
+      const nextRole = u.role === "admin" ? "user" : "admin";
+      roleBtn.disabled = true;
+      const ok = await setRole(u.id, nextRole);
+      roleBtn.disabled = false;
+      if (ok) onChange();
+    });
 
-  const activeBtn = document.createElement("button");
-  activeBtn.type = "button";
-  activeBtn.className = "btn btn-ghost btn-sm";
-  activeBtn.textContent = u.is_active ? "غیرفعال کردن" : "فعال کردن";
-  if (u.id === currentUserId && u.is_active) {
-    activeBtn.disabled = true;
-    activeBtn.title = "نمی‌توانید حساب خودتان را غیرفعال کنید";
+    const deactivateBtn = document.createElement("button");
+    deactivateBtn.type = "button";
+    deactivateBtn.className = "btn btn-ghost btn-sm";
+    deactivateBtn.textContent = "غیرفعال کردن";
+    if (u.id === currentUserId) {
+      deactivateBtn.disabled = true;
+      deactivateBtn.title = "نمی‌توانید حساب خودتان را غیرفعال کنید";
+    }
+    deactivateBtn.addEventListener("click", async () => {
+      deactivateBtn.disabled = true;
+      const ok = await setActive(u.id, false);
+      deactivateBtn.disabled = false;
+      if (ok) onChange();
+    });
+
+    actions.append(roleBtn, deactivateBtn);
+  } else {
+    const reactivateBtn = document.createElement("button");
+    reactivateBtn.type = "button";
+    reactivateBtn.className = "btn btn-ghost btn-sm";
+    reactivateBtn.textContent = "فعال‌سازی مجدد";
+    reactivateBtn.addEventListener("click", async () => {
+      reactivateBtn.disabled = true;
+      const ok = await setActive(u.id, true);
+      reactivateBtn.disabled = false;
+      if (ok) onChange();
+    });
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "btn btn-ghost btn-sm";
+    deleteBtn.textContent = "حذف کاربر";
+    deleteBtn.addEventListener("click", async () => {
+      deleteBtn.disabled = true;
+      const ok = await deleteUser(u.id, u.email);
+      deleteBtn.disabled = false;
+      if (ok) onChange();
+    });
+
+    actions.append(reactivateBtn, deleteBtn);
   }
-  activeBtn.addEventListener("click", async () => {
-    activeBtn.disabled = true;
-    const ok = await setActive(u.id, !u.is_active);
-    activeBtn.disabled = false;
-    if (ok) onChange();
-  });
 
-  actions.append(roleBtn, activeBtn);
   actionsCell.append(actions);
 
   tr.append(userCell, roleCell, statusCell, dateCell, actionsCell);
@@ -404,6 +449,8 @@ async function loadOwnMeetings() {
 
 /* ===== Meeting monitor ===== */
 
+let monitorPrintContext = null;
+
 function setMonitorTab(tab) {
   document.querySelectorAll("[data-monitor-tab]").forEach((btn) => {
     const active = btn.dataset.monitorTab === tab;
@@ -549,7 +596,11 @@ function renderMonitorTranscript(segments, speakerMap) {
   return `<div class="monitor-transcript-list">${rows}</div>`;
 }
 
-function buildMinutesPrintSheet(data, meetingId) {
+function buildMinutesPrintSheet(data, meetingId, styleScope = ".monitor-minutes-preview") {
+  const s = styleScope;
+  const isPrintRoot = s === "#minutesPrintRoot";
+  const sheetMinHeight = isPrintRoot ? "277mm" : "240mm";
+  const sheetHeight = isPrintRoot ? "277mm" : "auto";
   const subject = escapeHtml(data.subject || "");
   const dateFull = escapeHtml(data.meeting_date || "");
   const dateOnly = escapeHtml(
@@ -586,9 +637,10 @@ function buildMinutesPrintSheet(data, meetingId) {
 
   return `
 <style>
-  .monitor-minutes-preview .minutes-print-sheet {
+  ${s} .minutes-print-sheet {
     width: 100%;
-    min-height: 240mm;
+    min-height: ${sheetMinHeight};
+    ${isPrintRoot ? `height: ${sheetHeight};` : ""}
     display: flex;
     flex-direction: column;
     border: 1.6px solid #000;
@@ -600,17 +652,17 @@ function buildMinutesPrintSheet(data, meetingId) {
     line-height: 1.45;
     direction: rtl;
   }
-  .monitor-minutes-preview .minutes-print-sheet * {
+  ${s} .minutes-print-sheet * {
     font-family: inherit;
     box-sizing: border-box;
   }
-  .monitor-minutes-preview table {
+  ${s} table {
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
   }
-  .monitor-minutes-preview td,
-  .monitor-minutes-preview th {
+  ${s} td,
+  ${s} th {
     border: 1px solid #000;
     padding: 5px 6px;
     vertical-align: middle;
@@ -618,18 +670,18 @@ function buildMinutesPrintSheet(data, meetingId) {
     word-wrap: break-word;
     overflow-wrap: anywhere;
   }
-  .monitor-minutes-preview .head-logo {
+  ${s} .head-logo {
     width: 20%;
     text-align: center;
     padding: 8px 4px;
   }
-  .monitor-minutes-preview .head-title {
+  ${s} .head-title {
     width: 48%;
     text-align: center;
-    font-size: 16pt;
+    font-size: ${isPrintRoot ? "18pt" : "16pt"};
     font-weight: 700;
   }
-  .monitor-minutes-preview .head-id {
+  ${s} .head-id {
     width: 32%;
     text-align: center;
     font-size: 7.5pt;
@@ -637,43 +689,43 @@ function buildMinutesPrintSheet(data, meetingId) {
     padding: 6px 8px;
     word-break: break-all;
   }
-  .monitor-minutes-preview .head-id .id-label {
+  ${s} .head-id .id-label {
     display: block;
     font-weight: 700;
     margin-bottom: 3px;
     font-size: 8pt;
   }
-  .monitor-minutes-preview .head-id .id-value {
+  ${s} .head-id .id-value {
     display: block;
     font-size: 7pt;
     direction: ltr;
     unicode-bidi: isolate;
   }
-  .monitor-minutes-preview .brand {
+  ${s} .brand {
     margin-top: 2px;
     font-size: 8.5pt;
     font-weight: 700;
   }
-  .monitor-minutes-preview .lbl {
+  ${s} .lbl {
     width: 11%;
     font-weight: 700;
     white-space: nowrap;
     font-size: 9.5pt;
     background: #fafafa;
   }
-  .monitor-minutes-preview .val {
+  ${s} .val {
     font-size: 9.5pt;
     max-width: 0;
   }
-  .monitor-minutes-preview .field {
+  ${s} .field {
     font-size: 9.5pt;
     white-space: nowrap;
   }
-  .monitor-minutes-preview .field b {
+  ${s} .field b {
     font-weight: 700;
     margin-inline-end: 6px;
   }
-  .monitor-minutes-preview .vlabel {
+  ${s} .vlabel {
     width: 28px;
     max-width: 28px;
     text-align: center;
@@ -685,19 +737,19 @@ function buildMinutesPrintSheet(data, meetingId) {
     padding: 6px 2px;
     background: #fafafa;
   }
-  .monitor-minutes-preview .people {
+  ${s} .people {
     vertical-align: top;
     font-size: 9.5pt;
     line-height: 1.6;
     min-height: 36px;
   }
-  .monitor-minutes-preview .attach {
+  ${s} .attach {
     width: 28%;
     text-align: center;
     font-size: 8.5pt;
     white-space: nowrap;
   }
-  .monitor-minutes-preview .box {
+  ${s} .box {
     display: inline-block;
     width: 10px;
     height: 10px;
@@ -705,43 +757,43 @@ function buildMinutesPrintSheet(data, meetingId) {
     margin-inline: 2px 3px;
     vertical-align: -1px;
   }
-  .monitor-minutes-preview .time-cell { padding: 0; }
-  .monitor-minutes-preview .time-cell table td {
+  ${s} .time-cell { padding: 0; }
+  ${s} .time-cell table td {
     border: 0;
     border-bottom: 1px solid #000;
     padding: 4px 6px;
     font-size: 9pt;
   }
-  .monitor-minutes-preview .time-cell table tr:last-child td { border-bottom: 0; }
-  .monitor-minutes-preview .grow {
+  ${s} .time-cell table tr:last-child td { border-bottom: 0; }
+  ${s} .grow {
     flex: 1 1 auto;
     display: flex;
     flex-direction: column;
     min-height: 0;
   }
-  .monitor-minutes-preview .grow > table {
+  ${s} .grow > table {
     flex: 1 1 auto;
     height: 100%;
   }
-  .monitor-minutes-preview .decisions thead th {
+  ${s} .decisions thead th {
     background: #f6e59a;
     text-align: center;
     font-weight: 700;
     font-size: 9pt;
     padding: 4px 3px;
   }
-  .monitor-minutes-preview .decisions tbody td {
+  ${s} .decisions tbody td {
     height: 7.2mm;
     font-size: 9pt;
     vertical-align: top;
     padding: 3px 4px;
   }
-  .monitor-minutes-preview .num { width: 8%; text-align: center; vertical-align: middle !important; }
-  .monitor-minutes-preview .desc { width: 54%; }
-  .monitor-minutes-preview .center { width: 19%; text-align: center; vertical-align: middle !important; }
-  .monitor-minutes-preview .sign-wrap { height: 28mm; }
-  .monitor-minutes-preview .sign-wrap td { height: 28mm; vertical-align: top; }
-  .monitor-minutes-preview .summary-box {
+  ${s} .num { width: 8%; text-align: center; vertical-align: middle !important; }
+  ${s} .desc { width: 54%; }
+  ${s} .center { width: 19%; text-align: center; vertical-align: middle !important; }
+  ${s} .sign-wrap { height: 28mm; }
+  ${s} .sign-wrap td { height: 28mm; vertical-align: top; }
+  ${s} .summary-box {
     border: 1px solid #000;
     border-top: 0;
     padding: 8px 10px;
@@ -839,10 +891,63 @@ function renderMonitorMinutes(minutes, meetingId) {
   if (!minutes) {
     return '<p class="monitor-empty-hint">صورت جلسه‌ای برای این جلسه ثبت نشده است.</p>';
   }
-  return `<div class="monitor-minutes-preview">${buildMinutesPrintSheet(
-    minutes,
-    meetingId
-  )}</div>`;
+  return `
+    <div class="monitor-minutes-toolbar">
+      <button type="button" id="monitorMinutesPrintBtn" class="btn btn-ghost btn-sm">
+        پرینت
+      </button>
+    </div>
+    <div class="monitor-minutes-preview">${buildMinutesPrintSheet(
+      minutes,
+      meetingId
+    )}</div>`;
+}
+
+async function printMonitorMinutes() {
+  if (!monitorPrintContext) return;
+
+  const { minutes, meetingId } = monitorPrintContext;
+  let root = document.getElementById("minutesPrintRoot");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "minutesPrintRoot";
+    root.setAttribute("aria-hidden", "true");
+    document.body.appendChild(root);
+  }
+  root.innerHTML = buildMinutesPrintSheet(minutes, meetingId, "#minutesPrintRoot");
+
+  const prevTitle = document.title;
+  document.title = "فرم صورت جلسه";
+  document.body.classList.add("is-printing-minutes");
+
+  const cleanup = () => {
+    document.body.classList.remove("is-printing-minutes");
+    document.title = prevTitle;
+    root.innerHTML = "";
+    window.removeEventListener("afterprint", cleanup);
+  };
+  window.addEventListener("afterprint", cleanup);
+
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  try {
+    if (document.fonts?.load) {
+      await Promise.all([
+        document.fonts.load("400 12px Vazirmatn"),
+        document.fonts.load("700 12px Vazirmatn"),
+      ]);
+    }
+  } catch (_) {
+    /* ignore */
+  }
+
+  try {
+    window.focus();
+    window.print();
+  } catch (err) {
+    cleanup();
+    console.error(err);
+    alert(`پرینت ناموفق بود: ${err.message || err}`);
+  }
 }
 
 function populateMonitor(data) {
@@ -860,6 +965,10 @@ function populateMonitor(data) {
   );
   document.getElementById("monitorTabTranscript").innerHTML =
     renderMonitorTranscript(data.segments, meeting.speaker_map || {});
+  monitorPrintContext =
+    data.minutes && meeting.id
+      ? { minutes: data.minutes, meetingId: meeting.id }
+      : null;
   document.getElementById("monitorTabMinutes").innerHTML = renderMonitorMinutes(
     data.minutes,
     meeting.id
@@ -916,6 +1025,14 @@ function bindMonitorUi() {
   });
   document.querySelectorAll("[data-monitor-tab]").forEach((btn) => {
     btn.addEventListener("click", () => setMonitorTab(btn.dataset.monitorTab));
+  });
+  document.getElementById("monitorTabMinutes").addEventListener("click", (ev) => {
+    if (ev.target.id === "monitorMinutesPrintBtn") {
+      printMonitorMinutes().catch((err) => {
+        console.error(err);
+        alert(`پرینت ناموفق بود: ${err.message || err}`);
+      });
+    }
   });
 }
 
