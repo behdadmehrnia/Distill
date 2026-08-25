@@ -132,6 +132,21 @@ async def serve_auth_js(request: Request) -> Response:
     return _web_file(request, "auth.js")
 
 
+@router.get("/shared.js")
+async def serve_shared_js(request: Request) -> Response:
+    return _web_file(request, "shared.js")
+
+
+@router.get("/meetings-list.js")
+async def serve_meetings_list_js(request: Request) -> Response:
+    return _web_file(request, "meetings-list.js")
+
+
+@router.get("/minutes-print.js")
+async def serve_minutes_print_js(request: Request) -> Response:
+    return _web_file(request, "minutes-print.js")
+
+
 @router.get("/dashboard.js")
 async def serve_dashboard_js(request: Request) -> Response:
     return _web_file(request, "dashboard.js")

@@ -1663,45 +1663,6 @@ a {
 
 /* .hidden is defined once, shared, in styles.css. */
 
-/* Print sheet for meeting minutes (only visible during window.print) */
-#minutesPrintRoot {
-  display: none;
-}
-
-@media print {
-  @page {
-    size: A4 portrait;
-    margin: 8mm;
-  }
-
-  html,
-  body {
-    height: auto !important;
-    overflow: visible !important;
-    background: #fff !important;
-    color: #000 !important;
-  }
-
-  body.is-printing-minutes {
-    display: block !important;
-  }
-
-  body.is-printing-minutes > *:not(#minutesPrintRoot) {
-    display: none !important;
-  }
-
-  body.is-printing-minutes #minutesPrintRoot {
-    display: block !important;
-    width: 100%;
-    margin: 0;
-    padding: 0;
-    background: #fff;
-    color: #000;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-}
-
 .tuning-overlay {
   position: fixed;
   inset: 0;
