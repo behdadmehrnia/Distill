@@ -1,5 +1,5 @@
 # Distill — CPU-only runtime (no CUDA / torch / local ML)
-# System dep: ffmpeg (needed by pydub for mp3/m4a/ogg)
+# System dep: ffmpeg/ffprobe on PATH for pydub (mp3/m4a/ogg); Docker uses static binaries
 
 fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1

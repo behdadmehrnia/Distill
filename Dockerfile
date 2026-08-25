@@ -1,4 +1,6 @@
 # Distill API — meeting assistant (CPU-only, includes pyannote diarization)
+FROM mwader/static-ffmpeg:7.1.1 AS static-ffmpeg
+
 FROM python:3.12-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -20,10 +22,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# ffmpeg: pydub; libsndfile1: soundfile/pyannote; libgomp1: torch CPU
+# pydub needs ffmpeg/ffprobe; static binaries avoid 200+ apt deps (mesa/llvm/sdl).
+COPY --from=static-ffmpeg /ffmpeg /usr/local/bin/ffmpeg
+COPY --from=static-ffmpeg /ffprobe /usr/local/bin/ffprobe
+
+# libsndfile1: soundfile/pyannote; libgomp1: torch CPU
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ffmpeg \
         ca-certificates \
         libsndfile1 \
         libgomp1 \
@@ -52,11 +57,14 @@ COPY main.py .
 
 ARG DEEPFILTER_STREAM_TAG=model-dfn3-512-v1
 RUN mkdir -p /app/share/deepfilter-stream/dfn3-512-v1 \
-    && curl -fsSL -o /app/share/deepfilter-stream/dfn3-512-v1/denoiser_model.onnx \
+    && curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
+        -o /app/share/deepfilter-stream/dfn3-512-v1/denoiser_model.onnx \
         "https://github.com/wuxuedaifu/deepfilter-stream/releases/download/${DEEPFILTER_STREAM_TAG}/denoiser_model.onnx" \
-    && curl -fsSL -o /app/share/deepfilter-stream/dfn3-512-v1/initial_states.npz \
+    && curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
+        -o /app/share/deepfilter-stream/dfn3-512-v1/initial_states.npz \
         "https://github.com/wuxuedaifu/deepfilter-stream/releases/download/${DEEPFILTER_STREAM_TAG}/initial_states.npz" \
-    && curl -fsSL -o /app/share/deepfilter-stream/dfn3-512-v1/meta.json \
+    && curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
+        -o /app/share/deepfilter-stream/dfn3-512-v1/meta.json \
         "https://github.com/wuxuedaifu/deepfilter-stream/releases/download/${DEEPFILTER_STREAM_TAG}/meta.json"
 
 ENV DEEPFILTER_STREAM_MODEL_DIR=/app/share/deepfilter-stream/dfn3-512-v1
