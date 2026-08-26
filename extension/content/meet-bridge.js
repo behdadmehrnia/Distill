@@ -192,20 +192,24 @@
   function ensureRegistered(speakerId, name) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     let clean = String(name || "").trim();
+    const isLocal =
+      speakerId === "local" || String(speakerId) === "SPEAKER_local";
     if (
       !clean ||
       /[\/\\]/.test(clean) ||
       /^(spaces|devices)\b/i.test(clean) ||
       /^شرکت‌?کننده/.test(clean) ||
       /^participant\s*\d*$/i.test(clean) ||
+      /^(you|yourself|me|شما)$/i.test(clean) ||
       clean.length > 64
     ) {
+      // For local: do not register any placeholder name.
+      // Wait until we have the real scraped Meet display name.
+      if (isLocal) return;
+
       // Keep a previous good name if we already have one.
       if (registeredNames.has(speakerId)) return;
-      clean =
-        speakerId === "local" || speakerId === "SPEAKER_local"
-          ? "شما"
-          : `شرکت‌کننده ${registeredNames.size || 1}`;
+      clean = `شرکت‌کننده ${registeredNames.size || 1}`;
     }
     if (registeredNames.get(speakerId) === clean) return;
     registeredNames.set(speakerId, clean);

@@ -34,6 +34,45 @@
   let samplesSent = 0;
   /** @type {MediaStream|null} */
   let localMicStream = null;
+  /** @type {AudioContext|null} */
+  let sharedCtx = null;
+  /** @type {Promise<AudioContext>|null} */
+  let workletReady = null;
+
+  const WORKLET_NAME = "distill-capture";
+  const WORKLET_SOURCE = `
+class DistillCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch && ch.length) this.port.postMessage(ch.slice(0));
+    return true;
+  }
+}
+registerProcessor("distill-capture", DistillCaptureProcessor);
+`;
+
+  async function ensureAudioContext() {
+    if (sharedCtx && sharedCtx.state !== "closed") {
+      if (workletReady) await workletReady;
+      return sharedCtx;
+    }
+    sharedCtx = new AudioContext();
+    const url = URL.createObjectURL(
+      new Blob([WORKLET_SOURCE], { type: "application/javascript" })
+    );
+    workletReady = sharedCtx.audioWorklet
+      .addModule(url)
+      .then(() => sharedCtx)
+      .finally(() => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (_) {
+          /* ignore */
+        }
+      });
+    await workletReady;
+    return sharedCtx;
+  }
 
   function post(payload) {
     window.postMessage({ source: PAGE_SOURCE, ...payload }, "*");
@@ -67,6 +106,8 @@
     if (/^\d+$/.test(t)) return true;
     if (/^participant\s*\d*$/i.test(t)) return true;
     if (/^شرکت‌?کننده/.test(t)) return true;
+    // Never treat Meet's "You" label as a person name.
+    if (/^(you|yourself|me|شما)$/i.test(t)) return true;
     if (t.split(/\s+/).length > 6) return true;
     return /^(this call|meeting details|call feature|more activities|notifications|anyone|google meet|turn on|turn off|mute|unmute|camera|microphone|mic|chat|people|captions|present|share|leave|hand|host|options|settings|activities|open to|joining|invite|copy|link|info|details|action|button|menu|panel|tab|dialog|your presentation|presentation)/i.test(
       t
@@ -84,14 +125,51 @@
     return isBadName(t) ? null : t;
   }
 
-  function addName(set, raw) {
-    const n = cleanName(raw);
-    if (n) set.add(n);
+  function looksLikeIcon(text) {
+    return /^[a-z0-9_]+$/i.test(text) && !/\s/.test(text) && text.length < 24;
+  }
+
+  function isSelfMarker(text) {
+    return /\(\s*(you|شما)\s*\)/i.test(String(text || ""));
+  }
+
+  /** Prefer the longer unique form ("Behdad Mehrnia" over "Behdad Meh"). */
+  function preferLongerNames(names) {
+    const list = [...names].filter(Boolean);
+    list.sort((a, b) => b.length - a.length);
+    /** @type {string[]} */
+    const out = [];
+    for (const n of list) {
+      const lower = n.toLowerCase();
+      if (out.some((kept) => kept.toLowerCase().startsWith(lower))) continue;
+      const shorterIdx = out.findIndex((kept) =>
+        lower.startsWith(kept.toLowerCase())
+      );
+      if (shorterIdx >= 0) out[shorterIdx] = n;
+      else out.push(n);
+    }
+    return out;
+  }
+
+  function samePerson(a, b) {
+    if (!a || !b) return false;
+    const x = a.toLowerCase();
+    const y = b.toLowerCase();
+    return x === y || x.startsWith(y) || y.startsWith(x);
+  }
+
+  function uniqueParticipantTiles() {
+    const ids = new Set();
+    document.querySelectorAll("[data-participant-id]").forEach((el) => {
+      const id = el.getAttribute("data-participant-id");
+      if (id) ids.add(id);
+    });
+    return ids.size;
   }
 
   /**
-   * Pull human-visible names from Meet's participant tiles / list.
-   * data-participant-id itself is a device path — never use it as a name.
+   * Pull real Meet display names from tiles / people list.
+   * "(You)" / data-self-name only decide which name is local — never shown as labels.
    */
   function scrapeRoster() {
     /** @type {Set<string>} */
@@ -115,26 +193,43 @@
     ];
     nodeSelectors.forEach((sel) => {
       document.querySelectorAll(sel).forEach((el) => {
-        addName(names, el.getAttribute("data-self-name"));
+        const rawSelf = el.getAttribute("data-self-name");
+        if (rawSelf) {
+          const n = cleanName(rawSelf);
+          if (n) {
+            selfName = selfName || n;
+            names.add(n);
+          }
+        }
         addName(names, el.textContent);
       });
     });
 
-    // Tile aria-labels like "Behdad Mehrnia" (not the long UI sentences).
     document.querySelectorAll("[data-participant-id]").forEach((el) => {
       const label = el.getAttribute("aria-label") || "";
-      // Prefer "Name" when label is exactly a short name, or "Name (You)".
       const m = label.match(/^([^,(]{2,64})(?:\s*\(|$)/);
-      if (m) addName(names, m[1]);
-      // Visible first line of tile text is often the display name.
+      if (m) {
+        const n = cleanName(m[1]);
+        if (n) {
+          names.add(n);
+          if (isSelfMarker(label)) selfName = selfName || n;
+        }
+      }
       const lines = (el.innerText || "")
         .split("\n")
         .map((s) => s.trim())
         .filter(Boolean);
-      if (lines[0]) addName(names, lines[0]);
+      if (lines[0]) {
+        const n = cleanName(lines[0]);
+        if (n) {
+          names.add(n);
+          if (lines.some(isSelfMarker) || isSelfMarker(label)) {
+            selfName = selfName || n;
+          }
+        }
+      }
     });
 
-    // Avatar alt text sometimes carries the person name.
     document.querySelectorAll('[data-participant-id] img[alt]').forEach((img) => {
       const alt = (img.getAttribute("alt") || "").trim();
       if (alt && !/^avatar$/i.test(alt) && !looksLikeIcon(alt)) {
@@ -142,45 +237,86 @@
       }
     });
 
-    const all = [...names];
-    const others = selfName ? all.filter((n) => n !== selfName) : all;
-    return { selfName, others, all };
+    const all = preferLongerNames(names);
+    if (selfName) {
+      const match = all.find((n) => samePerson(n, selfName));
+      if (match) selfName = match;
+    }
+    // Until we know the local display name, do not assign any scraped name to remotes
+    // (that was putting "Behdad Mehrnia" on the other person's stream).
+    const others = selfName
+      ? all.filter((n) => !samePerson(n, selfName))
+      : [];
+    const tileCount = uniqueParticipantTiles();
+    const otherCount = Math.max(
+      others.length,
+      tileCount > 0 ? Math.max(0, tileCount - 1) : 0
+    );
+    return { selfName, others, all, tileCount, otherCount };
   }
 
-  function looksLikeIcon(text) {
-    return /^[a-z0-9_]+$/i.test(text) && !/\s/.test(text) && text.length < 24;
+  function addName(set, raw) {
+    const n = cleanName(raw);
+    if (n) set.add(n);
+  }
+
+  function setTapName(speakerId, next) {
+    const tap = taps.get(speakerId);
+    const name = cleanName(next);
+    if (!tap || !name || tap.name === name) return false;
+    // Never put the local person's name on a remote stream.
+    if (speakerId !== "local") {
+      const local = taps.get("local");
+      if (local && samePerson(local.name, name)) return false;
+      const self = scrapeRoster().selfName;
+      if (self && samePerson(self, name)) return false;
+    }
+    tap.name = name;
+    post({
+      type: "DISTILL_TAP",
+      speakerId,
+      name,
+      taps: taps.size,
+    });
+    return true;
   }
 
   function refreshNames() {
     const roster = scrapeRoster();
     remoteNamePool = roster.others.slice();
+
     const local = taps.get("local");
-    if (local) {
-      const next = roster.selfName || local.name;
-      if (next && next !== local.name && !isBadName(next)) {
-        local.name = next;
+    if (local && roster.selfName) {
+      setTapName("local", roster.selfName);
+    }
+
+    // If a remote accidentally holds the self name, clear it first.
+    for (const [sid, tap] of taps) {
+      if (sid === "local") continue;
+      if (roster.selfName && samePerson(tap.name, roster.selfName)) {
+        tap.name = `شرکت‌کننده ${sid.replace(/\D/g, "") || "1"}`;
         post({
           type: "DISTILL_TAP",
-          speakerId: "local",
-          name: next,
+          speakerId: sid,
+          name: tap.name,
           taps: taps.size,
         });
       }
     }
-    // Re-label existing remotes from the pool.
+
+    const used = new Set();
+    if (local?.name) used.add(local.name.toLowerCase());
     let i = 0;
-    for (const [sid, tap] of taps) {
+    for (const [sid] of taps) {
       if (sid === "local") continue;
-      const next = remoteNamePool[i] || tap.name;
-      i += 1;
-      if (next && next !== tap.name && !isBadName(next)) {
-        tap.name = next;
-        post({
-          type: "DISTILL_TAP",
-          speakerId: sid,
-          name: next,
-          taps: taps.size,
-        });
+      while (i < remoteNamePool.length && used.has(remoteNamePool[i].toLowerCase())) {
+        i += 1;
+      }
+      const next = remoteNamePool[i];
+      if (next) {
+        used.add(next.toLowerCase());
+        setTapName(sid, next);
+        i += 1;
       }
     }
     return roster;
@@ -189,21 +325,35 @@
   function allocateRemoteName() {
     const roster = scrapeRoster();
     remoteNamePool = roster.others.slice();
-    const used = new Set(
-      [...taps.entries()]
-        .filter(([id]) => id !== "local")
-        .map(([, t]) => t.name)
-    );
+    const used = new Set();
+    const local = taps.get("local");
+    if (local?.name) used.add(local.name.toLowerCase());
+    if (roster.selfName) used.add(roster.selfName.toLowerCase());
+    for (const [id, t] of taps) {
+      if (id === "local") continue;
+      if (t.name) used.add(t.name.toLowerCase());
+    }
     for (const n of remoteNamePool) {
-      if (!used.has(n)) return n;
+      if (!used.has(n.toLowerCase()) && !isBadName(n)) return n;
     }
     return null;
   }
 
   function maxRemoteTracks() {
     const roster = scrapeRoster();
-    // Only as many remotes as other people visible in Meet.
-    return Math.max(0, roster.others.length);
+    // Cap by visible other participants, not by how many names we scraped yet.
+    return Math.max(0, roster.otherCount || roster.others.length);
+  }
+
+  function fallbackSpeakerLabel(speakerId) {
+    if (speakerId === "local") {
+      const self = scrapeRoster().selfName;
+      // Until we know who "you" are from Meet's DOM, do not label local.
+      // The backend will still capture audio even without a name mapping.
+      if (self) return self;
+      return null;
+    }
+    return allocateRemoteName() || `شرکت‌کننده ${remoteCount() + 1}`;
   }
 
   function pcmToBase64(pcm) {
@@ -267,7 +417,7 @@
     return n;
   }
 
-  function tapTrack(track, speakerId, displayName) {
+  async function tapTrack(track, speakerId, displayName) {
     if (!active || !track || track.kind !== "audio") return false;
     if (track.readyState === "ended") return false;
     const trackKey = track.id || `${speakerId}:${tappedTrackIds.size}`;
@@ -278,22 +428,37 @@
       if (remoteCount() >= maxRemoteTracks()) return false;
     }
 
+    // Reserve the speaker id before await so parallel scans don't double-tap.
+    const name = cleanName(displayName) || fallbackSpeakerLabel(speakerId);
+    const placeholder = {
+      trackId: trackKey,
+      buffers: [],
+      samples: 0,
+      name,
+      pending: true,
+    };
+    taps.set(speakerId, placeholder);
+    tappedTrackIds.add(trackKey);
+
     try {
+      const ctx = await ensureAudioContext();
+      if (!active || taps.get(speakerId) !== placeholder) {
+        return false;
+      }
       const stream = new MediaStream([track.clone()]);
-      const ctx = new AudioContext();
       const source = ctx.createMediaStreamSource(stream);
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      const worklet = new AudioWorkletNode(ctx, WORKLET_NAME, {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        channelCount: 1,
+      });
       const gain = ctx.createGain();
       gain.gain.value = 0;
-      const name =
-        cleanName(displayName) ||
-        (speakerId === "local"
-          ? scrapeRoster().selfName || "شما"
-          : allocateRemoteName() || `شرکت‌کننده ${remoteCount() + 1}`);
 
       const tap = {
         ctx,
-        processor,
+        source,
+        worklet,
         gain,
         trackId: trackKey,
         buffers: [],
@@ -301,19 +466,20 @@
         name,
       };
 
-      processor.onaudioprocess = (event) => {
+      worklet.port.onmessage = (event) => {
         if (!active) return;
-        const input = event.inputBuffer.getChannelData(0);
-        const fromRate = event.inputBuffer.sampleRate || ctx.sampleRate;
+        const input = event.data;
+        if (!input || !input.length) return;
+        const fromRate = ctx.sampleRate;
         const resampled = downsample(input, fromRate, sampleRate);
-        tap.buffers.push(resampled.slice());
+        tap.buffers.push(resampled);
         tap.samples += resampled.length;
         const minSamples = Math.floor((sampleRate * BATCH_MS) / 1000);
         if (tap.samples >= minSamples) flushSpeaker(speakerId);
       };
 
-      source.connect(processor);
-      processor.connect(gain);
+      source.connect(worklet);
+      worklet.connect(gain);
       gain.connect(ctx.destination);
       const resume = () => {
         if (ctx.state === "suspended") ctx.resume().catch(() => {});
@@ -322,11 +488,12 @@
       window.addEventListener("click", resume, { once: true, capture: true });
 
       taps.set(speakerId, tap);
-      tappedTrackIds.add(trackKey);
       console.info("[Distill] tapping", speakerId, name);
       post({ type: "DISTILL_TAP", speakerId, name, taps: taps.size });
       return true;
     } catch (err) {
+      taps.delete(speakerId);
+      tappedTrackIds.delete(trackKey);
       console.warn("[Distill] failed to tap", speakerId, err);
       return false;
     }
@@ -398,9 +565,9 @@
     }
     for (const [, tap] of taps) {
       try {
-        tap.processor.disconnect();
-        tap.gain.disconnect();
-        tap.ctx.close();
+        tap.source?.disconnect();
+        tap.worklet?.disconnect();
+        tap.gain?.disconnect();
       } catch (_) {
         /* ignore */
       }
@@ -408,6 +575,15 @@
     taps.clear();
     tappedTrackIds.clear();
     remoteNamePool = [];
+    if (sharedCtx) {
+      try {
+        sharedCtx.close();
+      } catch (_) {
+        /* ignore */
+      }
+      sharedCtx = null;
+      workletReady = null;
+    }
     if (localMicStream) {
       try {
         localMicStream.getTracks().forEach((t) => t.stop());
@@ -467,8 +643,8 @@
       if (!active) return;
       refreshNames();
       scanPeerConnections();
-      for (const [, tap] of taps) {
-        if (tap.ctx.state === "suspended") tap.ctx.resume().catch(() => {});
+      if (sharedCtx && sharedCtx.state === "suspended") {
+        sharedCtx.resume().catch(() => {});
       }
     }, 2500);
     flushTimer = setInterval(() => {

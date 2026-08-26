@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Dict, List, Sequence
 
 DEFAULT_LLM_MAX_CONTEXT = 8192
-DEFAULT_COMPLETION_RESERVE = 128
+# Wide enough to absorb the char->token estimate's typical drift on Persian
+# text (ZWNJ-heavy, non-Latin script tokenizes less predictably than chars/2
+# assumes) so a near-the-limit prompt doesn't tip the request over the edge.
+DEFAULT_COMPLETION_RESERVE = 320
 MIN_COMPLETION_TOKENS = 256
 
 
@@ -25,8 +29,10 @@ def estimate_tokens(text: str) -> int:
     """Conservative token estimate for Persian/mixed transcript text."""
     if not text:
         return 0
-    # Slightly pessimistic — avoids overshooting a small vLLM context.
-    return max(1, (len(text) + 1) // 2)
+    # Round up at ~1.8 chars/token (not 2.0) — Persian's ZWNJ-heavy, non-Latin
+    # script tends to tokenize a bit worse than that, so this overestimates
+    # rather than risk undercounting the real prompt size.
+    return max(1, math.ceil(len(text) / 1.8))
 
 
 def estimate_messages_tokens(messages: Sequence[Dict[str, str]]) -> int:
@@ -63,4 +69,4 @@ def transcript_chars_for_context(
     ctx = llm_max_context_tokens()
     transcript_tokens = ctx - system_tokens - wrapper_tokens - completion_tokens - reserve
     transcript_tokens = max(256, transcript_tokens)
-    return transcript_tokens * 2
+    return math.floor(transcript_tokens * 1.8)
