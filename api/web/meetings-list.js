@@ -15,7 +15,7 @@
 
     const title = document.createElement("h2");
     title.className = "meeting-card-title";
-    title.textContent = m.title || "جلسه بدون عنوان";
+    title.textContent = m.title || "Untitled meeting";
 
     const status = document.createElement("span");
     status.className = `meeting-status ${meetingStatusClass(m.status)}`;
@@ -24,7 +24,7 @@
     const info = document.createElement("p");
     info.className = "meeting-card-meta";
     const parts = [formatDate(m.created_at)];
-    if (m.has_recording) parts.push("ضبط موجود");
+    if (m.has_recording) parts.push("Has recording");
     info.textContent = parts.join(" · ");
 
     meta.append(title, status, info);
@@ -36,12 +36,12 @@
     openBtn.className = "btn btn-primary btn-sm";
     openBtn.href = `/assistant/${m.id}`;
     openBtn.textContent =
-      m.status === "recording" || m.status === "processing" ? "ادامه" : "باز کردن";
+      m.status === "recording" || m.status === "processing" ? "Resume" : "Open";
 
     const delBtn = document.createElement("button");
     delBtn.type = "button";
     delBtn.className = "btn btn-ghost btn-sm";
-    delBtn.textContent = "حذف";
+    delBtn.textContent = "Delete";
     delBtn.addEventListener("click", () => onDelete(m.id, li));
 
     actions.append(openBtn, delBtn);
@@ -50,10 +50,10 @@
   }
 
   async function deleteMeeting(id, cardEl, { onAfterDelete } = {}) {
-    if (!confirm("این جلسه حذف شود؟")) return;
+    if (!confirm("Delete this meeting?")) return;
     const res = await fetch(`/meetings/${id}`, { method: "DELETE" });
     if (!res.ok) {
-      alert("حذف ناموفق بود");
+      alert("Could not delete the meeting");
       return;
     }
     cardEl.remove();
@@ -89,7 +89,7 @@
     if (redirectIfUnauthorized(res, loginNext)) return;
     if (!res.ok) {
       if (loading) {
-        loading.textContent = "خطا در بارگذاری جلسات";
+        loading.textContent = "Could not load meetings";
         loading.hidden = false;
       }
       return;

@@ -138,8 +138,8 @@ All routes require `role=admin` (`403` otherwise):
 of all users (promote/demote, activate/deactivate), a table of every meeting
 on the platform (click a row to open a read-only monitor modal with meeting
 info, summary, STT transcript, and minutes sheet), and finally the admin's
-own "جلسات من" section (create/open/delete — identical to the regular
-dashboard). Deleting from "جلسات من" also refreshes the all-meetings table.
+own "My meetings" section (create/open/delete — identical to the regular
+dashboard). Deleting from "My meetings" also refreshes the all-meetings table.
 Anonymous users are redirected to `/login?next=/admin`; non-admin users are
 redirected to `/dashboard`.
 

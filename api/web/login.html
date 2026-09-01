@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fa" dir="rtl">
+<html lang="en" dir="ltr">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ورود — Distill</title>
+    <title>Sign in — Distill</title>
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -11,19 +11,19 @@
     <main class="page auth-page">
       <div class="auth-card">
         <a href="/" class="auth-brand">
-          <img src="/logo.svg" alt="" width="36" height="36" />
+          <img src="/logo.svg" alt="" width="32" height="32" />
           <span>Distill</span>
         </a>
-        <h1 class="auth-title">ورود</h1>
-        <p class="auth-subtitle">برای مدیریت جلسات خود وارد شوید</p>
+        <h1 class="auth-title">Sign in</h1>
+        <p class="auth-subtitle">Pick up where your meetings left off</p>
 
         <form id="loginForm" class="auth-form">
           <label class="auth-label">
-            ایمیل
+            Email
             <input type="email" name="email" required autocomplete="email" />
           </label>
           <label class="auth-label">
-            رمز عبور
+            Password
             <input
               type="password"
               name="password"
@@ -32,12 +32,14 @@
             />
           </label>
           <p id="loginError" class="auth-error" hidden></p>
-          <button type="submit" class="btn btn-primary auth-submit">ورود</button>
+          <button type="submit" class="btn btn-primary auth-submit">
+            Sign in
+          </button>
         </form>
 
         <p class="auth-footer">
-          حساب ندارید؟
-          <a href="/register" id="registerLink">ثبت‌نام</a>
+          No account yet?
+          <a href="/register" id="registerLink">Create one</a>
         </p>
       </div>
     </main>
@@ -66,7 +68,7 @@
             await distillAuth.login(form.email.value, form.password.value);
             window.location.href = next;
           } catch (err) {
-            errEl.textContent = err.message || "خطا در ورود";
+            errEl.textContent = err.message || "Could not sign in";
             errEl.hidden = false;
           } finally {
             btn.disabled = false;

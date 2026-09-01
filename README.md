@@ -1,12 +1,12 @@
-# Distill — Distill | Distill
+# Distill
 
-**Distill** جلسات چندنفره را با یک میکروفون مشترک ضبط می‌کند، گفتگو را زنده یا از فایل پیاده‌سازی می‌کند، گوینده و هم‌پوشانی را تشخیص می‌دهد و خلاصه / نکات کلیدی / تصمیمات را استخراج می‌کند.
+**Distill** records multi-person meetings from a single shared microphone, transcribes them live or from a file, detects speakers and overlapping speech, and extracts a summary, the key points, and the decisions that were reached.
 
-## ساختار پروژه
+## Project layout
 
 ```
-api/                 # اپلیکیشن + UI
-  web/               # لندینگ، لاگین، داشبورد، دستیار (HTML/JS)
+api/                 # application + UI
+  web/               # landing, login, dashboard, assistant (HTML/JS)
   routes/
   auth/
   meeting/
@@ -17,7 +17,7 @@ data/
 .env
 ```
 
-## اجرا
+## Running
 
 **Model stack (diarize-only → full LLM/STT/diarize, model choice, env vars):**  
 [`docs/MODELS.md`](docs/MODELS.md)
@@ -78,28 +78,29 @@ pip install -r requirements.txt
 python -m api
 ```
 
-مسیر اصلی STT دیگر به **ffmpeg / pydub** نیاز ندارد؛ صوت به‌صورت WAV مستقیم به endpoint سازگار با OpenAI ارسال می‌شود.
+The main STT path no longer needs **ffmpeg / pydub**; audio is sent as WAV directly to an OpenAI-compatible endpoint.
 
-UI لندینگ: `http://localhost:8000/`  
-UI دستیار: `http://localhost:8000/assistant`  
-باز کردن جلسه قبلی: `http://localhost:8000/assistant/{meeting_id}`
+Landing UI: `http://localhost:8000/`  
+Assistant UI: `http://localhost:8000/assistant`  
+Reopen a past meeting: `http://localhost:8000/assistant/{meeting_id}`
 
-## کیفیت Whisper (Review Agent)
+## Whisper quality (Review Agent)
 
-بعد از هر تکه STT، یک **دروازه کیفیت سریع** hallucinationهای معروف Whisper را حذف می‌کند (مثلاً حلقهٔ «خیلی خیلی خیلی…»).  
-اگر endpoint از `verbose_json` پشتیبانی کند، زمان‌بندی کلمه/سگمنت هم گرفته می‌شود تا متن روی مرز گوینده‌ها شکسته شود.  
-در پایان جلسه / آپلود، در حالت پیش‌فرض `finalize`، همان LLM (مثلاً Gemma) متن‌های پذیرفته‌شده را polish می‌کند.
+After each STT chunk, a **fast quality gate** removes well-known Whisper hallucinations (for example a "very very very…" repetition loop).  
+If the endpoint supports `verbose_json`, word/segment timings are captured too, so text can be split on speaker boundaries.  
+At the end of a meeting or upload, in the default `finalize` mode, the same LLM (e.g. Gemma) polishes the accepted text.
 
-از پنل تنظیمات (کلیک روی وضعیت) یا `/tuning`:
+From the tuning panel (click the status chip) or `/tuning`:
 
-| کلید | پیش‌فرض | معنی |
+| Key | Default | Meaning |
 |------|---------|------|
-| `window_ms` | `8000` | طول پنجره STT (جلسه بعد) |
-| `hop_ms` | `6000` | گام پنجره ≈۲ثانیه هم‌پوشانی (جلسه بعد) |
-| `stt_workers` | `2` | تعداد worker موازی STT |
-| `stt_retry_count` | `3` | تلاش مجدد با backoff |
+| `window_ms` | `8000` | STT window length (next meeting) |
+| `hop_ms` | `6000` | Window hop, ≈2s overlap (next meeting) |
+| `stt_workers` | `2` | Parallel STT workers |
+| `stt_retry_count` | `3` | Retries with backoff |
 | `stt_review_mode` | `finalize` | `off` / `heuristic` / `finalize` / `live` |
-| `stt_min_quality` | `0.35` | حداقل نمره برای قبول متن خام |
+| `stt_min_quality` | `0.35` | Minimum score to accept raw text |
+| `stt_language` | `en` | STT language code |
 
 ## Diarization
 
@@ -122,25 +123,25 @@ See `runtime/README.md` and `diarize/README.md`.
 
 ## Docker
 
-کل API (لندینگ، دستیار، REST، WebSocket، `/docs`) داخل یک کانتینر اجرا می‌شود. ایمیج **CPU-only** است و torch/pyannote را هم شامل می‌شود. **کاربران و جلسات** در سرویس **PostgreSQL** ذخیره می‌شوند (جزئیات: [`docs/AUTH.md`](docs/AUTH.md)). دادهٔ فایلی روی volume به `/app/data` مپ می‌شود:
+The whole API (landing, assistant, REST, WebSocket, `/docs`) runs in one container. The image is **CPU-only** and includes torch/pyannote. **Users and meetings** are stored in the **PostgreSQL** service (details: [`docs/AUTH.md`](docs/AUTH.md)). File data is mapped onto a volume at `/app/data`:
 
-- `uploads/` — فایل‌های آپلودی
-- `audio/` — صوت ضبط زنده
-- `stt_cache/` — کش رونویسی
-- `hf_cache/` / `torch_cache/` — کش مدل‌های diarization (تا بعد از rebuild دوباره دانلود نشوند)
+- `uploads/` — uploaded files
+- `audio/` — live recording audio
+- `stt_cache/` — transcription cache
+- `hf_cache/` / `torch_cache/` — diarization model caches (so they are not re-downloaded after a rebuild)
 
-`HF_TOKEN` را در `.env` بگذارید و شرایط مدل‌های gated pyannote را در Hugging Face بپذیرید. `JWT_SECRET` و `DATABASE_URL` را برای production تنظیم کنید.
+Put `HF_TOKEN` in `.env` and accept the gated pyannote model terms on Hugging Face. Set `JWT_SECRET` and `DATABASE_URL` for production.
 
 ```bash
 cp .env.example .env
 docker compose up -d --build
 ```
 
-سرویس روی `http://localhost:8000` در دسترس است.
+The service is available at `http://localhost:8000`.
 
-**Kubernetes / Hamdocker:** readiness/liveness باید `GET /health` روی پورت `8000` باشد. مدل pyannote عمداً هنگام boot لود نمی‌شود (لود torch روی پادهای کم‌حافظه باعث OOM و `connection reset` / CrashLoop می‌شد). برای پادهای کوچک `DISTILL_ENABLE_PYANNOTE=0` بگذارید؛ برای کیفیت pyannote حدود ≥2Gi RAM و `HF_TOKEN` لازم است. `MEETING_PORT`/`PORT` را روی `8000` نگه دارید.
+**Kubernetes / Hamdocker:** readiness/liveness should be `GET /health` on port `8000`. The pyannote model is deliberately not loaded at boot (loading torch on low-memory pods caused OOM and `connection reset` / CrashLoop). Set `DISTILL_ENABLE_PYANNOTE=0` for small pods; pyannote quality needs roughly ≥2Gi RAM and an `HF_TOKEN`. Keep `MEETING_PORT`/`PORT` at `8000`.
 
-فقط با Docker (بدون compose):
+Docker only (without compose):
 
 ```bash
 docker build -t distill .
@@ -149,79 +150,78 @@ docker run --rm -p 8000:8000 --env-file .env \
   distill
 ```
 
-برای اجرای محلی بدون Docker، وابستگی پایه سبک است؛ برای diarization باکیفیت:
+For local runs without Docker the base dependency set is light; for quality diarization:
 
 ```bash
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.optional.txt
-# سپس HF_TOKEN را در .env بگذارید
+# then put HF_TOKEN in .env
 ```
 
-## متغیرهای محیطی
+## Environment variables
 
-مسیرهای فایلی ماندگار در کد ثابت‌اند و از env خوانده نمی‌شوند:
+Persistent file paths are fixed in code and are not read from the environment:
 
 - `data/uploads/`
 - `data/audio/`
 - `data/stt_cache/`
-- `data/hf_cache/` (در Docker)
+- `data/hf_cache/` (in Docker)
 - `api/web/`
 
-کاربران و جلسات در Postgres هستند (`DATABASE_URL`) — [`docs/AUTH.md`](docs/AUTH.md).
+Users and meetings live in Postgres (`DATABASE_URL`) — [`docs/AUTH.md`](docs/AUTH.md).
 
-در Docker مسیرهای فایلی زیر `/app/...` هستند؛ volume روی `/app/data` کافی است. سرویس `postgres` volume جداگانه دارد.
+In Docker these file paths sit under `/app/...`; a volume on `/app/data` is enough. The `postgres` service has its own volume.
 
-| متغیر | پیش‌فرض | توضیح |
+| Variable | Default | Description |
 |--------|---------|--------|
 | `DATABASE_URL` | `postgresql://distill:distill@127.0.0.1:5432/distill` | Postgres (users + meetings) |
-| `JWT_SECRET` | placeholder | کلید امضای JWT — در production عوض کنید |
-| `JWT_EXPIRE_MINUTES` | `10080` | عمر توکن/کوکی (دقیقه) |
-| `AUTH_COOKIE_SECURE` | `0` | `1` پشت HTTPS |
-| `LLM_ENDPOINT` | — | آدرس chat completions |
-| `LLM_API_KEY` | — | کلید LLM |
-| `LLM_MODEL_NAME` | — | نام مدل |
-| `AUDIO_SAMPLE_RATE` | `16000` | نرخ نمونه‌برداری |
-| `AUDIO_CHANNELS` | `1` | تعداد کانال (مونو) |
-| `MEETING_HOST` | `0.0.0.0` | بایند سرور |
-| `MEETING_PORT` | `8000` | پورت |
-| `MEETING_WINDOW_MS` | `8000` | طول پنجره STT |
-| `MEETING_HOP_MS` | `6000` | گام پنجره |
-| `MEETING_DIARIZE_EVERY_MS` | `20000` | فاصله diarization زنده |
-| `STT_ENDPOINT` | — | آدرس STT |
-| `STT_API_KEY` | — | کلید STT |
-| `STT_MODEL` | — | مدل STT |
-| `DIARIZATION_ENDPOINT` | — | آدرس سرویس local diarize (مثلاً `http://127.0.0.1:8090`) |
-| `DIARIZATION_TIMEOUT_S` | `120` | مهلت درخواست به sidecar |
-| `DIARIZATION_ALLOW_FALLBACK` | `1` بدون endpoint / `0` با endpoint | اجازهٔ heuristic ضعیف وقتی backend کیفیت fail شود |
-| `HF_TOKEN` | — | فقط برای دانلود یک‌بارهٔ وزن‌های gated pyannote |
+| `JWT_SECRET` | placeholder | JWT signing key — change it in production |
+| `JWT_EXPIRE_MINUTES` | `10080` | Token/cookie lifetime (minutes) |
+| `AUTH_COOKIE_SECURE` | `0` | `1` behind HTTPS |
+| `LLM_ENDPOINT` | — | Chat completions URL |
+| `LLM_API_KEY` | — | LLM key |
+| `LLM_MODEL_NAME` | — | Model name |
+| `AUDIO_SAMPLE_RATE` | `16000` | Sample rate |
+| `AUDIO_CHANNELS` | `1` | Channel count (mono) |
+| `MEETING_HOST` | `0.0.0.0` | Server bind address |
+| `MEETING_PORT` | `8000` | Port |
+| `MEETING_WINDOW_MS` | `8000` | STT window length |
+| `MEETING_HOP_MS` | `6000` | Window hop |
+| `MEETING_DIARIZE_EVERY_MS` | `20000` | Live diarization interval |
+| `STT_ENDPOINT` | — | STT URL |
+| `STT_API_KEY` | — | STT key |
+| `STT_MODEL` | — | STT model |
+| `DIARIZATION_ENDPOINT` | — | Local diarize service URL (e.g. `http://127.0.0.1:8090`) |
+| `DIARIZATION_TIMEOUT_S` | `120` | Sidecar request timeout |
+| `DIARIZATION_ALLOW_FALLBACK` | `1` without endpoint / `0` with endpoint | Allow the weak heuristic when the quality backend fails |
+| `DISTILL_ENABLE_PYANNOTE` | `auto` | `0` disables pyannote (use on low-memory pods) |
+| `HF_TOKEN` | — | Only for the one-time download of gated pyannote weights |
 
-## تست
+## Tests
 
-Postgres باید در دسترس باشد (مثلاً `docker compose up -d postgres`). جزئیات: [`docs/AUTH.md`](docs/AUTH.md).
+Postgres must be reachable (e.g. `docker compose up -d postgres`). Details: [`docs/AUTH.md`](docs/AUTH.md).
 
 ```bash
 pip install -r requirements.txt
 pytest
 ```
 
-شامل unit تست chunker، pipeline با mock STT، و harness سبک WER/DER در `api/meeting/eval_metrics.py`.
+Covers unit tests for the chunker, the pipeline with a mock STT, and a light WER/DER harness in `api/meeting/eval_metrics.py`.
 
 ## API
 
-| متد | مسیر | توضیح |
+| Method | Path | Description |
 |-----|------|--------|
-| `GET` | `/` | لندینگ Distill |
-| `GET` | `/assistant` | UI دستDistill |
-| `GET` | `/assistant/{meeting_id}` | UI دستیار با تاریخچه همان جلسه |
-| `GET` | `/docs` | مستندات Swagger |
-| `GET` | `/health` | سلامت + backend diarization |
-| `GET` / `PUT` | `/tuning` | خواندن / اعمال تنظیمات زنده |
-| `POST` | `/meetings` | ایجاد جلسه |
-| `WS` | `/meetings/{id}/audio` | استریم صوت + رویدادها |
-| `POST` | `/meetings/{id}/upload` | آپلود فایل |
-| `GET` | `/meetings/{id}/transcript` | timeline متن |
-| `GET` | `/meetings/{id}/debug` | شمارنده‌های STT / diarization |
-| `PATCH` | `/meetings/{id}/speakers` | نام‌گذاری گوینده‌ها |
-| `POST` | `/meetings/{id}/insights` | تولید تحلیل |
-
-
+| `GET` | `/` | Distill landing page |
+| `GET` | `/assistant` | Assistant UI |
+| `GET` | `/assistant/{meeting_id}` | Assistant UI with that meeting's history |
+| `GET` | `/docs` | Swagger documentation |
+| `GET` | `/health` | Health + diarization backend |
+| `GET` / `PUT` | `/tuning` | Read / apply live settings |
+| `POST` | `/meetings` | Create a meeting |
+| `WS` | `/meetings/{id}/audio` | Audio stream + events |
+| `POST` | `/meetings/{id}/upload` | Upload a file |
+| `GET` | `/meetings/{id}/transcript` | Transcript timeline |
+| `GET` | `/meetings/{id}/debug` | STT / diarization counters |
+| `PATCH` | `/meetings/{id}/speakers` | Name the speakers |
+| `POST` | `/meetings/{id}/insights` | Generate analysis |

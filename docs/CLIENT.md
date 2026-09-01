@@ -179,7 +179,7 @@ Content-Type: application/json
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `title` | string | `"جلسه جدید"` | Meeting title |
+| `title` | string | `"New meeting"` | Meeting title |
 | `participants` | string[] | `[]` | Optional attendee names (metadata for minutes) |
 | `start` | bool | `true` | If true, begin recording immediately (`status: recording`) |
 | `capture_mode` | `"mono"` \| `"multi_stream"` | `"mono"` | Capture pipeline |
@@ -445,7 +445,7 @@ All events are JSON objects. Many include `meeting_id`.
   "speaker_id": "SPEAKER_alice",
   "start_ms": 1200,
   "end_ms": 4800,
-  "text": "سلام دوستان",
+  "text": "Hi everyone",
   "is_overlap": false,
   "provisional": true,
   "overlap_speakers": [],
@@ -480,7 +480,7 @@ Returns speakers that have a playable sample clip:
   "speakers": [
     {
       "id": "SPEAKER_00",
-      "label": "سخنگوی ۱",
+      "label": "Speaker 1",
       "custom_label": null,
       "sample_start_ms": 1000,
       "sample_end_ms": 4000,
@@ -497,10 +497,10 @@ Returns speakers that have a playable sample clip:
 PATCH /meetings/{meeting_id}/speakers
 Content-Type: application/json
 
-{"SPEAKER_00": "علی", "SPEAKER_01": "سارا"}
+{"SPEAKER_00": "Alex", "SPEAKER_01": "Sam"}
 ```
 
-or `{"speaker_map": {"SPEAKER_00": "علی"}}`.
+or `{"speaker_map": {"SPEAKER_00": "Alex"}}`.
 
 Broadcasts a `speaker_map` event.
 

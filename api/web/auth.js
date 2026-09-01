@@ -37,7 +37,7 @@
         body: JSON.stringify({ email, password }),
       });
       if (!res.ok) {
-        let detail = "ورود ناموفق بود";
+        let detail = "Sign-in failed";
         try {
           const err = await res.json();
           if (err.detail) detail = String(err.detail);
@@ -60,7 +60,7 @@
         }),
       });
       if (!res.ok) {
-        let detail = "ثبت‌نام ناموفق بود";
+        let detail = "Registration failed";
         try {
           const err = await res.json();
           if (err.detail) detail = String(err.detail);

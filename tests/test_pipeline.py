@@ -48,7 +48,7 @@ class MockSTT:
 
     def __init__(
         self,
-        text: str = "سلام دوستان جلسه را شروع می‌کنیم",
+        text: str = "hello everyone lets start the meeting",
         fail_times: int = 0,
         texts: Optional[List[str]] = None,
     ):
@@ -93,7 +93,7 @@ def test_pipeline_chunk_stt_diarize_align():
     # Mock STT: different text per chunk index
     stt_results = []
     for i, chunk in enumerate(chunks):
-        stt_results.append((chunk.start_ms, chunk.end_ms, f"متن قطعه {i}"))
+        stt_results.append((chunk.start_ms, chunk.end_ms, f"chunk text {i}"))
 
     diarizer = SpeakerDiarizer(
         sample_rate=sr, max_speakers=2, energy_threshold=0.01, min_speakers=1
@@ -111,7 +111,7 @@ def test_pipeline_chunk_stt_diarize_align():
 @pytest.mark.asyncio
 async def test_stt_retry_succeeds_after_failures(store, tmp_path):
     """Mock STT fails twice then succeeds; chunk is eventually processed."""
-    stt = MockSTT(text="متن بعد از retry", fail_times=2)
+    stt = MockSTT(text="text after retry", fail_times=2)
     record = MeetingRecord.create("retry-test")
     session = MeetingSession(
         record=record,
@@ -137,7 +137,7 @@ async def test_stt_retry_succeeds_after_failures(store, tmp_path):
     assert session._stt_retries == 2
     assert session._stt_dropped == 0
     assert session._pending_stt
-    assert session._pending_stt[0][2] == "متن بعد از retry"
+    assert session._pending_stt[0][2] == "text after retry"
 
 
 def test_label_persistence_across_diarization_passes():
@@ -164,7 +164,7 @@ def test_label_persistence_across_diarization_passes():
 
 
 def test_quality_gate_drops_hallucination():
-    junk = " ".join(["خیلی"] * 40)
+    junk = " ".join(["very"] * 40)
     result = gate_stt_text(junk)
     assert not result.accepted
     assert result.action == "drop"
@@ -194,7 +194,7 @@ async def test_upload_path_stores_segments(store, tmp_path):
     audio = _sine(sr, 10.0, 200.0, amp=0.12)
     wav_path = _write_wav(tmp_path / "upload.wav", audio, sr)
 
-    stt = MockSTT(text="سلام این یک جلسه آزمایشی است")
+    stt = MockSTT(text="hello this is a test meeting")
     record = MeetingRecord.create("upload-test")
     session = MeetingSession(
         record=record,
@@ -230,7 +230,7 @@ async def test_upload_continues_stt_when_diarization_unavailable(store, tmp_path
     audio = _sine(sr, 10.0, 200.0, amp=0.12)
     wav_path = _write_wav(tmp_path / "upload.wav", audio, sr)
 
-    stt = MockSTT(text="سلام این یک جلسه آزمایشی است")
+    stt = MockSTT(text="hello this is a test meeting")
     record = MeetingRecord.create("upload-diarize-fail")
     diarizer = SpeakerDiarizer(
         sample_rate=sr,
@@ -272,7 +272,7 @@ async def test_upload_continues_stt_when_diarization_unavailable(store, tmp_path
 
 @pytest.mark.asyncio
 async def test_debug_stats_populated(store, tmp_path):
-    stt = MockSTT(text="سلام تست دیباگ")
+    stt = MockSTT(text="hello debug test")
     record = MeetingRecord.create("debug-test")
     session = MeetingSession(
         record=record,

@@ -1,63 +1,53 @@
-/* Self-hosted — avoids Google Fonts (often blocked on deploy / in IR). */
-@font-face {
-  font-family: "Vazirmatn";
-  src: url("/fonts/Vazirmatn-Regular.woff2") format("woff2"),
-    url("/fonts/Vazirmatn-Regular.ttf") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: "Vazirmatn";
-  src: url("/fonts/Vazirmatn-Medium.woff2") format("woff2"),
-    url("/fonts/Vazirmatn-Medium.ttf") format("truetype");
-  font-weight: 500;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: "Vazirmatn";
-  src: url("/fonts/Vazirmatn-Bold.woff2") format("woff2"),
-    url("/fonts/Vazirmatn-Bold.ttf") format("truetype");
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: "Vazirmatn";
-  src: url("/fonts/Vazirmatn-Bold.woff2") format("woff2"),
-    url("/fonts/Vazirmatn-Bold.ttf") format("truetype");
-  font-weight: 800;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: "Vazirmatn";
-  src: url("/fonts/Vazirmatn-Bold.woff2") format("woff2"),
-    url("/fonts/Vazirmatn-Bold.ttf") format("truetype");
-  font-weight: 900;
-  font-style: normal;
-  font-display: swap;
-}
+/* System stack — no webfont download, nothing to block on deploy. */
 
 :root {
-  --bg: #121212;
-  --bg-elevated: #1c1c1c;
-  --bg-sunken: #1a1a1a;
-  --card: #242424;
-  --card-hover: #2c2c2c;
-  --line: #333333;
-  --text: #e8e8e8;
-  --muted: #a8a8a8;
-  --muted-2: #7a7a7a;
-  --yellow: #ffc828;
-  --yellow-soft: rgba(255, 200, 40, 0.14);
-  --danger: #ef4444;
-  --ok: #86efac;
-  --warn: #fbbf24;
+  /* Surfaces — near-black, layered by elevation */
+  --bg: #000000;
+  --bg-elevated: #0d0d0d;
+  --bg-sunken: #050505;
+  --card: #121212;
+  --card-hover: #181818;
+  --card-raised: #242424;
+
+  /* Hairlines — translucent so they read on any surface */
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+
+  /* Glass — translucent fills laid over the near-black ground */
+  --glass: rgba(255, 255, 255, 0.045);
+  --glass-strong: rgba(255, 255, 255, 0.075);
+  --glass-line: rgba(255, 255, 255, 0.1);
+  --glass-blur: blur(20px) saturate(140%);
+
+  /* Raised glass for dialogs/panels: a translucent dark pane that lets the
+     blurred page show through, plus the scrim behind it. */
+  --glass-panel: rgba(26, 26, 26, 0.72);
+  --glass-panel-line: rgba(255, 255, 255, 0.13);
+  --glass-panel-blur: blur(26px) saturate(150%);
+  --scrim: rgba(0, 0, 0, 0.5);
+  --scrim-blur: blur(4px);
+
+  /* Type */
+  --text: #ffffff;
+  --muted: #b3b3b3;
+  --muted-2: #737373;
+
+  /* Accent — monochrome; white carries emphasis */
+  --accent: #ffffff;
+  --accent-ink: #000000;
+  --accent-soft: rgba(255, 255, 255, 0.1);
+  --accent-line: rgba(255, 255, 255, 0.22);
+
+  /* Status — desaturated so they signal without breaking the monochrome */
+  --danger: #ff6b6b;
+  --ok: #c8f0d6;
+  --warn: #ffd7a8;
+
   --radius: 14px;
   --radius-sm: 8px;
-  --shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 * { box-sizing: border-box; }
@@ -69,7 +59,7 @@ html, body {
 }
 
 body {
-  font-family: "Vazirmatn", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
   line-height: 1.7;
@@ -83,7 +73,7 @@ a { color: inherit; text-decoration: none; }
   padding: 2.5rem 0 3.5rem;
 }
 
-/* Landing page (Distill) */
+/* Landing page */
 .landing-page {
   width: min(1000px, calc(100% - 2rem));
   margin: 0 auto;
@@ -108,7 +98,7 @@ a { color: inherit; text-decoration: none; }
 
 .lp-title {
   margin: 0;
-  color: var(--yellow);
+  color: var(--accent);
   font-size: clamp(2.2rem, 5vw, 3rem);
   font-weight: 800;
   letter-spacing: -0.02em;
@@ -134,7 +124,7 @@ a { color: inherit; text-decoration: none; }
 
 .lp-section-title {
   margin: 0 0 0.45rem;
-  color: var(--yellow);
+  color: var(--accent);
   font-size: 1.45rem;
   font-weight: 800;
 }
@@ -169,11 +159,23 @@ a { color: inherit; text-decoration: none; }
 
 .feature-card,
 .use-card {
-  background: var(--card);
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   border-radius: var(--radius);
   padding: 1.35rem 1.1rem;
   text-align: center;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-glass);
+  transition: background 0.18s ease, border-color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.feature-card:hover,
+.use-card:hover {
+  background: var(--glass-strong);
+  border-color: var(--accent-line);
+  transform: translateY(-2px);
 }
 
 .feature-icon,
@@ -186,7 +188,7 @@ a { color: inherit; text-decoration: none; }
 .feature-card h3,
 .use-card h3 {
   margin: 0 0 0.55rem;
-  color: var(--yellow);
+  color: var(--accent);
   font-size: 1.02rem;
   font-weight: 700;
 }
@@ -214,16 +216,19 @@ a { color: inherit; text-decoration: none; }
 
 .cta-box {
   width: min(480px, 100%);
-  background: var(--card);
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   border-radius: 18px;
   padding: 2.4rem 1.75rem 1.9rem;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-glass);
   text-align: center;
 }
 
 .cta-title {
   margin: 0 0 1.4rem;
-  color: var(--yellow);
+  color: var(--accent);
   font-size: clamp(1.5rem, 4vw, 1.9rem);
   font-weight: 800;
 }
@@ -243,26 +248,6 @@ a { color: inherit; text-decoration: none; }
   padding-top: 0.25rem;
 }
 
-.footer-kicker {
-  margin: 0 0 0.75rem;
-  color: #cfcfcf;
-  font-size: 0.95rem;
-}
-
-.footer-copy {
-  margin: 0 auto;
-  max-width: 40rem;
-  color: var(--muted-2);
-  font-size: 0.82rem;
-  line-height: 1.9;
-}
-
-.footer-rights {
-  margin: 1rem 0 0.7rem;
-  color: var(--muted-2);
-  font-size: 0.8rem;
-}
-
 .footer-credit {
   margin: 0;
   color: #ddd;
@@ -270,7 +255,7 @@ a { color: inherit; text-decoration: none; }
 }
 
 .footer-credit a {
-  color: var(--yellow);
+  color: var(--accent);
   font-weight: 600;
 }
 
@@ -304,7 +289,7 @@ a { color: inherit; text-decoration: none; }
 
 .field input[type="text"]:focus,
 .field select:focus {
-  border-color: var(--yellow);
+  border-color: var(--accent);
 }
 
 .field input[type="file"] {
@@ -342,42 +327,47 @@ a { color: inherit; text-decoration: none; }
 .btn-primary {
   flex: 1;
   min-width: 130px;
-  background: var(--yellow);
-  color: #171717;
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
-.btn-primary:hover { background: #ffd84a; }
+.btn-primary:hover { background: #e6e6e6; }
 
 .btn-danger {
   flex: 1;
   min-width: 130px;
-  background: #3a3a3a;
-  color: #fff;
-  border: 1px solid #555;
+  background: var(--glass-strong);
+  color: var(--danger);
+  border: 1px solid rgba(255, 107, 107, 0.3);
 }
 
-.btn-danger:hover { background: #484848; }
+.btn-danger:hover {
+  background: rgba(255, 107, 107, 0.14);
+  border-color: rgba(255, 107, 107, 0.5);
+}
 
 .btn-ghost {
   width: 100%;
-  background: transparent;
+  background: var(--glass);
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-line);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
 .btn-ghost:hover {
-  background: var(--card-hover);
-  border-color: #555;
+  background: var(--glass-strong);
+  border-color: var(--accent-line);
 }
 
 .btn-accent {
   width: 100%;
-  background: var(--yellow-soft);
-  color: var(--yellow);
-  border: 1px solid rgba(255, 200, 40, 0.35);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent-line);
 }
 
-.btn-accent:hover { background: rgba(255, 200, 40, 0.22); }
+.btn-accent:hover { background: rgba(255, 255, 255, 0.18); }
 
 .sep {
   border: 0;
@@ -407,8 +397,8 @@ a { color: inherit; text-decoration: none; }
 }
 
 .session-link:hover {
-  color: var(--yellow);
-  text-decoration-color: rgba(255, 200, 40, 0.55);
+  color: var(--accent);
+  text-decoration-color: rgba(255, 255, 255, 0.55);
 }
 
 .copy-toast {
@@ -422,8 +412,10 @@ a { color: inherit; text-decoration: none; }
   gap: 0.55rem;
   padding: 0.72rem 1.05rem;
   border-radius: 12px;
-  background: #242424;
-  border: 1px solid rgba(255, 200, 40, 0.4);
+  background: var(--glass-panel);
+  border: 1px solid var(--glass-panel-line);
+  backdrop-filter: var(--glass-panel-blur);
+  -webkit-backdrop-filter: var(--glass-panel-blur);
   color: #f0f0f0;
   font-size: 0.88rem;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
@@ -441,7 +433,7 @@ a { color: inherit; text-decoration: none; }
   width: 0.55rem;
   height: 0.55rem;
   border-radius: 50%;
-  background: var(--yellow, #ffc828);
+  background: var(--accent, #ffffff);
   flex-shrink: 0;
 }
 
@@ -455,7 +447,7 @@ a { color: inherit; text-decoration: none; }
 
 .panel-head h2 {
   margin: 0;
-  color: var(--yellow);
+  color: var(--accent);
   font-size: 1.1rem;
 }
 
@@ -468,7 +460,7 @@ a { color: inherit; text-decoration: none; }
   padding: 0;
 }
 
-.linkish:hover { color: var(--yellow); }
+.linkish:hover { color: var(--accent); }
 
 .timeline {
   min-height: 480px;
@@ -534,9 +526,9 @@ a { color: inherit; text-decoration: none; }
   font-size: 0.72rem;
   padding: 0.12rem 0.55rem;
   border-radius: 999px;
-  background: var(--yellow-soft);
-  color: var(--yellow);
-  border: 1px solid rgba(255, 200, 40, 0.3);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid rgba(255, 255, 255, 0.3);
 }
 
 .badge-muted {
@@ -574,7 +566,7 @@ a { color: inherit; text-decoration: none; }
   display: inline-flex;
   align-items: center;
   gap: 0.65rem;
-  color: var(--yellow);
+  color: var(--accent);
   font-weight: 800;
   font-size: 1.1rem;
   margin-bottom: 1.25rem;
@@ -616,8 +608,8 @@ a { color: inherit; text-decoration: none; }
 }
 
 .auth-label input:focus {
-  outline: 2px solid var(--yellow-soft);
-  border-color: rgba(255, 200, 40, 0.45);
+  outline: 2px solid var(--accent-soft);
+  border-color: rgba(255, 255, 255, 0.45);
 }
 
 .auth-hint {
@@ -645,7 +637,7 @@ a { color: inherit; text-decoration: none; }
 }
 
 .auth-footer a {
-  color: var(--yellow);
+  color: var(--accent);
 }
 
 /* Shared app navbar (dashboard + assistant + admin) */
@@ -673,7 +665,7 @@ a { color: inherit; text-decoration: none; }
   flex-direction: row;
   align-items: center;
   gap: 0.7rem;
-  color: var(--yellow);
+  color: var(--accent);
   font-weight: 900;
   font-size: 1.2rem;
   white-space: nowrap;
@@ -756,7 +748,7 @@ a { color: inherit; text-decoration: none; }
   margin-bottom: 1.5rem;
 }
 
-/* Make dashboard "جلسه جدید" match assistant spacing (small button, left-side). */
+/* Make the dashboard "New meeting" button match assistant spacing. */
 .dash-toolbar #newMeetingBtn,
 .dash-toolbar #emptyNewBtn {
   flex: 0 0 auto;
@@ -967,9 +959,9 @@ a { color: inherit; text-decoration: none; }
 }
 
 .role-badge.is-admin {
-  color: var(--yellow);
-  border-color: rgba(255, 200, 40, 0.35);
-  background: var(--yellow-soft);
+  color: var(--accent);
+  border-color: rgba(255, 255, 255, 0.35);
+  background: var(--accent-soft);
 }
 
 .admin-row-actions {
@@ -987,7 +979,7 @@ a { color: inherit; text-decoration: none; }
 }
 
 .admin-table tbody tr.is-clickable:focus-visible {
-  outline: 2px solid var(--yellow);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
@@ -996,7 +988,9 @@ a { color: inherit; text-decoration: none; }
   position: fixed;
   inset: 0;
   z-index: 40;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--scrim);
+  backdrop-filter: var(--scrim-blur);
+  -webkit-backdrop-filter: var(--scrim-blur);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1010,8 +1004,10 @@ a { color: inherit; text-decoration: none; }
 .review-modal {
   width: min(760px, 100%);
   max-height: min(88vh, 760px);
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--glass-panel);
+  border: 1px solid var(--glass-panel-line);
+  backdrop-filter: var(--glass-panel-blur);
+  -webkit-backdrop-filter: var(--glass-panel-blur);
   border-radius: var(--radius);
   padding: 1.15rem 1.25rem;
   overflow: auto;
@@ -1033,7 +1029,7 @@ a { color: inherit; text-decoration: none; }
 }
 
 .review-modal-head h3 {
-  color: var(--yellow);
+  color: var(--accent);
   font-size: 1.1rem;
   font-weight: 700;
   margin: 0;
@@ -1071,9 +1067,9 @@ a { color: inherit; text-decoration: none; }
 }
 
 .review-step-dot.is-active {
-  color: var(--yellow);
-  border-color: rgba(255, 200, 40, 0.5);
-  background: rgba(255, 200, 40, 0.1);
+  color: var(--accent);
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .review-loading {

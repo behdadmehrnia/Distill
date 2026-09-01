@@ -79,7 +79,7 @@ async def test_upload_pipeline_calls_denoise(store, tmp_path):
         audio=cleaned, applied=True, backend="mock", elapsed_ms=1.0
     )
 
-    stt = MockSTT(text="سلام این یک جلسه آزمایشی است")
+    stt = MockSTT(text="hello this is a test meeting")
     record = MeetingRecord.create("upload-denoise-test")
     session = MeetingSession(
         record=record,

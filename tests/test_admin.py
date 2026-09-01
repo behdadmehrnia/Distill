@@ -408,19 +408,19 @@ def test_admin_can_monitor_any_meeting(tmp_path):
                 speaker_id="SPEAKER_00",
                 start_ms=0,
                 end_ms=1500,
-                text="سلام، جلسه شروع شد",
+                text="hello, the meeting started",
             )
         )
         store.save_minutes(
             MeetingMinutes(
                 meeting_id=meeting_id,
-                subject="جلسه تست",
-                summary="خلاصه نظارت",
+                subject="Test meeting",
+                summary="Monitor summary",
                 decisions=[
                     MinutesDecision(
                         id="d1",
-                        description="پیگیری بودجه",
-                        executor="علی",
+                        description="Budget follow-up",
+                        executor="Alex",
                         due_date="1404/01/01",
                     )
                 ],
@@ -439,8 +439,8 @@ def test_admin_can_monitor_any_meeting(tmp_path):
         body = resp.json()
         assert body["meeting"]["title"] == "monitor me"
         assert body["meeting"]["owner"]["email"] == "member@test.com"
-        assert body["minutes"]["summary"] == "خلاصه نظارت"
-        assert body["segments"][0]["text"] == "سلام، جلسه شروع شد"
+        assert body["minutes"]["summary"] == "Monitor summary"
+        assert body["segments"][0]["text"] == "hello, the meeting started"
         assert client.get("/admin/meetings/does-not-exist").status_code == 404
 
 

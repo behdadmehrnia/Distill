@@ -80,7 +80,7 @@ def _significant_overlap_speakers(
 
     Turn-taking (A then B) does not count.
     Tiny frame-edge flickers (< min_region_ms) are ignored so mono-mic diarization
-    cannot invent هم‌صحبتی from abutting/nearly-abutting labels.
+    cannot invent overlap from abutting/nearly-abutting labels.
     """
     regions = _atomic_regions(start_ms, end_ms, intervals)
     multi_ms = 0
@@ -189,7 +189,7 @@ def _text_quality(text: str) -> float:
     """Heuristic STT quality in [0,1]; lazy import avoids review↔aligner cycle."""
     from api.meeting.review import score_stt_text
 
-    score, _ = score_stt_text(text or "", language="fa")
+    score, _ = score_stt_text(text or "", language="en")
     return float(score)
 
 
@@ -215,7 +215,7 @@ def _tokens_close(a: str, b: str) -> bool:
         return False
     if a in b or b in a:
         return abs(len(a) - len(b)) <= max(2, len(a) // 3)
-    # cheap edit tolerance for short ASR variants (چرخی/چرخه)
+    # cheap edit tolerance for short ASR variants
     if abs(len(a) - len(b)) > 2:
         return False
     mismatches = sum(1 for x, y in zip(a, b) if x != y) + abs(len(a) - len(b))
@@ -628,7 +628,7 @@ def align_stt_with_diarization(
                 word_tokens = len(word_text.split())
                 # Partial later-hop word timings must not erase fuller window text.
                 # Require words to cover most of the window text (not merely be
-                # a subset of it — «خب» ⊂ full sentence would wrongly pass).
+                # a subset of it — a filler word inside a full sentence would wrongly pass).
                 if word_tokens >= max(1, int(text_tokens * 0.55)):
                     segments.extend(word_segs)
                     continue
@@ -709,7 +709,7 @@ def dedupe_overlapping_transcripts(
             time_dup = ov / shorter >= min_time_overlap_ratio
             same_spk = prev.speaker_id == seg.speaker_id
             both_overlap = prev.is_overlap and seg.is_overlap and same_spk
-            # Whisper hop variants of one sentence (سامیز vs سامورایز, partial vs full)
+            # Whisper hop variants of one sentence (partial vs full)
             if not _same_utterance(prev.text, seg.text):
                 continue
             if both_overlap and (time_dup or abs(prev.start_ms - seg.start_ms) < 2500):
@@ -769,7 +769,7 @@ def _token_containment(a: str, b: str) -> float:
 def _same_utterance(a: str, b: str) -> bool:
     """
     True when two Whisper outputs are variants of the same spoken sentence
-    (partial vs full, سامیز vs سامورایز), not two different turns.
+    (partial vs full), not two different turns.
     """
     a = (a or "").strip()
     b = (b or "").strip()

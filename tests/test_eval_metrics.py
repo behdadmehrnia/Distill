@@ -11,8 +11,8 @@ from api.meeting.models import SpeakerInterval
 
 
 def test_word_error_rate_perfect_and_errors():
-    assert word_error_rate("سلام دوستان", "سلام دوستان") == 0.0
-    wer = word_error_rate("سلام دوستان عزیز", "سلام دوستان")
+    assert word_error_rate("hello friends", "hello friends") == 0.0
+    wer = word_error_rate("hello dear friends", "hello friends")
     assert 0.0 < wer <= 1.0
 
 
@@ -42,21 +42,21 @@ def test_align_splits_on_word_timings():
         SpeakerInterval("SPEAKER_01", 4000, 8000, False),
     ]
     words = [
-        ("سلام", 0, 1000),
-        ("علی", 1000, 2000),
-        ("صبح", 4500, 5500),
-        ("بخیر", 5500, 6500),
+        ("hello", 0, 1000),
+        ("Alex", 1000, 2000),
+        ("good", 4500, 5500),
+        ("morning", 5500, 6500),
     ]
     segments = align_stt_with_diarization(
         "m1",
-        [(0, 8000, "سلام علی صبح بخیر", words)],
+        [(0, 8000, "hello Alex good morning", words)],
         intervals,
     )
     speakers = {s.speaker_id for s in segments}
     assert speakers == {"SPEAKER_00", "SPEAKER_01"}
     by_spk = {s.speaker_id: s.text for s in segments}
-    assert "سلام" in by_spk["SPEAKER_00"]
-    assert "صبح" in by_spk["SPEAKER_01"]
+    assert "hello" in by_spk["SPEAKER_00"]
+    assert "good" in by_spk["SPEAKER_01"]
 
 
 def test_diarizer_fork_isolates_state():

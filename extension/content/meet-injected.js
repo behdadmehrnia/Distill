@@ -105,9 +105,8 @@ registerProcessor("distill-capture", DistillCaptureProcessor);
     if (/^(spaces|devices|meetings|users)\b/i.test(t)) return true;
     if (/^\d+$/.test(t)) return true;
     if (/^participant\s*\d*$/i.test(t)) return true;
-    if (/^شرکت‌?کننده/.test(t)) return true;
     // Never treat Meet's "You" label as a person name.
-    if (/^(you|yourself|me|شما)$/i.test(t)) return true;
+    if (/^(you|yourself|me)$/i.test(t)) return true;
     if (t.split(/\s+/).length > 6) return true;
     return /^(this call|meeting details|call feature|more activities|notifications|anyone|google meet|turn on|turn off|mute|unmute|camera|microphone|mic|chat|people|captions|present|share|leave|hand|host|options|settings|activities|open to|joining|invite|copy|link|info|details|action|button|menu|panel|tab|dialog|your presentation|presentation)/i.test(
       t
@@ -117,7 +116,7 @@ registerProcessor("distill-capture", DistillCaptureProcessor);
   function cleanName(raw) {
     let t = String(raw || "").trim();
     t = t.replace(/\s*\(you\)\s*/gi, " ");
-    t = t.replace(/\s*\(شما\)\s*/gi, " ");
+    t = t.replace(/\s*\(you\)\s*/gi, " ");
     t = t.replace(/'s presentation.*$/i, "");
     t = t.replace(/^Participant:\s*/i, "");
     t = t.split(",")[0].trim();
@@ -130,7 +129,7 @@ registerProcessor("distill-capture", DistillCaptureProcessor);
   }
 
   function isSelfMarker(text) {
-    return /\(\s*(you|شما)\s*\)/i.test(String(text || ""));
+    return /\(\s*you\s*\)/i.test(String(text || ""));
   }
 
   /** Prefer the longer unique form ("Behdad Mehrnia" over "Behdad Meh"). */
@@ -294,7 +293,7 @@ registerProcessor("distill-capture", DistillCaptureProcessor);
     for (const [sid, tap] of taps) {
       if (sid === "local") continue;
       if (roster.selfName && samePerson(tap.name, roster.selfName)) {
-        tap.name = `شرکت‌کننده ${sid.replace(/\D/g, "") || "1"}`;
+        tap.name = `Participant ${sid.replace(/\D/g, "") || "1"}`;
         post({
           type: "DISTILL_TAP",
           speakerId: sid,
@@ -353,7 +352,7 @@ registerProcessor("distill-capture", DistillCaptureProcessor);
       if (self) return self;
       return null;
     }
-    return allocateRemoteName() || `شرکت‌کننده ${remoteCount() + 1}`;
+    return allocateRemoteName() || `Participant ${remoteCount() + 1}`;
   }
 
   function pcmToBase64(pcm) {
@@ -547,7 +546,7 @@ registerProcessor("distill-capture", DistillCaptureProcessor);
       console.warn("[Distill] local mic unavailable", err);
       post({
         type: "DISTILL_WARN",
-        message: "دسترسی میکروفون محلی گرفته نشد.",
+        message: "Could not get local microphone access.",
       });
     }
   }
@@ -660,7 +659,7 @@ registerProcessor("distill-capture", DistillCaptureProcessor);
       post({
         type: "DISTILL_WARN",
         message:
-          "هنوز ترک صوتی پیدا نشد. روی صفحه Meet کلیک کنید یا تب را رفرش کنید.",
+          "No audio track found yet. Click the Meet page or refresh the tab.",
       });
     }
   }

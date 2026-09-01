@@ -246,7 +246,7 @@ class MeetingSession:
 
     async def _gate_stt_text(self, text: str) -> Optional[str]:
         mode = self._review_mode()
-        lang = str(self.tuning.get("stt_language") or "fa")
+        lang = str(self.tuning.get("stt_language") or "en")
         if is_whisper_boilerplate(text):
             logger.info("STT gate dropped Whisper boilerplate text=%r", (text or "")[:80])
             return None
@@ -299,7 +299,7 @@ class MeetingSession:
             agent = TranscriptReviewAgent(llm=None, enabled=False)
             return await agent.review_segments(
                 segments,
-                language=str(self.tuning.get("stt_language") or "fa"),
+                language=str(self.tuning.get("stt_language") or "en"),
             )
 
         agent = self.review_agent or TranscriptReviewAgent(llm=None, enabled=False)
@@ -307,7 +307,7 @@ class MeetingSession:
             agent.enabled = True
         return await agent.review_segments(
             segments,
-            language=str(self.tuning.get("stt_language") or "fa"),
+            language=str(self.tuning.get("stt_language") or "en"),
         )
 
     @property
@@ -610,7 +610,7 @@ class MeetingSession:
                 else:
                     chunk = item
                     speaker_id = None
-                lang = str(self.tuning.get("stt_language") or "fa")
+                lang = str(self.tuning.get("stt_language") or "en")
                 prompt = self._stt_context_prompt(speaker_id)
                 result = await self._transcribe_with_retry(
                     chunk.audio, lang, prompt=prompt
@@ -717,7 +717,7 @@ class MeetingSession:
         if not self._pending_stt:
             return
         # Live path uses STT text only — hop word timings are often partial and
-        # previously rebuilt the whole UI from a single late word like «خب».
+        # previously rebuilt the whole UI from a single late filler word.
         windows = [
             (start_ms, end_ms, text, None)
             for start_ms, end_ms, text, _words in self._pending_stt
@@ -1043,7 +1043,7 @@ class MeetingSession:
         if audio is None or len(audio) < _MULTI_STREAM_MIN_SAMPLES:
             return []
 
-        lang = str(self.tuning.get("stt_language") or "fa")
+        lang = str(self.tuning.get("stt_language") or "en")
         batch_samples = max(
             self.sample_rate,
             int(self.sample_rate * _MULTI_STREAM_BATCH_S),
@@ -1119,7 +1119,7 @@ class MeetingSession:
                 "status": "processing",
                 "phase": "flush_stt",
                 "meeting_id": self.meeting_id,
-                "message": "در حال پیاده‌سازی کامل هر گوینده…",
+                "message": "Transcribing each speaker in full…",
             }
         )
 
@@ -1211,9 +1211,9 @@ class MeetingSession:
                     "meeting_id": self.meeting_id,
                     "code": "diarization_unavailable",
                     "message": (
-                        "سرویس تفکیک گوینده در دسترس نبود؛ پیاده‌سازی با یک گوینده "
-                        "ادامه می‌یابد. برای برچسب‌گذاری دقیق‌تر، runtime diarize را "
-                        "اجرا کنید (./runtime/scripts/start.sh)."
+                        "The speaker separation service was unavailable; transcription "
+                        "continues with a single speaker. For accurate labels, run "
+                        "the diarize runtime (./runtime/scripts/start.sh)."
                     ),
                 }
             )
@@ -1307,7 +1307,7 @@ class MeetingSession:
                 self._check_cancelled()
                 async with sem:
                     self._check_cancelled()
-                    lang = str(self.tuning.get("stt_language") or "fa")
+                    lang = str(self.tuning.get("stt_language") or "en")
                     ctx = None
                     async with results_lock:
                         if stt_results:

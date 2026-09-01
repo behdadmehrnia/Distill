@@ -116,7 +116,7 @@
       notifyBackground({
         type: "capture_ws_closed",
         code: 1006,
-        error: "اتصال صوتی قطع شد",
+        error: "Audio connection lost",
       });
     }
   }
@@ -198,9 +198,8 @@
       !clean ||
       /[\/\\]/.test(clean) ||
       /^(spaces|devices)\b/i.test(clean) ||
-      /^شرکت‌?کننده/.test(clean) ||
       /^participant\s*\d*$/i.test(clean) ||
-      /^(you|yourself|me|شما)$/i.test(clean) ||
+      /^(you|yourself|me)$/i.test(clean) ||
       clean.length > 64
     ) {
       // For local: do not register any placeholder name.
@@ -209,7 +208,7 @@
 
       // Keep a previous good name if we already have one.
       if (registeredNames.has(speakerId)) return;
-      clean = `شرکت‌کننده ${registeredNames.size || 1}`;
+      clean = `Participant ${registeredNames.size || 1}`;
     }
     if (registeredNames.get(speakerId) === clean) return;
     registeredNames.set(speakerId, clean);
@@ -248,7 +247,7 @@
     );
     notifyBackground({
       type: "capture_progress",
-      message: "در حال شنود ترک‌های صوتی Meet…",
+      message: "Listening to Meet audio tracks…",
     });
     return { ok: true };
   }
@@ -312,7 +311,7 @@
     if (data.type === "DISTILL_WARN" || data.type === "DISTILL_STARTED") {
       notifyBackground({
         type: "capture_progress",
-        message: data.message || `ترک‌های فعال: ${data.taps || 0}`,
+        message: data.message || `Active tracks: ${data.taps || 0}`,
         taps: data.taps,
       });
       return;
@@ -332,7 +331,7 @@
       const sec = data.audioSec != null ? data.audioSec : "?";
       notifyBackground({
         type: "capture_progress",
-        message: `ارسال صوت… ${sec}ث · ${data.batchesSent || 0} بسته · ${data.taps || 0} ترک`,
+        message: `Sending audio… ${sec}s · ${data.batchesSent || 0} batches · ${data.taps || 0} tracks`,
         taps: data.taps,
         batchesSent: data.batchesSent,
         audioSec: data.audioSec,

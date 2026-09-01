@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fa" dir="rtl">
+<html lang="en" dir="ltr">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Distill — داشبورد ضبط</title>
+    <title>Recorder — Distill</title>
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/assistant.css" />
@@ -12,32 +12,30 @@
     <nav class="navbar">
       <a class="nav-brand" href="/">
         <svg
-          width="42"
-          height="20"
-          viewBox="0 0 36 17"
+          width="26"
+          height="26"
+          viewBox="0 0 32 32"
           fill="none"
           xmlns="http://www.w3.org/2000/svg"
           aria-hidden="true"
         >
-          <path
-            d="M8.5 0.5C12.9183 0.5 16.5 4.08172 16.5 8.5C16.5 12.9183 12.9183 16.5 8.5 16.5C4.08172 16.5 0.5 12.9183 0.5 8.5C0.5 4.08172 4.08172 0.5 8.5 0.5Z"
-            stroke="#FFC828"
-          />
-          <path
-            d="M27.5 17C32.1944 17 36 13.1944 36 8.5C36 3.80558 32.1944 0 27.5 0C22.8056 0 19 3.80558 19 8.5C19 13.1944 22.8056 17 27.5 17Z"
-            fill="#FFC828"
-          />
+          <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M8 10h16" />
+            <path d="M11 16h10" />
+            <path d="M14 22h4" />
+          </g>
+          <circle cx="16" cy="26.5" r="1.6" fill="currentColor" />
         </svg>
         Distill
       </a>
       <div class="nav-meta">
-        <a href="/dashboard" class="linkish">جلسات من</a>
+        <a href="/dashboard" class="linkish">My meetings</a>
         <div class="nav-session">
           <div id="recordTimer" class="nav-timer idle">00:00</div>
           <div
             id="statusChip"
             class="nav-status"
-            title="کلیک برای تنظیم حساسیت‌ها"
+            title="Click to tune sensitivity"
             role="button"
             tabindex="0"
           >
@@ -46,7 +44,7 @@
               class="status-dot"
               aria-hidden="true"
             ></span>
-            <span id="statusText">آماده</span>
+            <span id="statusText">Ready</span>
           </div>
         </div>
         <span id="userName" class="nav-user-name"></span>
@@ -55,17 +53,17 @@
 
     <main class="dashboard">
       <aside class="panel controls-panel">
-        <h3 class="panel-title">جلسه</h3>
+        <h3 class="panel-title">Meeting</h3>
 
         <div class="field">
-          <label for="meetingTitle">عنوان جلسه</label>
+          <label for="meetingTitle">Title</label>
           <p id="meetingTitleError" class="field-error hidden" role="alert">
-            لطفاً عنوان جلسه را وارد کنید
+            Please enter a meeting title
           </p>
           <input
             id="meetingTitle"
             type="text"
-            placeholder="مثلاً جلسه مدیران ۲۱ تیر"
+            placeholder="e.g. Q3 planning review"
             autocomplete="off"
             required
           />
@@ -73,15 +71,15 @@
 
         <div id="liveSource" class="source-mode">
           <div class="field">
-            <label for="audioInput">میکروفون</label>
+            <label for="audioInput">Microphone</label>
             <select id="audioInput">
-              <option value="">میکروفون پیش‌فرض</option>
+              <option value="">System default</option>
             </select>
           </div>
 
           <div class="record-block">
             <div id="recordingPlayer" class="recording-player hidden">
-              <span class="recording-player-label">پخش ضبط قبلی</span>
+              <span class="recording-player-label">Play previous recording</span>
               <audio id="recordingAudio" controls preload="metadata"></audio>
             </div>
             <div id="levelMeter" class="level-meter" aria-hidden="true">
@@ -90,23 +88,23 @@
             </div>
             <div class="btn-row">
               <button id="startBtn" class="btn btn-primary" type="button">
-                شروع ضبط
+                Start recording
               </button>
               <button id="stopBtn" class="btn btn-danger hidden" type="button">
-                توقف
+                Stop
               </button>
             </div>
-            <span id="audioLevel" class="hidden">در حال شنیدن…</span>
+            <span id="audioLevel" class="hidden">Listening…</span>
           </div>
 
           <button id="showUploadMode" class="source-switch" type="button">
-            آپلود فایل
+            Upload a file
           </button>
         </div>
 
         <div id="uploadSource" class="source-mode hidden">
           <div class="field">
-            <label for="uploadFile">آپلود فایل</label>
+            <label for="uploadFile">Audio file</label>
             <input
               id="uploadFile"
               type="file"
@@ -114,10 +112,10 @@
             />
           </div>
           <button id="uploadBtn" class="btn btn-ghost" type="button">
-            پیاده‌سازی از فایل
+            Transcribe file
           </button>
           <button id="showLiveMode" class="source-switch" type="button">
-            ضبط جلسه
+            Record meeting
           </button>
         </div>
 
@@ -127,23 +125,23 @@
             class="btn btn-ghost hidden"
             type="button"
           >
-            مشاهده صورت جلسه
+            View minutes
           </button>
-          <p id="meetingMeta" class="meta">جلسه‌ای انتخاب نشده</p>
+          <p id="meetingMeta" class="meta">No meeting selected</p>
         </div>
       </aside>
 
       <section class="panel display-panel">
         <div class="panel-head">
-          <h2>متن زنده</h2>
+          <h2>Live transcript</h2>
           <div class="panel-head-actions">
-            <button id="debugBtn" class="linkish" type="button">دیباگ</button>
+            <button id="debugBtn" class="linkish" type="button">Debug</button>
           </div>
         </div>
         <div id="timeline" class="timeline">
           <div class="timeline-empty">
             <div class="rec-ring">●</div>
-            <p>برای شروع ضبط، دکمه زرد را بزنید.</p>
+            <p>Press “Start recording” to begin.</p>
           </div>
         </div>
       </section>
@@ -158,40 +156,40 @@
     >
       <div class="review-modal">
         <div class="review-modal-head">
-          <h3 id="reviewWizardTitle">پایان جلسه</h3>
+          <h3 id="reviewWizardTitle">Wrap up</h3>
           <div class="review-stepper">
             <span class="review-step-dot" data-step="processing"
-              >۱. پردازش</span
+              >1. Processing</span
             >
             <span class="review-step-dot" data-step="speakers"
-              >۲. نام‌گذاری سخنگوها</span
+              >2. Name speakers</span
             >
             <span class="review-step-dot" data-step="transcript"
-              >۳. متن جلسه</span
+              >3. Transcript</span
             >
             <span class="review-step-dot" data-step="minutes"
-              >۴. صورت جلسه</span
+              >4. Minutes</span
             >
           </div>
         </div>
 
         <div id="reviewStepProcessing" class="review-step">
           <p class="review-hint">
-            جلسه در حال پردازش نهایی است؛ لطفاً منتظر بمانید.
+            Finishing up — this takes a moment.
           </p>
           <ul id="processingPhaseList" class="processing-phase-list">
-            <li data-phase="save_audio">ذخیره فایل صوتی</li>
-            <li data-phase="enhance_audio">بهبود کیفیت صدا</li>
-            <li data-phase="flush_stt">تکمیل پیاده‌سازی متن</li>
-            <li data-phase="diarize">شناسایی نهایی سخنگوها</li>
-            <li data-phase="review">بهبود نهایی متن</li>
+            <li data-phase="save_audio">Saving audio</li>
+            <li data-phase="enhance_audio">Enhancing audio</li>
+            <li data-phase="flush_stt">Finishing transcription</li>
+            <li data-phase="diarize">Identifying speakers</li>
+            <li data-phase="review">Polishing transcript</li>
           </ul>
         </div>
 
         <div id="reviewStepSpeakers" class="review-step">
           <p class="review-hint">
-            برای هر سخنگو یک نام وارد کنید. پخش نمونه صدا اختیاری است و برای
-            اطمینان بیشتر است.
+            Give each speaker a name. Play the sample clip if you need to
+            confirm who is who.
           </p>
           <div id="speakerNamingList" class="speaker-naming-list"></div>
           <div class="review-step-actions">
@@ -201,15 +199,15 @@
               type="button"
               aria-disabled="true"
             >
-              ادامه و بازبینی متن جلسه
+              Continue to transcript
             </button>
           </div>
         </div>
 
         <div id="reviewStepTranscript" class="review-step">
           <p class="review-hint">
-            پیش از تولید صورت جلسه، متن پیاده‌شده را بازبینی کنید؛ روی هر بخش
-            کلیک کنید تا ویرایش شود.
+            Review the transcript before the minutes are generated. Click any
+            segment to edit it.
           </p>
           <div id="transcriptReviewList" class="transcript-review-list"></div>
           <div class="review-step-actions">
@@ -218,129 +216,46 @@
               class="btn btn-primary"
               type="button"
             >
-              ادامه و تولید صورت جلسه
+              Continue and generate minutes
             </button>
           </div>
         </div>
 
         <div id="reviewStepMinutes" class="review-step">
           <div id="minutesLoading" class="review-loading">
-            <p>در حال تولید…</p>
+            <p>Generating…</p>
           </div>
           <form id="minutesForm" class="minutes-form hidden">
             <div class="minutes-grid">
               <div class="minutes-field">
-                <label for="minutesSubject">موضوع جلسه</label>
+                <label for="minutesSubject">Subject</label>
                 <input id="minutesSubject" type="text" autocomplete="off" />
               </div>
               <div class="minutes-field">
-                <label for="minutesDate">تاریخ و زمان جلسه</label>
-                <div class="jalali-picker" id="minutesDatePicker">
-                  <button
-                    type="button"
-                    id="minutesDate"
-                    class="jalali-picker-trigger"
-                    aria-haspopup="dialog"
-                    aria-expanded="false"
-                  >
-                    <span
-                      id="minutesDateLabel"
-                      class="jalali-picker-label is-placeholder"
-                      >انتخاب تاریخ و زمان</span
-                    >
-                    <svg
-                      class="jalali-picker-icon"
-                      viewBox="0 0 24 24"
-                      width="16"
-                      height="16"
-                      aria-hidden="true"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.8"
-                    >
-                      <rect x="3" y="5" width="18" height="16" rx="2" />
-                      <path d="M3 10h18M8 3v4M16 3v4" />
-                    </svg>
-                  </button>
-                  <div
-                    id="minutesDatePopover"
-                    class="jalali-popover hidden"
-                    role="dialog"
-                    aria-label="انتخاب تاریخ و زمان شمسی"
-                  >
-                    <div class="jalali-popover-head">
-                      <button
-                        type="button"
-                        class="jalali-nav-btn"
-                        data-jalali-nav="prev"
-                        aria-label="ماه قبل"
-                      >
-                        ‹
-                      </button>
-                      <div
-                        class="jalali-month-label"
-                        id="jalaliMonthLabel"
-                      ></div>
-                      <button
-                        type="button"
-                        class="jalali-nav-btn"
-                        data-jalali-nav="next"
-                        aria-label="ماه بعد"
-                      >
-                        ›
-                      </button>
-                    </div>
-                    <div class="jalali-weekdays">
-                      <span>ش</span><span>ی</span><span>د</span><span>س</span
-                      ><span>چ</span><span>پ</span><span>ج</span>
-                    </div>
-                    <div class="jalali-days" id="jalaliDays"></div>
-                    <div class="jalali-time-row">
-                      <label>
-                        ساعت
-                        <select id="jalaliHour"></select>
-                      </label>
-                      <label>
-                        دقیقه
-                        <select id="jalaliMinute"></select>
-                      </label>
-                    </div>
-                    <div class="jalali-popover-actions">
-                      <button type="button" class="linkish" id="jalaliTodayBtn">
-                        امروز
-                      </button>
-                      <button
-                        type="button"
-                        class="btn btn-primary jalali-confirm-btn"
-                        id="jalaliConfirmBtn"
-                      >
-                        تأیید
-                      </button>
-                    </div>
-                  </div>
-                </div>
+                <label for="minutesDate">Date &amp; time</label>
+                <input id="minutesDate" type="datetime-local" />
               </div>
               <div class="minutes-field">
-                <label for="minutesLocation">محل برگزاری</label>
+                <label for="minutesLocation">Location</label>
                 <input id="minutesLocation" type="text" autocomplete="off" />
               </div>
               <div class="minutes-field">
-                <label for="minutesSecretary">دبیر جلسه</label>
+                <label for="minutesSecretary">Secretary</label>
                 <select id="minutesSecretary">
-                  <option value="">انتخاب از حاضرین</option>
+                  <option value="">Choose from attendees</option>
                 </select>
               </div>
             </div>
 
             <div class="minutes-grid">
               <div class="minutes-field minutes-chip-field">
-                <label>حاضرین</label>
+                <label>Attendees</label>
                 <div id="minutesAttendeesList" class="minutes-chip-list"></div>
                 <div class="minutes-chip-add">
                   <input
                     id="minutesAttendeesInput"
                     type="text"
-                    placeholder="نام و اینتر بزنید"
+                    placeholder="Type a name, press Enter"
                     autocomplete="off"
                   />
                   <button
@@ -348,18 +263,18 @@
                     class="btn btn-ghost"
                     type="button"
                   >
-                    افزودن
+                    Add
                   </button>
                 </div>
               </div>
               <div class="minutes-field minutes-chip-field">
-                <label>غائبین</label>
+                <label>Absentees</label>
                 <div id="minutesAbsenteesList" class="minutes-chip-list"></div>
                 <div class="minutes-chip-add">
                   <input
                     id="minutesAbsenteesInput"
                     type="text"
-                    placeholder="نام و اینتر بزنید"
+                    placeholder="Type a name, press Enter"
                     autocomplete="off"
                   />
                   <button
@@ -367,45 +282,45 @@
                     class="btn btn-ghost"
                     type="button"
                   >
-                    افزودن
+                    Add
                   </button>
                 </div>
               </div>
             </div>
 
             <div class="minutes-field">
-              <label for="minutesSummary">خلاصه جلسه</label>
+              <label for="minutesSummary">Summary</label>
               <textarea id="minutesSummary" rows="3"></textarea>
             </div>
 
             <div class="minutes-field">
-              <label>مصوبات / پیگیری‌ها</label>
+              <label>Decisions / follow-ups</label>
               <div id="minutesDecisions" class="minutes-decisions-table"></div>
               <button
                 id="minutesAddDecisionBtn"
                 class="btn btn-ghost minutes-add-decision"
                 type="button"
               >
-                + افزودن ردیف
+                + Add row
               </button>
             </div>
 
             <div class="minutes-form-actions">
               <span id="minutesSaveStatus" class="minutes-save-status hidden"
-                >ذخیره شد</span
+                >Saved</span
               >
               <button
                 id="minutesRegenerateBtn"
                 class="btn btn-ghost"
                 type="button"
               >
-                تولید مجدد
+                Regenerate
               </button>
               <button id="minutesPrintBtn" class="btn btn-ghost" type="button">
-                پرینت
+                Print
               </button>
               <button id="minutesSaveBtn" class="btn btn-primary" type="button">
-                ذخیره صورت جلسه
+                Save minutes
               </button>
             </div>
           </form>
@@ -413,7 +328,7 @@
 
         <div id="reviewWizardFoot" class="review-step-actions hidden">
           <button id="closeReviewWizardBtn" class="linkish" type="button">
-            بستن
+            Close
           </button>
         </div>
       </div>
@@ -428,11 +343,12 @@
     >
       <div class="tuning-panel">
         <div class="tuning-head">
-          <h3 id="debugTitle">دیباگ جلسه</h3>
-          <button id="closeDebugBtn" class="linkish" type="button">بستن</button>
+          <h3 id="debugTitle">Meeting debug</h3>
+          <button id="closeDebugBtn" class="linkish" type="button">Close</button>
         </div>
         <p class="tuning-note">
-          شمارنده‌های STT و diarization برای جلسه جاری (یا آخرین جلسه بازشده).
+          STT and diarization counters for the current meeting (or the last one
+          opened).
         </p>
         <div id="debugBody"></div>
       </div>
@@ -447,22 +363,23 @@
     >
       <div class="tuning-panel">
         <div class="tuning-head">
-          <h3 id="tuningTitle">تنظیم حساسیت‌ها</h3>
+          <h3 id="tuningTitle">Sensitivity</h3>
           <button id="closeTuningBtn" class="linkish" type="button">
-            بستن
+            Close
           </button>
         </div>
         <p class="tuning-note">
-          با کلیک روی وضعیت باز می‌شود. مقادیر «زنده» فوری اعمال می‌شوند؛ «جلسه
-          بعد» فقط از ضبط بعدی اثر دارد (مثل طول پنجره STT).
+          Opens from the status chip. “Live” values apply immediately; “next
+          meeting” values only take effect from the next recording (such as the
+          STT window length).
         </p>
         <div id="tuningFields"></div>
         <div class="tuning-actions">
           <button id="resetTuningBtn" class="btn btn-ghost" type="button">
-            بازنشانی
+            Reset
           </button>
           <button id="saveTuningBtn" class="btn btn-primary" type="button">
-            اعمال
+            Apply
           </button>
         </div>
       </div>
@@ -476,14 +393,14 @@
       aria-labelledby="confirmTitle"
     >
       <div class="confirm-panel">
-        <h3 id="confirmTitle">تأیید</h3>
+        <h3 id="confirmTitle">Confirm</h3>
         <p id="confirmMessage" class="confirm-message"></p>
         <div class="confirm-actions">
           <button id="confirmCancelBtn" class="btn btn-ghost" type="button">
-            انصراف
+            Cancel
           </button>
           <button id="confirmOkBtn" class="btn btn-danger" type="button">
-            تأیید
+            Confirm
           </button>
         </div>
       </div>
@@ -497,7 +414,7 @@
       aria-atomic="true"
     >
       <span class="copy-toast-dot" aria-hidden="true"></span>
-      <span id="copyToastText">لینک جلسه کپی شد</span>
+      <span id="copyToastText">Meeting link copied</span>
     </div>
 
     <script src="/auth.js"></script>

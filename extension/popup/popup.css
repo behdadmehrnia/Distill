@@ -1,15 +1,19 @@
 :root {
-  --bg: #121212;
-  --card: #242424;
-  --line: #333333;
-  --text: #e8e8e8;
-  --muted: #a8a8a8;
-  --yellow: #ffc828;
-  --yellow-soft: rgba(255, 200, 40, 0.14);
-  --danger: #ef4444;
+  --bg: #000000;
+  --card: #121212;
+  --line: rgba(255, 255, 255, 0.08);
+  --text: #ffffff;
+  --muted: #b3b3b3;
+  --accent: #ffffff;
+  --accent-ink: #000000;
+  --accent-soft: rgba(255, 255, 255, 0.1);
+  --glass: rgba(255, 255, 255, 0.045);
+  --glass-line: rgba(255, 255, 255, 0.1);
+  --glass-blur: blur(20px) saturate(140%);
+  --danger: #ff6b6b;
   --radius: 14px;
   --radius-sm: 8px;
-  font-family: "Vazirmatn", "Tahoma", "Segoe UI", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
 * {
@@ -21,7 +25,7 @@ body {
   width: 320px;
   padding: 16px;
   background:
-    radial-gradient(120% 90% at 100% 0%, var(--yellow-soft), transparent 50%),
+    radial-gradient(120% 90% at 100% 0%, var(--accent-soft), transparent 50%),
     var(--bg);
   color: var(--text);
   line-height: 1.6;
@@ -41,7 +45,7 @@ body {
 .brand {
   font-size: 1.15rem;
   font-weight: 700;
-  color: var(--yellow);
+  color: var(--accent);
   letter-spacing: 0.01em;
 }
 
@@ -79,8 +83,8 @@ input {
 }
 
 input:focus {
-  border-color: var(--yellow);
-  box-shadow: 0 0 0 2px var(--yellow-soft);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 button {
@@ -98,12 +102,12 @@ button:disabled {
 }
 
 .primary {
-  background: var(--yellow);
-  color: #121212;
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .primary:hover:not(:disabled) {
-  background: #ffd84a;
+  background: #e6e6e6;
 }
 
 .danger {
@@ -122,8 +126,8 @@ button:disabled {
 }
 
 .ghost:hover {
-  color: var(--yellow);
-  border-color: var(--yellow);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .row {
@@ -161,13 +165,13 @@ button:disabled {
   text-decoration: none;
   padding: 10px 12px;
   border-radius: var(--radius-sm);
-  background: var(--yellow);
-  color: #121212;
+  background: var(--accent);
+  color: var(--accent-ink);
   font-weight: 700;
 }
 
 .link-btn:hover {
-  background: #ffd84a;
+  background: #e6e6e6;
 }
 
 .status-card {
@@ -182,7 +186,7 @@ button:disabled {
 }
 
 .status-card strong {
-  color: var(--yellow);
+  color: var(--accent);
   font-weight: 600;
   margin-left: 6px;
 }
@@ -194,7 +198,7 @@ button:disabled {
 }
 
 .meeting-link {
-  color: var(--yellow);
+  color: var(--accent);
   font-size: 0.8rem;
   margin-top: 4px;
   text-decoration: none;

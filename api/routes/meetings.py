@@ -38,22 +38,17 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["meetings"])
 
-_PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
 _MAX_SAMPLE_MS = 4000
 _MIN_SAMPLE_MS = 600
 # Fallback diarization often emits short turns; still allow a short clip.
 _MIN_SAMPLE_MS_RELAXED = 200
 
 
-def _to_persian_digits(value: int) -> str:
-    return "".join(_PERSIAN_DIGITS[int(ch)] for ch in str(value))
-
-
 def _default_speaker_label(speaker_id: str) -> str:
     digits = "".join(ch for ch in str(speaker_id) if ch.isdigit())
     if not digits:
-        return "سخنگو"
-    return f"سخنگوی {_to_persian_digits(int(digits) + 1)}"
+        return "Speaker"
+    return f"Speaker {int(digits) + 1}"
 
 
 def _pick_speaker_sample_span(
@@ -171,7 +166,7 @@ async def create_meeting(
     if "title" in raw:
         title = str(raw.get("title") or "").strip()
     else:
-        title = "جلسه جدید"
+        title = "New meeting"
     participants = raw.get("participants") or []
     start = bool(raw.get("start", True))
     capture_raw = str(raw.get("capture_mode") or "mono").strip().lower()
@@ -376,7 +371,7 @@ async def update_speaker_map(
     request: Request,
     meeting: MeetingRecord = Depends(require_meeting),
 ) -> Dict[str, Any]:
-    """Map SPEAKER_XX ids to display names. Body: {"SPEAKER_00": "علی", ...} or {"speaker_map": {...}}."""
+    """Map SPEAKER_XX ids to display names. Body: {"SPEAKER_00": "Alex", ...} or {"speaker_map": {...}}."""
     meeting_id = meeting.id
     session = request.app.state.manager.get_or_restore(meeting_id)
     if not session:
@@ -696,9 +691,9 @@ async def upload_audio(
     if size == 0:
         content_length = request.headers.get("content-length")
         if content_length and content_length.isdigit() and int(content_length) > 0:
-            detail = "فایل در مسیر آپلود به سرور ناقص رسید"
+            detail = "The upload reached the server incomplete"
         else:
-            detail = "فایل صوتی خالی است"
+            detail = "The audio file is empty"
         logger.warning(
             "Empty upload for meeting %s (filename=%s content-type=%s content-length=%s)",
             meeting_id,
@@ -792,7 +787,7 @@ async def generate_minutes(
         raise HTTPException(
             status_code=502,
             detail=(
-                "تولید صورت جلسه ناموفق بود. "
+                "Minutes generation failed. "
                 f"({type(exc).__name__}: {exc})"
             ),
         ) from exc

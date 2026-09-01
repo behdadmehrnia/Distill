@@ -63,17 +63,17 @@ def format_llm_failure(endpoint: str, exc: BaseException) -> str:
         or "nodename nor servname" in lowered
     ):
         return (
-            f"سرور مدل زبانی (LLM) در {host} در دسترس نیست. "
-            "LLM_ENDPOINT و شبکه/فایروال را بررسی کنید."
+            f"The LLM server at {host} is unreachable. "
+            "Check LLM_ENDPOINT and your network/firewall."
         )
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "timeout" in name.lower() or "timeout" in lowered:
         return (
-            f"زمان پاسخ مدل زبانی (LLM) در {host} به پایان رسید. "
-            "اتصال یا سرویس مدل را بررسی کنید."
+            f"The LLM server at {host} timed out. "
+            "Check the connection or the model service."
         )
     if isinstance(exc, aiohttp.ClientError):
-        return f"خطا در ارتباط با مدل زبانی ({host}): {msg}"
-    return f"خطای مدل زبانی ({host}): {msg}"
+        return f"Error contacting the LLM ({host}): {msg}"
+    return f"LLM error ({host}): {msg}"
 
 
 class OpenAICompatibleLLM:

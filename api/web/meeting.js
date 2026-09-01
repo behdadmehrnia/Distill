@@ -1,4 +1,4 @@
-// Distill client — Distill
+// Distill client
 class DistillClient {
   constructor() {
     this.ws = null;
@@ -26,24 +26,22 @@ class DistillClient {
     this._minutesSaveTimer = null;
     this._activeSpeakerAudio = null;
     this._captureSource = null; // "live" | "upload" | null
-    this._jalaliValue = null; // {jy,jm,jd,hour,minute} or null
-    this._jalaliView = null; // {jy,jm} for calendar month view
-    this._jalaliOpen = false;
     this._reduceMotion =
       typeof window !== "undefined" &&
       window.matchMedia &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    // Yellow/gray family accents for speakers
+    // Low-saturation tints: distinguishable per speaker, still reads
+    // monochrome against the near-black ground. Mirrors shared.js.
     this.speakerColors = [
-      "#ffc828",
-      "#d4d4d4",
-      "#eab308",
-      "#9ca3af",
-      "#fde047",
-      "#737373",
-      "#facc15",
-      "#a3a3a3",
+      "#e8e8e8",
+      "#9fb4d0",
+      "#d0b9a8",
+      "#a8c4b4",
+      "#c2b0d0",
+      "#d0a8a8",
+      "#a8c0c8",
+      "#c8c49f",
     ];
 
     this.startBtn = document.getElementById("startBtn");
@@ -104,14 +102,6 @@ class DistillClient {
     this.minutesForm = document.getElementById("minutesForm");
     this.minutesSubject = document.getElementById("minutesSubject");
     this.minutesDate = document.getElementById("minutesDate");
-    this.minutesDateLabel = document.getElementById("minutesDateLabel");
-    this.minutesDatePopover = document.getElementById("minutesDatePopover");
-    this.jalaliMonthLabel = document.getElementById("jalaliMonthLabel");
-    this.jalaliDays = document.getElementById("jalaliDays");
-    this.jalaliHour = document.getElementById("jalaliHour");
-    this.jalaliMinute = document.getElementById("jalaliMinute");
-    this.jalaliTodayBtn = document.getElementById("jalaliTodayBtn");
-    this.jalaliConfirmBtn = document.getElementById("jalaliConfirmBtn");
     this.minutesLocation = document.getElementById("minutesLocation");
     this.minutesSecretary = document.getElementById("minutesSecretary");
     this.minutesAttendeesList = document.getElementById("minutesAttendeesList");
@@ -162,12 +152,12 @@ class DistillClient {
   }
 
   async loadExistingMeeting(meetingId) {
-    this.setStatus("processing", "در حال بارگذاری جلسه…");
+    this.setStatus("processing", "Loading meeting…");
     const res = await fetch(`/meetings/${meetingId}`);
     if (!res.ok) {
-      this.setStatus("disconnected", "جلسه پیدا نشد");
+      this.setStatus("disconnected", "Meeting not found");
       if (this.meetingMeta) {
-        this.meetingMeta.textContent = `جلسه یافت نشد: ${meetingId}`;
+        this.meetingMeta.textContent = `Meeting not found: ${meetingId}`;
       }
       this.updateReviewAvailability();
       return;
@@ -189,15 +179,15 @@ class DistillClient {
     const status = meeting.status || "stopped";
     this.meetingStatus = status;
     if (status === "recording") {
-      this.setStatus("recording", "در حال ضبط");
+      this.setStatus("recording", "Recording");
       this.setRecordingControls({ recording: true });
     } else if (status === "processing") {
-      this.setStatus("processing", "در حال پردازش");
+      this.setStatus("processing", "Processing");
       this.setRecordingControls({ processing: true });
     } else if (status === "created") {
-      this.setStatus("connected", "آماده");
+      this.setStatus("connected", "Ready");
     } else {
-      this.setStatus("connected", "آماده");
+      this.setStatus("connected", "Ready");
     }
     this.updateReviewAvailability();
 
@@ -396,8 +386,8 @@ class DistillClient {
         this.onSpeakersContinue().catch((err) => {
           console.error(err);
           this.showPrompt({
-            title: "خطا در ادامه",
-            message: `ادامه به مرحله بازبینی متن ناموفق بود.\n\n${err.message || err}`,
+            title: "Could not continue",
+            message: `Could not open the transcript review step.\n\n${err.message || err}`,
           });
         });
       };
@@ -411,8 +401,8 @@ class DistillClient {
         this.onTranscriptContinue().catch((err) => {
           console.error(err);
           this.showPrompt({
-            title: "خطا",
-            message: `ادامه به صورت جلسه ناموفق بود.\n\n${err.message || err}`,
+            title: "Error",
+            message: `Could not continue to the minutes step.\n\n${err.message || err}`,
           });
         });
       });
@@ -435,10 +425,10 @@ class DistillClient {
         this.toggleSpeakerSample(btn).catch((err) => {
           console.error(err);
           this.showPrompt({
-            title: "پخش نمونه صدا",
-            message: `پخش نمونه صدا ناموفق بود.\n\n${err.message || err}`,
+            title: "Sample playback",
+            message: `Could not play the sample clip.\n\n${err.message || err}`,
           }).catch(() => {
-            window.alert(`پخش نمونه صدا ناموفق بود.\n\n${err.message || err}`);
+            window.alert(`Could not play the sample clip.\n\n${err.message || err}`);
           });
         });
       });
@@ -483,7 +473,7 @@ class DistillClient {
       minutesPrint.addEventListener("click", () => {
         this.printMinutes().catch((err) => {
           console.error(err);
-          alert(`پرینت ناموفق بود: ${err.message || err}`);
+          alert(`Print failed: ${err.message || err}`);
         });
       });
     }
@@ -491,7 +481,7 @@ class DistillClient {
     if (minutesRegenerate) {
       minutesRegenerate.addEventListener("click", () => this.generateMinutes());
     }
-    this.initJalaliPicker();
+    this.initDatePicker();
   }
 
   async loadTuning() {
@@ -509,7 +499,7 @@ class DistillClient {
     const groups = {};
     this._tuningSchema.forEach((item) => {
       if (item.hidden) return;
-      const g = item.group || "سایر";
+      const g = item.group || "Other";
       if (!groups[g]) groups[g] = [];
       groups[g].push(item);
     });
@@ -522,7 +512,7 @@ class DistillClient {
       items.forEach((item) => {
         const row = document.createElement("div");
         row.className = "tuning-row";
-        const applyLabel = item.apply === "live" ? "زنده" : "جلسه بعد";
+        const applyLabel = item.apply === "live" ? "live" : "next meeting";
         const unit = item.unit ? ` (${item.unit})` : "";
         const val = this._tuningValues[item.key];
         let control = "";
@@ -543,7 +533,7 @@ class DistillClient {
         }
         const nextOnly =
           item.apply === "next_session"
-            ? `<div class="hint next-session-note">فقط روی جلسات جدید اثر دارد (نه جلسه جاری)</div>`
+            ? `<div class="hint next-session-note">Applies to new meetings only, not the current one</div>`
             : "";
         row.innerHTML = `
           <label for="tune_${item.key}">
@@ -595,19 +585,19 @@ class DistillClient {
       body: JSON.stringify({ values }),
     });
     if (!res.ok) {
-      alert(`ذخیره تنظیمات ناموفق: ${await res.text()}`);
+      alert(`Could not save settings: ${await res.text()}`);
       return;
     }
     const data = await res.json();
     this._tuningValues = { ...(data.values || {}) };
     this.closeTuning();
-    this.setStatus("connected", "تنظیمات اعمال شد");
+    this.setStatus("connected", "Settings applied");
   }
 
   async resetTuning() {
     const res = await fetch("/tuning/reset", { method: "POST" });
     if (!res.ok) {
-      alert(`بازنشانی ناموفق: ${await res.text()}`);
+      alert(`Reset failed: ${await res.text()}`);
       return;
     }
     const data = await res.json();
@@ -615,7 +605,7 @@ class DistillClient {
     this._tuningValues = { ...(data.values || {}) };
     this._tuningDefaults = { ...(data.defaults || {}) };
     this.renderTuningFields();
-    this.setStatus("connected", "تنظیمات به پیش‌فرض برگشت");
+    this.setStatus("connected", "Settings restored to defaults");
   }
 
   setSourceMode(mode) {
@@ -690,11 +680,11 @@ class DistillClient {
       if (!navigator.mediaDevices?.enumerateDevices) return;
       const devices = await navigator.mediaDevices.enumerateDevices();
       const inputs = devices.filter((d) => d.kind === "audioinput");
-      this.audioInput.innerHTML = '<option value="">میکروفون پیش‌فرض</option>';
+      this.audioInput.innerHTML = '<option value="">System default</option>';
       inputs.forEach((device, idx) => {
         const option = document.createElement("option");
         option.value = device.deviceId;
-        option.textContent = device.label || `میکروفون ${idx + 1}`;
+        option.textContent = device.label || `Microphone ${idx + 1}`;
         this.audioInput.appendChild(option);
       });
     } catch (err) {
@@ -711,15 +701,15 @@ class DistillClient {
 
     if (host === "0.0.0.0") {
       return (
-        "مرورگر روی آدرس 0.0.0.0 به میکروفون دسترسی نمی‌دهد.\n\n" +
-        "همین سرویس را با http://localhost:8000 یا http://127.0.0.1:8000 باز کنید."
+        "Browsers will not grant microphone access on 0.0.0.0.\n\n" +
+        "Open this service at http://localhost:8000 or http://127.0.0.1:8000 instead."
       );
     }
     if (insecure || noApi) {
       return (
-        "دسترسی به میکروفون فقط روی localhost یا HTTPS فعال است.\n\n" +
-        `آدرس فعلی: ${window.location.origin}\n` +
-        "لطفاً با http://localhost:8000 باز کنید."
+        "Microphone access requires localhost or HTTPS.\n\n" +
+        `Current origin: ${window.location.origin}\n` +
+        "Please open the app at http://localhost:8000."
       );
     }
     return null;
@@ -782,7 +772,7 @@ class DistillClient {
       this.stopBtn.classList.remove("hidden");
       this.stopBtn.disabled = true;
       this.stopBtn.classList.add("is-processing");
-      this.stopBtn.textContent = "در حال پردازش…";
+      this.stopBtn.textContent = "Processing…";
       if (this.recordTimer) {
         this.recordTimer.classList.remove("idle");
         this.recordTimer.classList.add("is-processing");
@@ -791,7 +781,7 @@ class DistillClient {
     }
     this.stopBtn.disabled = false;
     this.stopBtn.classList.remove("is-processing");
-    this.stopBtn.textContent = "توقف";
+    this.stopBtn.textContent = "Stop";
     if (this.recordTimer) this.recordTimer.classList.remove("is-processing");
     if (recording) {
       this.startBtn.classList.add("hidden");
@@ -805,12 +795,12 @@ class DistillClient {
   setMeetingMeta() {
     if (!this.meetingMeta) return;
     if (!this.meetingId) {
-      this.meetingMeta.textContent = "جلسه‌ای انتخاب نشده";
+      this.meetingMeta.textContent = "No meeting selected";
       this.updateReviewAvailability();
       return;
     }
     this.meetingMeta.innerHTML =
-      `شناسه جلسه: <button type="button" class="session-link" data-copy-session title="کلیک برای کپی لینک جلسه">${this.escape(this.meetingId)}</button>`;
+      `Meeting ID: <button type="button" class="session-link" data-copy-session title="Click to copy the meeting link">${this.escape(this.meetingId)}</button>`;
     this.updateReviewAvailability();
   }
 
@@ -841,8 +831,8 @@ class DistillClient {
   askConfirm({
     title,
     message,
-    confirmLabel = "تأیید",
-    cancelLabel = "انصراف",
+    confirmLabel = "Confirm",
+    cancelLabel = "Cancel",
     alertOnly = false,
   }) {
     return new Promise((resolve) => {
@@ -857,15 +847,15 @@ class DistillClient {
       }
       this._confirmResolver = resolve;
       this._confirmAlertOnly = !!alertOnly;
-      if (this.confirmTitle) this.confirmTitle.textContent = title || (alertOnly ? "توجه" : "تأیید");
+      if (this.confirmTitle) this.confirmTitle.textContent = title || (alertOnly ? "Notice" : "Confirm");
       if (this.confirmMessage) this.confirmMessage.textContent = message || "";
       if (this.confirmOkBtn) {
-        this.confirmOkBtn.textContent = confirmLabel || (alertOnly ? "متوجه شدم" : "تأیید");
+        this.confirmOkBtn.textContent = confirmLabel || (alertOnly ? "Got it" : "Confirm");
         this.confirmOkBtn.classList.toggle("btn-danger", !alertOnly);
         this.confirmOkBtn.classList.toggle("btn-primary", !!alertOnly);
       }
       if (this.confirmCancelBtn) {
-        this.confirmCancelBtn.textContent = cancelLabel || "انصراف";
+        this.confirmCancelBtn.textContent = cancelLabel || "Cancel";
         this.confirmCancelBtn.classList.toggle("hidden", !!alertOnly);
       }
       const panel = this.confirmPanel.querySelector(".confirm-panel");
@@ -893,8 +883,8 @@ class DistillClient {
   }
 
   /** In-app prompt (single OK). Queued so overlapping errors don't stack. */
-  showPrompt({ title = "توجه", message, okLabel = "متوجه شدم" }) {
-    const text = String(message || "").trim() || "خطای نامشخص رخ داد.";
+  showPrompt({ title = "Notice", message, okLabel = "Got it" }) {
+    const text = String(message || "").trim() || "An unexpected error occurred.";
     return new Promise((resolve) => {
       this._promptQueue.push({ title, message: text, okLabel, resolve });
       this._drainPromptQueue();
@@ -938,7 +928,7 @@ class DistillClient {
     } catch (err) {
       if (this.isLeaveAbort(err)) throw err;
       if (err && (err.name === "AbortError" || err.code === 20)) {
-        throw new Error(`پاسخی از سرور در ${Math.round(timeoutMs / 1000)} ثانیه نیامد`);
+        throw new Error(`No response from the server after ${Math.round(timeoutMs / 1000)}s`);
       }
       throw err;
     } finally {
@@ -970,10 +960,10 @@ class DistillClient {
         document.body.removeChild(ta);
       }
     }
-    this.showCopyToast("لینک جلسه کپی شد");
+    this.showCopyToast("Meeting link copied");
   }
 
-  showCopyToast(message = "لینک جلسه کپی شد") {
+  showCopyToast(message = "Meeting link copied") {
     const toast = document.getElementById("copyToast");
     const text = document.getElementById("copyToastText");
     if (!toast) return;
@@ -991,7 +981,7 @@ class DistillClient {
 
   isMeaningfulSpeech(text) {
     if (!text) return false;
-    // Drop ASR event tags like (سرفه) / (Sound of a car) and keep real words
+    // Drop ASR event tags like (cough) / (Sound of a car) and keep real words
     const cleaned = String(text)
       .replace(/[\(\[][^\)\]]*[\)\]]/g, " ")
       .replace(/\b(sound of a \w+|background noise|music playing)\b/gi, " ")
@@ -1034,16 +1024,16 @@ class DistillClient {
       if (!title) return;
 
       if (!(await this.ensureMicAvailable())) {
-        this.setStatus("disconnected", "میکروفون در دسترس نیست");
+        this.setStatus("disconnected", "Microphone unavailable");
         return;
       }
 
       if (this.hasRecording) {
         const ok = await this.askConfirm({
-          title: "پاک شدن ضبط قبلی",
+          title: "Existing recording will be cleared",
           message:
-            "این جلسه یک فایل ضبط‌شده دارد. شروع ضبط جدید، فایل صدا و متن فعلی را پاک می‌کند. مطمئن هستید؟",
-          confirmLabel: "پاک کردن و شروع",
+            "This meeting already has a recording. Starting a new one will erase the current audio and transcript. Continue?",
+          confirmLabel: "Erase and start",
         });
         if (!ok) return;
       }
@@ -1083,7 +1073,7 @@ class DistillClient {
       await this.startMic();
       this.isRecording = true;
       this.setRecordingControls({ recording: true });
-      this.setStatus("recording", "در حال ضبط");
+      this.setStatus("recording", "Recording");
       this.audioLevel.classList.remove("hidden");
       this.startTimer();
       if (this.levelMeter) this.levelMeter.classList.add("active");
@@ -1110,9 +1100,9 @@ class DistillClient {
 
       const micHint = this.micUnavailableReason();
       const message = micHint || err.message || String(err);
-      this.setStatus("disconnected", "خطا در شروع");
+      this.setStatus("disconnected", "Could not start");
       await this.showPrompt({
-        title: "شروع جلسه ناموفق",
+        title: "Could not start meeting",
         message: String(message),
       });
     }
@@ -1134,7 +1124,7 @@ class DistillClient {
       this.openReviewWizard();
       // Only stop via HTTP — avoid double-stop race with WS "stop"
       if (this.meetingId) {
-        this.setStatus("processing", "در حال پردازش…");
+        this.setStatus("processing", "Processing…");
         let stopped = null;
         try {
           // Cap wait: server polish has its own budget; don't hang the wizard forever.
@@ -1147,7 +1137,7 @@ class DistillClient {
             this.meetingStatus = "created";
             this.closeReviewWizard(true);
             this.setCaptureSource(null);
-            this.setStatus("connected", "پردازش لغو شد");
+            this.setStatus("connected", "Processing cancelled");
             return;
           }
           if (stopRes.ok) {
@@ -1157,14 +1147,14 @@ class DistillClient {
           } else {
             const detail = this.formatErrorDetail(await stopRes.text());
             processError =
-              `پردازش جلسه ناموفق بود (کد ${stopRes.status}).` +
+              `Could not process the meeting (status ${stopRes.status}).` +
               (detail ? `\n\n${detail}` : "");
             console.error("stop failed", stopRes.status, detail);
           }
         } catch (stopErr) {
           if (this.isLeaveAbort(stopErr)) return;
           console.error(stopErr);
-          processError = `ارتباط با سرور هنگام توقف جلسه برقرار نشد.\n\n${
+          processError = `Lost contact with the server while stopping the meeting.\n\n${
             stopErr.message || stopErr
           }`;
         }
@@ -1186,21 +1176,21 @@ class DistillClient {
         } catch (_) {}
         const hasText = this.hasTranscriptContext() || snapshotHadText;
         if (!hasText) {
-          this.setStatus("connected", "متوقف شد — متنی دریافت نشد (STT)");
+          this.setStatus("connected", "Stopped — no transcript from STT");
           if (!processError) {
             processError =
-              "پردازش تمام شد، ولی متن قابل‌اتکایی از STT به‌دست نیامد.\n\n" +
-              "می‌توانید نام‌گذاری را ادامه دهید، دوباره ضبط کنید، یا از دیباگ وضعیت سرویس را بررسی کنید.";
+              "Processing finished, but STT did not return usable text.\n\n" +
+              "You can carry on naming speakers, record again, or check the service from Debug.";
           }
         } else {
-          this.setStatus("connected", "متوقف شد — آماده تحلیل");
+          this.setStatus("connected", "Stopped — ready to analyse");
         }
 
         if (processError) {
           await this.showPrompt({
-            title: "خطا در پردازش جلسه",
+            title: "Meeting processing failed",
             message: processError,
-            okLabel: "متوجه شدم",
+            okLabel: "Got it",
           });
         }
 
@@ -1211,8 +1201,8 @@ class DistillClient {
         } catch (err) {
           console.error(err);
           await this.showPrompt({
-            title: "خطا در ادامه ویزارد",
-            message: `پردازش انجام شد، ولی ورود به مرحله بعد ناموفق بود.\n\n${
+            title: "Could not advance",
+            message: `Processing finished, but the next step could not be opened.\n\n${
               err.message || err
             }`,
           });
@@ -1220,10 +1210,10 @@ class DistillClient {
       }
     } catch (err) {
       console.error(err);
-      this.setStatus("disconnected", "خطا در توقف");
+      this.setStatus("disconnected", "Could not stop");
       await this.showPrompt({
-        title: "خطا در توقف جلسه",
-        message: `یک خطای غیرمنتظره هنگام توقف/پردازش رخ داد.\n\n${err.message || err}`,
+        title: "Could not stop the meeting",
+        message: `An unexpected error occurred while stopping.\n\n${err.message || err}`,
       });
       try {
         if (this._reviewWizardOpen && this.meetingId) {
@@ -1263,7 +1253,7 @@ class DistillClient {
       this.ws.onopen = () => {
         this.isConnected = true;
         if (this.meetingStatus !== "processing") {
-          this.setStatus("connected", "متصل");
+          this.setStatus("connected", "Connected");
         }
         resolve();
       };
@@ -1280,8 +1270,8 @@ class DistillClient {
           }
           const next = window.location.pathname + window.location.search;
           this.showPrompt({
-            title: "نشست منقضی شده",
-            message: "برای ادامه، دوباره وارد حساب کاربری خود شوید.",
+            title: "Session expired",
+            message: "Please sign in again to continue.",
           }).finally(() => {
             window.location.href = "/login?next=" + encodeURIComponent(next);
           });
@@ -1392,20 +1382,20 @@ class DistillClient {
         if (msg.cancelled) {
           this.closeReviewWizard(true);
           this.setCaptureSource(null);
-          this.setStatus("connected", "پردازش لغو شد");
+          this.setStatus("connected", "Processing cancelled");
           this.endProcessingRequest();
           this.applyCaptureSourceLock();
           return;
         }
         if (msg.status === "processing") {
-          this.setStatus("processing", "در حال پردازش");
+          this.setStatus("processing", "Processing");
           if (msg.phase) {
             this.updateProcessingPhase(msg.phase);
             const phaseLabels = {
-              save_audio: "خواندن و ذخیره فایل صوتی…",
-              flush_stt: "پیاده‌سازی متن…",
-              diarize: "شناسایی سخنگوها…",
-              review: "بهبود نهایی متن…",
+              save_audio: "Reading and saving audio…",
+              flush_stt: "Transcribing…",
+              diarize: "Identifying speakers…",
+              review: "Polishing transcript…",
             };
             const label = phaseLabels[msg.phase];
             if (label) this.setStatus("processing", label);
@@ -1417,15 +1407,15 @@ class DistillClient {
           const done = p.done != null ? p.done : p.chunk;
           const total = p.total != null ? p.total : "?";
           this.updateProcessingPhase("flush_stt");
-          this.setStatus("processing", `پیاده‌سازی ${done}/${total}`);
+          this.setStatus("processing", `Transcribing ${done}/${total}`);
         }
         if (msg.status === "stopped") {
-          this.setStatus("connected", "متوقف شد – آماده تحلیل");
+          this.setStatus("connected", "Stopped — ready to analyse");
           this.stopTimer(false);
           this.refreshTranscript().catch(() => {});
           this.refreshDebug().catch(() => {});
         }
-        if (msg.status === "recording") this.setStatus("recording", "در حال ضبط");
+        if (msg.status === "recording") this.setStatus("recording", "Recording");
         this.updateReviewAvailability();
       } else if (msg.type === "speaker_update") {
         this.refreshTranscript().catch(() => {});
@@ -1435,24 +1425,24 @@ class DistillClient {
       } else if (msg.type === "warning") {
         console.warn(msg.message || msg.code);
         if (msg.code === "fallback_diarization") {
-          this.setStatus("processing", "هشدار: diarization ساده (بدون pyannote)");
+          this.setStatus("processing", "Warning: basic diarization (no pyannote)");
           if (this._reviewWizardOpen && !this._fallbackPromptShown) {
             this._fallbackPromptShown = true;
             this.showPrompt({
-              title: "هشدار شناسایی سخنگو",
+              title: "Speaker detection warning",
               message:
-                "مدل diarization اصلی در دسترس نیست و حالت ساده (fallback) فعال شده.\n\n" +
-                "نام‌گذاری سخنگوها ممکن است دقیق نباشد، ولی می‌توانید ادامه دهید.",
+                "The main diarization model is unavailable and the simple fallback is active.\n\n" +
+                "Speaker labels may be less accurate, but you can continue.",
             }).catch(() => {});
           }
         }
       } else if (msg.type === "error") {
         console.error(msg.message);
-        const errText = String(msg.message || "خطای ناشناخته از سرور");
-        this.setStatus("processing", `خطا: ${errText.slice(0, 80)}`);
+        const errText = String(msg.message || "Unknown server error");
+        this.setStatus("processing", `Error: ${errText.slice(0, 80)}`);
         if (this._reviewWizardOpen || this.meetingStatus === "processing") {
           this.showPrompt({
-            title: "خطا در پردازش",
+            title: "Processing error",
             message: errText,
           }).catch(() => {});
         }
@@ -1519,7 +1509,7 @@ class DistillClient {
     this.timeline.innerHTML = `
       <div class="timeline-empty">
         <div class="rec-ring">●</div>
-        <p>برای شروع ضبط، دکمه زرد را بزنید.</p>
+        <p>Press “Start recording” to begin.</p>
       </div>`;
     this.updateReviewAvailability();
   }
@@ -1698,14 +1688,14 @@ class DistillClient {
       let statusBadge = "";
       if (isActive) {
         statusBadge =
-          '<span class="badge badge-active">فعال</span>' +
-          '<span class="badge badge-locked">درحال پردازش متن فعال (غیر قابل ویرایش)</span>';
+          '<span class="badge badge-active">Live</span>' +
+          '<span class="badge badge-locked">Processing — locked</span>';
       } else if (isLive) {
-        statusBadge = '<span class="badge badge-muted">موقت</span>';
+        statusBadge = '<span class="badge badge-muted">Interim</span>';
       } else if (polishKeys.has(key)) {
-        statusBadge = '<span class="badge badge-polish">بهبودیافته</span>';
+        statusBadge = '<span class="badge badge-polish">Polished</span>';
       } else {
-        statusBadge = '<span class="badge badge-editable">قابل ویرایش</span>';
+        statusBadge = '<span class="badge badge-editable">Editable</span>';
       }
       // Live capture has no final diarization — hide speaker/overlap chrome until stop.
       const showSpeakers =
@@ -1717,7 +1707,7 @@ class DistillClient {
             .map((spk) => {
               const color = this.speakerColor(spk);
               const label = this.speakerLabel(spk);
-              return `<button type="button" class="speaker-chip" data-speaker-id="${this.escape(spk)}" title="کلیک برای نام‌گذاری">
+              return `<button type="button" class="speaker-chip" data-speaker-id="${this.escape(spk)}" title="Click to rename">
             <span class="speaker-dot" style="background:${color}"></span>
             <span class="speaker-name" style="color:${color}">${this.escape(label)}</span>
           </button>`;
@@ -1726,10 +1716,10 @@ class DistillClient {
         : "";
       const badge =
         showSpeakers && g.type === "overlap"
-          ? '<span class="badge">هم‌صحبتی</span>'
+          ? '<span class="badge">Overlap</span>'
           : "";
       const editHint = isEditable
-        ? '<span class="segment-edit-hint" aria-hidden="true">ویرایش</span>'
+        ? '<span class="segment-edit-hint" aria-hidden="true">Edit</span>'
         : "";
 
       row.innerHTML = `
@@ -1778,9 +1768,9 @@ class DistillClient {
     textEl.contentEditable = "true";
     textEl.spellcheck = true;
     textEl.setAttribute("role", "textbox");
-    textEl.setAttribute("aria-label", "ویرایش متن بخش");
+    textEl.setAttribute("aria-label", "Edit segment text");
     textEl.setAttribute("data-segment-id", seg.id);
-    textEl.title = "برای ویرایش کلیک کنید — Enter برای ذخیره، Esc برای انصراف";
+    textEl.title = "Click to edit — Enter to save, Esc to cancel";
 
     textEl.addEventListener("focus", () => {
       this._editingSegmentId = seg.id;
@@ -1823,7 +1813,7 @@ class DistillClient {
         .catch((err) => {
           console.error(err);
           textEl.textContent = prev;
-          alert(`ذخیره ویرایش ناموفق: ${err.message}`);
+          alert(`Could not save edit: ${err.message}`);
         });
     });
   }
@@ -1932,14 +1922,10 @@ class DistillClient {
 
   defaultSpeakerLabel(speakerId) {
     const match = String(speakerId || "").match(/(\d+)\s*$/);
-    if (!match) return String(speakerId || "سخنگو");
+    if (!match) return String(speakerId || "Speaker");
     const n = parseInt(match[1], 10);
     if (!Number.isFinite(n)) return String(speakerId);
-    return `سخنگوی ${this.toPersianDigits(n + 1)}`;
-  }
-
-  toPersianDigits(value) {
-    return distill.toPersianDigits(value);
+    return `Speaker ${n + 1}`;
   }
 
   speakerColor(speakerId) {
@@ -1956,7 +1942,7 @@ class DistillClient {
     if (!this.meetingId || !speakerId) return;
     const fallback = this.defaultSpeakerLabel(speakerId);
     const current = this.speakerMap[speakerId] || fallback;
-    const name = window.prompt(`نام نمایشی برای ${fallback}:`, current === fallback ? "" : current);
+    const name = window.prompt(`Display name for ${fallback}:`, current === fallback ? "" : current);
     if (name == null) return;
     const trimmed = String(name).trim();
     if (!trimmed) return;
@@ -1972,7 +1958,7 @@ class DistillClient {
       this.renderTimeline();
     } catch (err) {
       console.error(err);
-      alert(`نام‌گذاری ناموفق: ${err.message}`);
+      alert(`Could not rename: ${err.message}`);
     }
   }
 
@@ -2085,13 +2071,13 @@ class DistillClient {
       if (!res.ok) {
         throw new Error(
           res.status === 404
-            ? "نمونه صدا پیدا نشد (فایل ضبط یا بازه سخنگو در دسترس نیست)."
-            : `دریافت نمونه صدا ناموفق بود (کد ${res.status}).`
+            ? "No sample available (recording or speaker interval is missing)."
+            : `Could not fetch the sample clip (status ${res.status}).`
         );
       }
       const blob = await res.blob();
       if (!blob || blob.size < 44) {
-        throw new Error("نمونه صدا خالی یا ناقص است.");
+        throw new Error("The sample clip is empty or incomplete.");
       }
       if (btn._objectUrl) {
         try {
@@ -2125,8 +2111,8 @@ class DistillClient {
       console.error(err);
       btn.classList.remove("is-playing");
       await this.showPrompt({
-        title: "پخش نمونه صدا",
-        message: `پخش نمونه صدا ناموفق بود.\n\n${err.message || err}`,
+        title: "Sample playback",
+        message: `Could not play the sample clip.\n\n${err.message || err}`,
       });
     } finally {
       btn._loading = false;
@@ -2139,7 +2125,7 @@ class DistillClient {
     this.stopSpeakerSamplePlayback();
     this._confirmedSpeakers = new Set();
     this._speakersContinueBusy = false;
-    this.speakerNamingList.innerHTML = '<p class="review-hint">در حال بارگذاری سخنگوها…</p>';
+    this.speakerNamingList.innerHTML = '<p class="review-hint">Loading speakers…</p>';
     if (this.speakersContinueBtn) {
       this.speakersContinueBtn.disabled = false;
       this.speakersContinueBtn.removeAttribute("disabled");
@@ -2160,10 +2146,10 @@ class DistillClient {
     } catch (err) {
       console.error(err);
       this.speakerNamingList.innerHTML =
-        '<p class="review-hint">دریافت لیست سخنگوها ناموفق بود.</p>';
+        '<p class="review-hint">Could not load the speaker list.</p>';
       await this.showPrompt({
-        title: "خطا در بارگذاری سخنگوها",
-        message: `لیست سخنگوها دریافت نشد.\n\n${err.message || err}`,
+        title: "Could not load speakers",
+        message: `The speaker list could not be fetched.\n\n${err.message || err}`,
       });
       this.updateSpeakersContinueState();
     }
@@ -2174,7 +2160,7 @@ class DistillClient {
     this.speakerNamingList.innerHTML = "";
     if (!this._speakerList.length) {
       this.speakerNamingList.innerHTML =
-        '<p class="review-hint">سخنگویی شناسایی نشد؛ می‌توانید مستقیم ادامه دهید.</p>';
+        '<p class="review-hint">No speakers detected — you can continue straight on.</p>';
       this.updateSpeakersContinueState();
       return;
     }
@@ -2184,7 +2170,7 @@ class DistillClient {
       card.dataset.speakerId = String(spk.id);
       const color = this.speakerColor(spk.id);
       const audioSrc = `/meetings/${this.meetingId}/speakers/${encodeURIComponent(spk.id)}/audio`;
-      const audioHtml = `<button type="button" class="speaker-play-btn" data-audio-src="${this.escape(audioSrc)}" aria-label="پخش نمونه صدا">
+      const audioHtml = `<button type="button" class="speaker-play-btn" data-audio-src="${this.escape(audioSrc)}" aria-label="Play sample clip">
             <svg class="play-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
             <svg class="pause-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
           </button>`;
@@ -2197,7 +2183,7 @@ class DistillClient {
           placeholder="${this.escape(spk.label)}"
         />
         ${audioHtml}
-        <span class="speaker-naming-status">${spk.custom_label ? "ثبت شد" : "در انتظار نام"}</span>
+        <span class="speaker-naming-status">${spk.custom_label ? "Saved" : "Needs a name"}</span>
       `;
       if (spk.custom_label) {
         card.classList.add("is-confirmed");
@@ -2217,11 +2203,11 @@ class DistillClient {
         if (value) {
           this._confirmedSpeakers.add(String(spk.id));
           card.classList.add("is-confirmed");
-          if (statusEl) statusEl.textContent = "آماده";
+          if (statusEl) statusEl.textContent = "Ready";
         } else {
           this._confirmedSpeakers.delete(String(spk.id));
           card.classList.remove("is-confirmed");
-          if (statusEl) statusEl.textContent = "در انتظار نام";
+          if (statusEl) statusEl.textContent = "Needs a name";
         }
         this.updateSpeakersContinueState();
       });
@@ -2242,7 +2228,7 @@ class DistillClient {
     if (!value) {
       this._confirmedSpeakers.delete(sid);
       card.classList.remove("is-confirmed");
-      if (statusEl) statusEl.textContent = "در انتظار نام";
+      if (statusEl) statusEl.textContent = "Needs a name";
       this.updateSpeakersContinueState();
       return;
     }
@@ -2250,7 +2236,7 @@ class DistillClient {
     this._confirmedSpeakers.add(sid);
     this.speakerMap[sid] = value;
     card.classList.add("is-confirmed");
-    if (statusEl) statusEl.textContent = "ثبت شد";
+    if (statusEl) statusEl.textContent = "Saved";
     this.updateSpeakersContinueState();
 
     if ((this.speakerMap[sid] || "") === value && card.dataset.savedLabel === value) {
@@ -2266,15 +2252,15 @@ class DistillClient {
         },
         10000
       );
-      if (!res.ok) throw new Error(this.formatErrorDetail(await res.text()) || `کد ${res.status}`);
+      if (!res.ok) throw new Error(this.formatErrorDetail(await res.text()) || `status ${res.status}`);
       const meeting = await res.json();
       this.speakerMap = { ...(meeting.speaker_map || {}) };
       card.dataset.savedLabel = value;
-      if (statusEl) statusEl.textContent = "ثبت شد";
+      if (statusEl) statusEl.textContent = "Saved";
       this.renderTimeline();
     } catch (err) {
       console.error(err);
-      if (statusEl) statusEl.textContent = "خطا در ذخیره";
+      if (statusEl) statusEl.textContent = "Could not save";
       throw err;
     } finally {
       this.updateSpeakersContinueState();
@@ -2305,8 +2291,8 @@ class DistillClient {
     if (this._speakersContinueBusy) return;
     if (!this.speakerNamingCardsHaveNames()) {
       await this.showPrompt({
-        title: "نام‌گذاری ناقص است",
-        message: "لطفاً برای همه سخنگوها نام وارد کنید تا بتوانید ادامه دهید.",
+        title: "Some speakers are unnamed",
+        message: "Give every speaker a name before continuing.",
       });
       return;
     }
@@ -2315,7 +2301,7 @@ class DistillClient {
     const prevLabel = btn ? btn.textContent : "";
     try {
       if (btn) {
-        btn.textContent = "در حال ادامه…";
+        btn.textContent = "Continuing…";
         btn.classList.add("is-processing");
       }
       const cards = this.speakerNamingList
@@ -2344,9 +2330,9 @@ class DistillClient {
       if (failed.length) {
         // Names are already in local speakerMap — warn but continue the wizard.
         await this.showPrompt({
-          title: "ذخیره روی سرور ناقص بود",
+          title: "Some names were not saved",
           message:
-            "بعضی نام‌ها روی سرور ذخیره نشد، ولی با نام‌های واردشده ادامه می‌دهیم.\n\n" +
+            "Some names did not save on the server, but we will continue with what you entered.\n\n" +
             (failed[0].reason?.message || String(failed[0].reason || "")),
         });
       }
@@ -2356,7 +2342,7 @@ class DistillClient {
     } finally {
       this._speakersContinueBusy = false;
       if (btn) {
-        btn.textContent = prevLabel || "ادامه و بازبینی متن جلسه";
+        btn.textContent = prevLabel || "Continue to transcript";
         btn.classList.remove("is-processing");
         this.updateSpeakersContinueState();
       }
@@ -2365,9 +2351,9 @@ class DistillClient {
 
   async loadTranscriptReviewStep() {
     if (!this.transcriptReviewList) {
-      throw new Error("بخش بازبینی متن در صفحه پیدا نشد");
+      throw new Error("The transcript review section is missing from the page");
     }
-    this.transcriptReviewList.innerHTML = '<p class="review-hint">در حال بارگذاری متن…</p>';
+    this.transcriptReviewList.innerHTML = '<p class="review-hint">Loading transcript…</p>';
     try {
       await this.refreshTranscript();
     } catch (err) {
@@ -2385,7 +2371,7 @@ class DistillClient {
     this.transcriptReviewList.innerHTML = "";
     if (!groups.length) {
       this.transcriptReviewList.innerHTML =
-        '<p class="review-hint">متنی برای نمایش وجود ندارد.</p>';
+        '<p class="review-hint">There is no transcript to show.</p>';
       return;
     }
     groups.forEach((g) => {
@@ -2396,7 +2382,7 @@ class DistillClient {
         .map((spk) => {
           const color = this.speakerColor(spk);
           const label = this.speakerLabel(spk);
-          return `<button type="button" class="speaker-chip" data-speaker-id="${this.escape(spk)}" title="کلیک برای نام‌گذاری">
+          return `<button type="button" class="speaker-chip" data-speaker-id="${this.escape(spk)}" title="Click to rename">
             <span class="speaker-dot" style="background:${color}"></span>
             <span class="speaker-name" style="color:${color}">${this.escape(label)}</span>
           </button>`;
@@ -2449,7 +2435,7 @@ class DistillClient {
         .then(() => this.renderTimeline())
         .catch((err) => {
           console.error(err);
-          alert(`ذخیره ویرایش ناموفق: ${err.message}`);
+          alert(`Could not save edit: ${err.message}`);
         })
         .finally(() => row.classList.remove("is-saving"));
     });
@@ -2481,9 +2467,9 @@ class DistillClient {
     } catch (err) {
       console.error(err);
       await this.showPrompt({
-        title: "تولید صورت جلسه ناموفق",
+        title: "Could not generate minutes",
         message:
-          "تولید خودکار صورت جلسه انجام نشد؛ می‌توانید بعداً دوباره تلاش کنید یا فرم را دستی تکمیل کنید.\n\n" +
+          "Automatic minutes generation failed. You can retry later or fill the form in by hand.\n\n" +
           this.formatErrorDetail(err.message || err),
       });
       this.renderMinutesForm(
@@ -2543,9 +2529,9 @@ class DistillClient {
 
     let dateValue = (data.meeting_date || "").trim();
     if (!dateValue && this._captureSource === "live") {
-      dateValue = this.formatJalaliDateTime(this.nowAsJalali());
+      dateValue = this.nowLocalDateTime();
     }
-    this.setJalaliDateValue(dateValue);
+    this.setDateValue(dateValue);
 
     this.renderMinutesChipList("attendees");
     this.renderMinutesChipList("absentees");
@@ -2564,7 +2550,7 @@ class DistillClient {
     const names = [...this._minutesAttendees];
     if (current && !names.includes(current)) names.unshift(current);
     this.minutesSecretary.innerHTML =
-      '<option value="">انتخاب از حاضرین</option>' +
+      '<option value="">Choose from attendees</option>' +
       names
         .map(
           (name) =>
@@ -2581,7 +2567,7 @@ class DistillClient {
     arr.forEach((name, idx) => {
       const chip = document.createElement("span");
       chip.className = "minutes-chip";
-      chip.innerHTML = `<span>${this.escape(name)}</span><button type="button" aria-label="حذف">×</button>`;
+      chip.innerHTML = `<span>${this.escape(name)}</span><button type="button" aria-label="Remove">×</button>`;
       chip.querySelector("button").addEventListener("click", () => {
         arr.splice(idx, 1);
         this.renderMinutesChipList(kind);
@@ -2602,345 +2588,33 @@ class DistillClient {
     if (kind === "attendees") this.refreshSecretaryOptions();
   }
 
-  initJalaliPicker() {
-    if (!this.minutesDate || !this.minutesDatePopover) return;
-    if (this.jalaliHour && !this.jalaliHour.options.length) {
-      for (let h = 0; h < 24; h++) {
-        const opt = document.createElement("option");
-        opt.value = String(h);
-        opt.textContent = this.toPersianDigits(String(h).padStart(2, "0"));
-        this.jalaliHour.appendChild(opt);
-      }
-    }
-    if (this.jalaliMinute && !this.jalaliMinute.options.length) {
-      for (let m = 0; m < 60; m += 5) {
-        const opt = document.createElement("option");
-        opt.value = String(m);
-        opt.textContent = this.toPersianDigits(String(m).padStart(2, "0"));
-        this.jalaliMinute.appendChild(opt);
-      }
-    }
-
-    this.minutesDate.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      this.toggleJalaliPicker();
-    });
-    this.minutesDatePopover.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      const nav = ev.target.closest("[data-jalali-nav]");
-      if (!nav) return;
-      ev.preventDefault();
-      const dir = nav.getAttribute("data-jalali-nav") === "prev" ? -1 : 1;
-      this.shiftJalaliMonth(dir);
-    });
-    this.jalaliDays?.addEventListener("click", (ev) => {
-      const dayBtn = ev.target.closest("[data-day]");
-      if (!dayBtn || dayBtn.disabled) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      const day = Number(dayBtn.getAttribute("data-day"));
-      if (!this._jalaliView) return;
-      this._jalaliValue = {
-        jy: this._jalaliView.jy,
-        jm: this._jalaliView.jm,
-        jd: day,
-        hour: Number(this.jalaliHour?.value ?? this._jalaliValue?.hour ?? 0),
-        minute: Number(this.jalaliMinute?.value ?? this._jalaliValue?.minute ?? 0),
-      };
-      this.updateJalaliDateLabel();
-      this.renderJalaliCalendar();
-    });
-    this.jalaliHour?.addEventListener("change", () => {
-      if (!this._jalaliValue) this._jalaliValue = { ...this.nowAsJalali() };
-      this._jalaliValue.hour = Number(this.jalaliHour.value);
-      this.updateJalaliDateLabel();
-    });
-    this.jalaliMinute?.addEventListener("change", () => {
-      if (!this._jalaliValue) this._jalaliValue = { ...this.nowAsJalali() };
-      this._jalaliValue.minute = Number(this.jalaliMinute.value);
-      this.updateJalaliDateLabel();
-    });
-    this.jalaliTodayBtn?.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      this._jalaliValue = this.nowAsJalali();
-      this._jalaliView = { jy: this._jalaliValue.jy, jm: this._jalaliValue.jm };
-      this.syncJalaliTimeSelects();
-      this.updateJalaliDateLabel();
-      this.renderJalaliCalendar();
-    });
-    this.jalaliConfirmBtn?.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (!this._jalaliValue) this._jalaliValue = this.nowAsJalali();
-      this._jalaliValue.hour = Number(this.jalaliHour?.value || this._jalaliValue.hour || 0);
-      this._jalaliValue.minute = Number(this.jalaliMinute?.value || this._jalaliValue.minute || 0);
-      this.updateJalaliDateLabel();
-      this.closeJalaliPicker();
-    });
-    // Use pointerdown so the target is still attached (day re-render happens on click).
-    document.addEventListener("pointerdown", (ev) => {
-      if (!this._jalaliOpen) return;
-      const root = document.getElementById("minutesDatePicker");
-      if (!root) return;
-      const path = typeof ev.composedPath === "function" ? ev.composedPath() : [];
-      if (path.includes(root) || root.contains(ev.target)) return;
-      this.closeJalaliPicker();
-    });
-    document.addEventListener("keydown", (ev) => {
-      if (ev.key === "Escape" && this._jalaliOpen) this.closeJalaliPicker();
-    });
+  initDatePicker() {
+    // Native datetime-local carries its own calendar + clock UI, so there is
+    // no popover to wire up here.
+    if (!this.minutesDate) return;
   }
 
-  toggleJalaliPicker() {
-    if (this._jalaliOpen) this.closeJalaliPicker();
-    else this.openJalaliPicker();
+  // Stored form is "YYYY-MM-DD HH:MM" (what the minutes sheet parses);
+  // the input wants "YYYY-MM-DDTHH:MM".
+  setDateValue(text) {
+    if (!this.minutesDate) return;
+    const raw = String(text || "").trim();
+    this.minutesDate.value = raw ? raw.replace(" ", "T").slice(0, 16) : "";
   }
 
-  openJalaliPicker() {
-    if (!this.minutesDatePopover) return;
-    if (!this._jalaliValue) this._jalaliValue = this.nowAsJalali();
-    this._jalaliView = { jy: this._jalaliValue.jy, jm: this._jalaliValue.jm };
-    this.syncJalaliTimeSelects();
-    this.renderJalaliCalendar();
-    this.minutesDatePopover.classList.remove("hidden");
-    this.minutesDate?.setAttribute("aria-expanded", "true");
-    this._jalaliOpen = true;
+  getDateValue() {
+    if (!this.minutesDate) return "";
+    const raw = String(this.minutesDate.value || "").trim();
+    return raw ? raw.replace("T", " ").slice(0, 16) : "";
   }
 
-  closeJalaliPicker() {
-    if (!this.minutesDatePopover) return;
-    this.minutesDatePopover.classList.add("hidden");
-    this.minutesDate?.setAttribute("aria-expanded", "false");
-    this._jalaliOpen = false;
-  }
-
-  shiftJalaliMonth(delta) {
-    if (!this._jalaliView) return;
-    let { jy, jm } = this._jalaliView;
-    jm += delta;
-    if (jm < 1) {
-      jm = 12;
-      jy -= 1;
-    } else if (jm > 12) {
-      jm = 1;
-      jy += 1;
-    }
-    this._jalaliView = { jy, jm };
-    this.renderJalaliCalendar();
-  }
-
-  syncJalaliTimeSelects() {
-    if (!this._jalaliValue) return;
-    if (this.jalaliHour) this.jalaliHour.value = String(this._jalaliValue.hour || 0);
-    if (this.jalaliMinute) {
-      const snapped = Math.round((this._jalaliValue.minute || 0) / 5) * 5;
-      this.jalaliMinute.value = String(Math.min(55, snapped));
-      this._jalaliValue.minute = Number(this.jalaliMinute.value);
-    }
-  }
-
-  renderJalaliCalendar() {
-    if (!this.jalaliDays || !this._jalaliView) return;
-    const monthNames = [
-      "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
-      "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند",
-    ];
-    if (this.jalaliMonthLabel) {
-      this.jalaliMonthLabel.textContent = `${monthNames[this._jalaliView.jm - 1]} ${this.toPersianDigits(this._jalaliView.jy)}`;
-    }
-
-    const today = this.nowAsJalali();
-    const daysInMonth = this.jalaliMonthLength(this._jalaliView.jy, this._jalaliView.jm);
-    const firstWeekday = this.jalaliWeekday(this._jalaliView.jy, this._jalaliView.jm, 1); // 0=Sat
-
-    this.jalaliDays.innerHTML = "";
-    for (let i = 0; i < firstWeekday; i++) {
-      const empty = document.createElement("button");
-      empty.type = "button";
-      empty.className = "jalali-day";
-      empty.disabled = true;
-      empty.textContent = "";
-      this.jalaliDays.appendChild(empty);
-    }
-    for (let day = 1; day <= daysInMonth; day++) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "jalali-day";
-      btn.dataset.day = String(day);
-      btn.textContent = this.toPersianDigits(day);
-      const isSelected =
-        this._jalaliValue &&
-        this._jalaliValue.jy === this._jalaliView.jy &&
-        this._jalaliValue.jm === this._jalaliView.jm &&
-        this._jalaliValue.jd === day;
-      const isToday =
-        today.jy === this._jalaliView.jy &&
-        today.jm === this._jalaliView.jm &&
-        today.jd === day;
-      if (isSelected) btn.classList.add("is-selected");
-      if (isToday) btn.classList.add("is-today");
-      this.jalaliDays.appendChild(btn);
-    }
-  }
-
-  setJalaliDateValue(text) {
-    this._jalaliValue = this.parseJalaliDateTime(text);
-    this.updateJalaliDateLabel();
-  }
-
-  updateJalaliDateLabel() {
-    if (!this.minutesDateLabel) return;
-    if (!this._jalaliValue) {
-      this.minutesDateLabel.textContent = "انتخاب تاریخ و زمان";
-      this.minutesDateLabel.classList.add("is-placeholder");
-      return;
-    }
-    this.minutesDateLabel.textContent = this.formatJalaliDateTime(this._jalaliValue);
-    this.minutesDateLabel.classList.remove("is-placeholder");
-  }
-
-  getJalaliDateValue() {
-    return this._jalaliValue ? this.formatJalaliDateTime(this._jalaliValue) : "";
-  }
-
-  nowAsJalali() {
-    const now = new Date();
-    const [jy, jm, jd] = this.gregorianToJalali(
-      now.getFullYear(),
-      now.getMonth() + 1,
-      now.getDate()
+  nowLocalDateTime() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return (
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+      `${pad(d.getHours())}:${pad(d.getMinutes())}`
     );
-    return {
-      jy,
-      jm,
-      jd,
-      hour: now.getHours(),
-      minute: Math.round(now.getMinutes() / 5) * 5 % 60,
-    };
-  }
-
-  formatJalaliDateTime(v) {
-    const y = this.toPersianDigits(String(v.jy));
-    const m = this.toPersianDigits(String(v.jm).padStart(2, "0"));
-    const d = this.toPersianDigits(String(v.jd).padStart(2, "0"));
-    const hh = this.toPersianDigits(String(v.hour ?? 0).padStart(2, "0"));
-    const mm = this.toPersianDigits(String(v.minute ?? 0).padStart(2, "0"));
-    return `${y}/${m}/${d} ${hh}:${mm}`;
-  }
-
-  parseJalaliDateTime(text) {
-    const raw = String(text || "")
-      .trim()
-      .replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d));
-    if (!raw) return null;
-    const match = raw.match(
-      /(\d{3,4})\s*[\/\-]\s*(\d{1,2})\s*[\/\-]\s*(\d{1,2})(?:\s+(\d{1,2})\s*[:：]\s*(\d{1,2}))?/
-    );
-    if (!match) return null;
-    return {
-      jy: Number(match[1]),
-      jm: Number(match[2]),
-      jd: Number(match[3]),
-      hour: Number(match[4] || 0),
-      minute: Number(match[5] || 0),
-    };
-  }
-
-  jalaliMonthLength(jy, jm) {
-    if (jm <= 6) return 31;
-    if (jm <= 11) return 30;
-    return this.isJalaliLeap(jy) ? 30 : 29;
-  }
-
-  isJalaliLeap(jy) {
-    const breaks = [
-      -61, 9, 38, 199, 426, 686, 756, 818, 1111, 1181, 1210, 1635, 2060, 2097,
-      2192, 2262, 2324, 2394, 2456, 3178,
-    ];
-    const bl = breaks.length;
-    let jp = breaks[0];
-    let jump = 0;
-    for (let i = 1; i < bl; i++) {
-      const jm = breaks[i];
-      jump = jm - jp;
-      if (jy < jm) break;
-      jp = jm;
-    }
-    let n = jy - jp;
-    if (jump - n < 6) n = n - jump + Math.floor((jump + 4) / 33) * 33;
-    let leap = ((((n + 1) % 33) - 1) % 4);
-    if (leap === -1) leap = 4;
-    return leap === 0;
-  }
-
-  jalaliWeekday(jy, jm, jd) {
-    const [gy, gm, gd] = this.jalaliToGregorian(jy, jm, jd);
-    // JS: 0=Sun ... 6=Sat → convert to 0=Sat
-    const dow = new Date(gy, gm - 1, gd).getDay();
-    return (dow + 1) % 7;
-  }
-
-  gregorianToJalali(gy, gm, gd) {
-    const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-    let jy = gy <= 1600 ? 0 : 979;
-    gy -= gy <= 1600 ? 621 : 1600;
-    const gy2 = gm > 2 ? gy + 1 : gy;
-    let days =
-      365 * gy +
-      Math.floor((gy2 + 3) / 4) -
-      Math.floor((gy2 + 99) / 100) +
-      Math.floor((gy2 + 399) / 400) -
-      80 +
-      gd +
-      g_d_m[gm - 1];
-    jy += 33 * Math.floor(days / 12053);
-    days %= 12053;
-    jy += 4 * Math.floor(days / 1461);
-    days %= 1461;
-    if (days > 365) {
-      jy += Math.floor((days - 1) / 365);
-      days = (days - 1) % 365;
-    }
-    const jm = days < 186 ? 1 + Math.floor(days / 31) : 7 + Math.floor((days - 186) / 30);
-    const jd = 1 + (days < 186 ? days % 31 : (days - 186) % 30);
-    return [jy, jm, jd];
-  }
-
-  jalaliToGregorian(jy, jm, jd) {
-    let gy = jy <= 979 ? 621 : 1600;
-    jy -= jy <= 979 ? 0 : 979;
-    const days =
-      365 * jy +
-      Math.floor(jy / 33) * 8 +
-      Math.floor(((jy % 33) + 3) / 4) +
-      78 +
-      jd +
-      (jm < 7 ? (jm - 1) * 31 : (jm - 7) * 30 + 186);
-    gy += 400 * Math.floor(days / 146097);
-    let rem = days % 146097;
-    if (rem >= 36525) {
-      rem--;
-      gy += 100 * Math.floor(rem / 36524);
-      rem %= 36524;
-      if (rem >= 365) rem++;
-    }
-    gy += 4 * Math.floor(rem / 1461);
-    rem %= 1461;
-    if (rem >= 366) {
-      rem--;
-      gy += Math.floor(rem / 365);
-      rem %= 365;
-    }
-    const sal_a = [
-      0, 31,
-      (gy % 4 === 0 && gy % 100 !== 0) || gy % 400 === 0 ? 29 : 28,
-      31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
-    ];
-    let gm = 0;
-    for (gm = 0; gm < 13 && rem >= sal_a[gm]; gm++) rem -= sal_a[gm];
-    return [gy, gm, rem + 1];
   }
 
   renderMinutesDecisions() {
@@ -2948,7 +2622,7 @@ class DistillClient {
     this.minutesDecisionsEl.innerHTML = "";
     if (!this._minutesDecisions.length) {
       this.minutesDecisionsEl.innerHTML =
-        '<p class="review-hint">مصوبه‌ای ثبت نشده — با «افزودن ردیف» یکی اضافه کنید.</p>';
+        '<p class="review-hint">No decisions yet — use “Add row” to create one.</p>';
       return;
     }
     this._minutesDecisions.forEach((d) => {
@@ -2956,14 +2630,14 @@ class DistillClient {
       row.className = "minutes-decision-row";
       row.dataset.decisionId = d.id;
       row.innerHTML = `
-        <textarea rows="2" data-field="description" placeholder="شرح مصوبه / پیگیری">${this.escape(d.description)}</textarea>
-        <input type="text" data-field="executor" placeholder="مجری" value="${this.escape(d.executor)}" />
-        <input type="text" data-field="due_date" placeholder="سررسید" value="${this.escape(d.due_date)}" />
+        <textarea rows="2" data-field="description" placeholder="Decision / follow-up">${this.escape(d.description)}</textarea>
+        <input type="text" data-field="executor" placeholder="Owner" value="${this.escape(d.executor)}" />
+        <input type="text" data-field="due_date" placeholder="Due" value="${this.escape(d.due_date)}" />
         <select data-field="status">
-          <option value="pending"${d.status === "pending" ? " selected" : ""}>در انتظار</option>
-          <option value="done"${d.status === "done" ? " selected" : ""}>انجام‌شده</option>
+          <option value="pending"${d.status === "pending" ? " selected" : ""}>Pending</option>
+          <option value="done"${d.status === "done" ? " selected" : ""}>Done</option>
         </select>
-        <button type="button" class="minutes-decision-remove">حذف</button>
+        <button type="button" class="minutes-decision-remove">Remove</button>
       `;
       row.querySelectorAll("[data-field]").forEach((fieldEl) => {
         const field = fieldEl.getAttribute("data-field");
@@ -3008,7 +2682,7 @@ class DistillClient {
       const data = await res.json();
       this.renderMinutesForm(data);
       if (this.minutesSaveStatus) {
-        this.minutesSaveStatus.textContent = "ذخیره شد";
+        this.minutesSaveStatus.textContent = "Saved";
         this.minutesSaveStatus.classList.remove("hidden");
         clearTimeout(this._minutesSaveTimer);
         this._minutesSaveTimer = setTimeout(() => {
@@ -3018,14 +2692,14 @@ class DistillClient {
       this.updateReviewAvailability();
     } catch (err) {
       console.error(err);
-      alert(`ذخیره صورت جلسه ناموفق: ${err.message}`);
+      alert(`Could not save minutes: ${err.message}`);
     }
   }
 
   collectMinutesFormData() {
     return {
       subject: (this.minutesSubject?.value || "").trim(),
-      meeting_date: this.getJalaliDateValue(),
+      meeting_date: this.getDateValue(),
       location: (this.minutesLocation?.value || "").trim(),
       secretary: (this.minutesSecretary?.value || "").trim(),
       summary: (this.minutesSummary?.value || "").trim(),
@@ -3101,7 +2775,7 @@ class DistillClient {
   async openDebug() {
     if (!this.debugPanel) return;
     if (!this.meetingId) {
-      alert("ابتدا یک جلسه شروع یا باز کنید");
+      alert("Start or open a meeting first");
       return;
     }
     await this.refreshDebug();
@@ -3128,11 +2802,11 @@ class DistillClient {
     if (this._captureSource === "live") return;
     const file = this.uploadFile.files && this.uploadFile.files[0];
     if (!file) {
-      alert("ابتدا یک فایل صوتی انتخاب کنید");
+      alert("Choose an audio file first");
       return;
     }
     if (!file.size) {
-      alert("فایل انتخاب‌شده خالی است. اگر فایل در iCloud یا Google Drive است، ابتدا آن را دانلود کنید.");
+      alert("The selected file is empty. If it lives in iCloud or Google Drive, download it locally first.");
       return;
     }
     const title = this.requireMeetingTitle();
@@ -3143,7 +2817,7 @@ class DistillClient {
     this.openReviewWizard();
     this.applyCaptureSourceLock();
     this.updateProcessingPhase("save_audio");
-    this.setStatus("processing", "آماده‌سازی فایل…");
+    this.setStatus("processing", "Preparing file…");
     const processingSignal = this.startProcessingRequest();
 
     let processError = null;
@@ -3153,10 +2827,10 @@ class DistillClient {
         buffer = await file.arrayBuffer();
       } catch (readErr) {
         console.error(readErr);
-        throw new Error("خواندن فایل صوتی ناموفق بود. دوباره فایل را انتخاب کنید.");
+        throw new Error("Could not read the audio file. Please select it again.");
       }
       if (!buffer.byteLength) {
-        throw new Error("فایل صوتی خالی است");
+        throw new Error("The audio file is empty");
       }
 
       const created = await fetch("/meetings", {
@@ -3165,7 +2839,7 @@ class DistillClient {
         body: JSON.stringify({ title, start: false }),
       });
       if (!created.ok) {
-        throw new Error(this.formatErrorDetail(await created.text()) || "ایجاد جلسه ناموفق بود");
+        throw new Error(this.formatErrorDetail(await created.text()) || "Could not create the meeting");
       }
       const meeting = await created.json();
       this.meetingId = meeting.id;
@@ -3178,7 +2852,7 @@ class DistillClient {
 
       await this.connectWebSocket(meeting.id);
       this.updateProcessingPhase("save_audio");
-      this.setStatus("processing", "آپلود و پیاده‌سازی…");
+      this.setStatus("processing", "Uploading and transcribing…");
 
       const form = new FormData();
       form.append(
@@ -3195,13 +2869,13 @@ class DistillClient {
         this.meetingStatus = "created";
         this.closeReviewWizard(true);
         this.setCaptureSource(null);
-        this.setStatus("connected", "پردازش لغو شد");
+        this.setStatus("connected", "Processing cancelled");
         return;
       }
       if (!res.ok) {
         const detail = this.formatErrorDetail(await res.text());
         processError =
-          `آپلود یا پردازش فایل ناموفق بود (کد ${res.status}).` +
+          `Upload or processing failed (status ${res.status}).` +
           (detail ? `\n\n${detail}` : "");
         throw new Error(processError);
       }
@@ -3215,22 +2889,22 @@ class DistillClient {
         console.error(err);
       }
       if (!this.hasTranscriptContext()) {
-        this.setStatus("connected", "پیاده‌سازی انجام شد — متنی دریافت نشد");
+        this.setStatus("connected", "Transcription finished — no text returned");
         if (!processError) {
           processError =
-            "پردازش فایل تمام شد، ولی متن قابل‌اتکایی از STT به‌دست نیامد.\n\n" +
-            "می‌توانید نام‌گذاری را ادامه دهید یا فایل دیگری را امتحان کنید.";
+            "The file finished processing, but STT did not return usable text.\n\n" +
+            "You can carry on naming speakers or try a different file.";
         }
       } else {
-        this.setStatus("connected", "پیاده‌سازی فایل انجام شد");
+        this.setStatus("connected", "File transcribed");
       }
       await this.refreshDebug();
 
       if (processError) {
         await this.showPrompt({
-          title: "خطا در پردازش فایل",
+          title: "File processing error",
           message: processError,
-          okLabel: "متوجه شدم",
+          okLabel: "Got it",
         });
       }
 
@@ -3239,8 +2913,8 @@ class DistillClient {
       } catch (err) {
         console.error(err);
         await this.showPrompt({
-          title: "خطا در ادامه ویزارد",
-          message: `پردازش انجام شد، ولی ورود به مرحله بعد ناموفق بود.\n\n${
+          title: "Could not advance",
+          message: `Processing finished, but the next step could not be opened.\n\n${
             err.message || err
           }`,
         });
@@ -3248,8 +2922,8 @@ class DistillClient {
     } catch (err) {
       if (this.isLeaveAbort(err)) return;
       console.error(err);
-      this.setStatus("disconnected", "خطا در آپلود");
-      alert(`آپلود ناموفق: ${err.message}`);
+      this.setStatus("disconnected", "Upload failed");
+      alert(`Upload failed: ${err.message}`);
       if (!this.meetingId) {
         this.setCaptureSource(null);
       }
@@ -3275,5 +2949,6 @@ class DistillClient {
 document.addEventListener("DOMContentLoaded", async () => {
   const user = await distill.bindAuthChrome();
   if (!user) return;
+  // Distinct from window.distill (the shared.js utils namespace).
   window.distillClient = new DistillClient();
 });

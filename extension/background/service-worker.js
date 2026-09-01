@@ -124,7 +124,7 @@ async function apiFetch(path, { method = "GET", body, token } = {}) {
 
 async function login(email, password) {
   if (!email || !password) {
-    throw new Error("ایمیل و رمز عبور لازم است");
+    throw new Error("Email and password are required");
   }
 
   const res = await fetch(apiUrl("/auth/login"), {
@@ -155,7 +155,7 @@ async function login(email, password) {
   }
   if (!token) {
     throw new Error(
-      "توکن ورود پیدا نشد. اجازه cookies برای api.distill.app را فعال کنید."
+      "No sign-in token found. Allow cookies for api.distill.app."
     );
   }
 
@@ -201,15 +201,15 @@ async function ensureContentScript(tabId) {
 }
 
 async function startCapture(tabId, title) {
-  if (!state.token) throw new Error("ابتدا وارد شوید");
-  if (state.capturing) throw new Error("ضبط از قبل فعال است");
+  if (!state.token) throw new Error("Sign in first");
+  if (state.capturing) throw new Error("Recording is already active");
 
   await ensureContentScript(tabId);
 
   const meeting = await apiFetch("/meetings", {
     method: "POST",
     body: {
-      title: title || "جلسه گوگل میت",
+      title: title || "Google Meet meeting",
       capture_mode: "multi_stream",
       start: true,
       streams: [],
@@ -221,7 +221,7 @@ async function startCapture(tabId, title) {
   state.tabId = tabId;
   state.streams = [];
   state.lastError = null;
-  state.progress = "اتصال برقرار شد — در حال ضبط";
+  state.progress = "Connected — recording";
 
   const res = await chrome.tabs.sendMessage(tabId, {
     type: "distill_start",
@@ -237,7 +237,7 @@ async function startCapture(tabId, title) {
       /* ignore */
     }
     state.meetingId = null;
-    throw new Error(res?.error || "اتصال WebSocket در تب Meet برقرار نشد");
+    throw new Error(res?.error || "Could not open a WebSocket in the Meet tab");
   }
 
   state.capturing = true;
@@ -280,14 +280,14 @@ async function stopCapture({ finalize = true } = {}) {
     state.lastMeetingId = meetingId;
     if (framesSent === 0 && streamCount === 0) {
       state.lastError =
-        "هیچ صدایی ارسال نشد. روی تب Meet کلیک کنید، میکروفون را اجازه دهید، یا صفحه Meet را رفرش کنید و دوباره شروع کنید. " +
-        `جلسه خالی: ${API_BASE}/assistant/${meetingId}`;
+        "No audio was sent. Click the Meet tab, allow the microphone, or refresh the Meet page and start again. " +
+        `Empty meeting: ${API_BASE}/assistant/${meetingId}`;
     } else {
       state.lastError = null;
       // framesSent is now batched packets (~1.5s), not ScriptProcessor ticks.
       state.progress =
-        `توقف انجام شد — ${streamCount} گوینده، ${framesSent} بسته صوت (~۱٫۵ث). ` +
-        `Open meeting in Distill.`;
+        `Stopped — ${streamCount} speakers, ${framesSent} audio batches (~1.5s). ` +
+        `Open the meeting in Distill.`;
     }
   } else {
     state.lastError = null;
@@ -336,12 +336,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           if (existing) {
             if (existing.name !== name) {
               existing.name = name;
-              state.progress = `نام گوینده: ${name}`;
+              state.progress = `Speaker name: ${name}`;
               broadcastState();
             }
           } else {
             state.streams.push({ id, name });
-            state.progress = `گوینده جدید: ${name}`;
+            state.progress = `New speaker: ${name}`;
             broadcastState();
           }
         }
@@ -358,7 +358,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
       if (msg?.type === "capture_transcript_hint") {
         if (state.capturing) {
-          state.progress = `رونوشت زنده: ${msg.segments || 0} بخش`;
+          state.progress = `Live transcript: ${msg.segments || 0} segments`;
           broadcastState();
         }
         sendResponse({ ok: true });

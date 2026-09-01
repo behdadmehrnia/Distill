@@ -24,7 +24,7 @@ def _tone(sr: int, seconds: float, freq: float, amp: float = 0.2) -> np.ndarray:
 
 
 class MockSTT:
-    def __init__(self, text: str = "سلام از استریم"):
+    def __init__(self, text: str = "hello from the stream"):
         self.text = text
         self.calls = 0
         self.cache_hits = 0
@@ -88,7 +88,7 @@ async def test_multi_stream_session_skips_diarization(store, tmp_path):
     session = MeetingSession(
         record=record,
         store=store,
-        stt_provider=MockSTT(text="سلام از استریم چند‌مسیره"),
+        stt_provider=MockSTT(text="hello from the multi stream"),
         diarizer=None,
         sample_rate=16000,
         window_ms=400,
@@ -133,4 +133,4 @@ async def test_multi_stream_session_skips_diarization(store, tmp_path):
     assert speaker_updates
     assert speaker_updates[-1].get("backend") == "stream"
     texts = " ".join(s.text for s in segments)
-    assert "سلام" in texts or "استریم" in texts
+    assert "hello" in texts or "stream" in texts

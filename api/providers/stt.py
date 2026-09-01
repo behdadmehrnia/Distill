@@ -203,7 +203,7 @@ class OpenAICompatibleSTT:
             filename="audio.wav",
             content_type="audio/wav",
         )
-        form.add_field("language", language or "fa")
+        form.add_field("language", language or "en")
         form.add_field("model", model or self.model)
         form.add_field("response_format", response_format)
         used = (prompt if prompt is not None else self.prompt).strip()
@@ -235,7 +235,7 @@ class OpenAICompatibleSTT:
         self,
         file_content: np.ndarray,
         model: Optional[str] = None,
-        language: Optional[str] = "fa",
+        language: Optional[str] = "en",
         prompt: Optional[str] = None,
     ) -> STTResult:
         audio_int16 = (np.asarray(file_content, dtype=np.float32) * 32768.0).astype(np.int16)
@@ -243,7 +243,7 @@ class OpenAICompatibleSTT:
         chosen_model = model or self.model
         used_prompt = (prompt if prompt is not None else self.prompt).strip()
         pcm_hash = self._request_hash(
-            pcm_bytes, chosen_model, language or "fa", used_prompt
+            pcm_bytes, chosen_model, language or "en", used_prompt
         )
         text_cache, json_cache = self._cache_paths(pcm_hash)
 
@@ -329,7 +329,7 @@ class OpenAICompatibleSTT:
         self,
         file_content: np.ndarray,
         model: Optional[str] = None,
-        language: Optional[str] = "fa",
+        language: Optional[str] = "en",
         prompt: Optional[str] = None,
     ) -> str:
         result = await self.transcribe_detailed(

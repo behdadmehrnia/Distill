@@ -179,106 +179,76 @@ _PERSIAN_LETTERS = set("ابپتثجچحخدذرزژسشصضطظعغفقکگلم
 _LATIN_LETTERS = set("abcdefghijklmnopqrstuvwxyz")
 _PERSIAN_LANGS = frozenset({"fa", "fas", "per", "persian", "farsi"})
 
-# Whisper / ASR non-speech event tags → Persian labels
-_NONSPEECH_FA: dict[str, str] = {
-    "cough": "سرفه",
-    "coughs": "سرفه",
-    "coughing": "سرفه",
-    "sigh": "آه",
-    "sighs": "آه",
-    "sighing": "آه",
-    "laugh": "خنده",
-    "laughs": "خنده",
-    "laughter": "خنده",
-    "laughing": "خنده",
-    "chuckle": "خنده",
-    "giggle": "خنده",
-    "sneeze": "عطسه",
-    "sneezing": "عطسه",
-    "sniff": "فین",
-    "sniffle": "فین",
-    "clears throat": "صاف کردن گلو",
-    "clearing throat": "صاف کردن گلو",
-    "breath": "تنفس",
-    "breathing": "تنفس",
-    "inhale": "دم",
-    "exhale": "بازدم",
-    "silence": "سکوت",
-    "pause": "مکث",
-    "music": "موسیقی",
-    "applause": "تشویق",
-    "clapping": "تشویق",
-    "inaudible": "نامفهوم",
-    "unintelligible": "نامفهوم",
-    "blank audio": "بی‌صدا",
-    "blank_audio": "بی‌صدا",
-    "noise": "سر و صدا",
-    "static": "نویز",
-    "hum": "زمزمه",
-    "humming": "زمزمه",
-    "whistle": "سوت",
-    "whistling": "سوت",
-    "cry": "گریه",
-    "crying": "گریه",
-    "sobbing": "گریه",
-    "yawn": "خمیازه",
-    "yawning": "خمیازه",
+# Whisper / ASR non-speech event tags → canonical English labels
+_NONSPEECH_LABELS: dict[str, str] = {
+    "coughs": "cough",
+    "coughing": "cough",
+    "sighs": "sigh",
+    "sighing": "sigh",
+    "laughs": "laughter",
+    "laughing": "laughter",
+    "laugh": "laughter",
+    "chuckle": "laughter",
+    "giggle": "laughter",
+    "sneezing": "sneeze",
+    "sniffle": "sniff",
+    "clearing throat": "clears throat",
+    "breathing": "breath",
+    "humming": "hum",
+    "whistling": "whistle",
+    "crying": "cry",
+    "sobbing": "cry",
+    "yawning": "yawn",
+    "unintelligible": "inaudible",
+    "blank_audio": "blank audio",
+    "music playing": "music",
+    "background music": "music",
 }
-_NONSPEECH_RE = re.compile(r"[\(\[]\s*([a-zA-Z][a-zA-Z\s_]*)\s*[\)\]]")
+
 # Bare Whisper hallucinations that wipe real speech on the next hop
 _WHISPER_BOILERPLATE = frozenset(
     {
         "music",
         "music playing",
         "background music",
-        "موسیقی",
         "silence",
-        "سکوت",
+        "pause",
         "applause",
-        "تشویق",
+        "clapping",
         "subtitles",
         "subtitle",
-        "زیرنویس",
-        "زیرنویسها",
-        "زیرنویس‌ها",
         "thanks for watching",
         "thank you for watching",
         "subscribe",
         "like and subscribe",
         "inaudible",
         "unintelligible",
-        "نامفهوم",
         "blank audio",
-        "بی‌صدا",
         "noise",
-        "سر و صدا",
         "static",
-        "نویز",
-        *{v for v in _NONSPEECH_FA.values()},
+        *_NONSPEECH_LABELS.values(),
     }
 )
+_NONSPEECH_RE = re.compile(r"[\(\[]\s*([a-zA-Z][a-zA-Z\s_]*)\s*[\)\]]")
 _EVENT_TAG_RE = re.compile(r"[\(\[【][^\)\]】]*[\)\]】]")
 _BOILERPLATE_STRIP_RE = re.compile(r"[\(\)\[\]【】♪♫\.\،\,\s_\-]+")
 
-# Old Whisper "system instruction" prompt that Groq often transcribes verbatim.
-_STT_PROMPT_ECHO_NEEDLES = (
-    "از ساختن متن بی‌معنی",
-    "تکرار بی‌جا",
-    "ترجمه به انگلیسی خودداری",
-    "این یک جلسه کاری به زبان فارسی است",
-    "گفتار را دقیق و روان پیاده‌سازی کن",
-    "کلمات انگلیسی را فقط اگر واقعاً گفته شدند",
-)
+# Phrases from a "system instruction" prompt that ASR sometimes transcribes
+# verbatim instead of the speech. Empty while DEFAULT_STT_PROMPT is blank —
+# add needles here if a prompt is reintroduced.
+_STT_PROMPT_ECHO_NEEDLES: tuple[str, ...] = ()
 
 
 def localize_nonspeech_events(text: str) -> str:
-    """Translate English ASR event tags like (cough)/(Sigh) to Persian."""
+    """Normalize ASR event tags like (Coughs)/(Sigh) to a canonical form."""
 
     def _repl(match: re.Match[str]) -> str:
         raw = match.group(1).strip().lower()
         key = re.sub(r"[\s_]+", " ", raw).strip()
-        fa = _NONSPEECH_FA.get(key) or _NONSPEECH_FA.get(key.replace(" ", "_"))
-        return f"({fa})" if fa else match.group(0)
+        label = _NONSPEECH_LABELS.get(key) or _NONSPEECH_LABELS.get(
+            key.replace(" ", "_")
+        )
+        return f"({label})" if label else match.group(0)
 
     return _NONSPEECH_RE.sub(_repl, text or "")
 
@@ -307,7 +277,7 @@ def is_whisper_boilerplate(text: str) -> bool:
     True for Whisper junk that is only a non-speech label / YouTube boilerplate.
 
     These often arrive on a later hop and wipe a complete good transcript
-    (classic: good Persian sentence → suddenly just «موسیقی»).
+    (classic: a good sentence → suddenly just "music").
     """
     raw = (text or "").strip()
     if not raw:
@@ -318,7 +288,7 @@ def is_whisper_boilerplate(text: str) -> bool:
     if key in _WHISPER_BOILERPLATE:
         return True
 
-    # "(سرفه) ." / "[Music]" / "♪ موسیقی ♪" after localization
+    # "(cough) ." / "[Music]" / "♪ music ♪" after normalization
     stripped = _NONSPEECH_RE.sub(" ", raw)
     stripped = _EVENT_TAG_RE.sub(" ", stripped)
     tokens = tokenize(stripped)
@@ -331,7 +301,7 @@ def is_whisper_boilerplate(text: str) -> bool:
     return False
 
 
-REVIEW_SYSTEM_PROMPT = """You are Distill's ASR cleanup agent for Persian (and mixed) meeting transcripts.
+REVIEW_SYSTEM_PROMPT = """You are Distill's ASR cleanup agent for meeting transcripts.
 You receive raw speech-to-text output. Choose ONE action:
 1) drop — hallucinated / nonsense / wrong-language / pure repetition / noise-only
 2) fix — ONLY tiny ASR typos, punctuation, or collapsing obvious word loops
@@ -549,7 +519,7 @@ def _collapse_consecutive(tokens: Sequence[str], keep: int = 1) -> List[str]:
 
 
 def _char_loop_score(text: str) -> float:
-    """High score means bad: short n-gram looping (خی خی خی / خیلی خیلی)."""
+    """High score means bad: short n-gram looping ("uh uh uh" / "very very")."""
     compact = re.sub(r"\s+", "", (text or "").strip())
     if len(compact) < 8:
         return 0.0
@@ -582,7 +552,7 @@ def _script_letter_counts(text: str) -> tuple[int, int, int]:
 
 def _persian_script_penalty(text: str, language: str) -> tuple[float, List[str]]:
     """Penalize Latin / non-Persian hallucinations when STT language is Persian."""
-    lang = (language or "fa").strip().lower()
+    lang = (language or "en").strip().lower()
     if lang not in _PERSIAN_LANGS:
         return 0.0, []
 
@@ -614,7 +584,7 @@ def _persian_script_penalty(text: str, language: str) -> tuple[float, List[str]]
     return penalty, reasons
 
 
-def score_stt_text(text: str, *, language: str = "fa") -> tuple[float, List[str]]:
+def score_stt_text(text: str, *, language: str = "en") -> tuple[float, List[str]]:
     """Return quality score in [0,1] (higher=better) and reason codes."""
     t = (text or "").strip()
     reasons: List[str] = []
@@ -680,7 +650,7 @@ def gate_stt_text(
     *,
     min_score: float = 0.35,
     collapse_runs: bool = True,
-    language: str = "fa",
+    language: str = "en",
 ) -> ReviewResult:
     """Fast heuristic gate: drop / lightly collapse / keep. No LLM."""
     from api.meeting.aligner import _collapse_internal_repeats
@@ -747,7 +717,7 @@ class TranscriptReviewAgent:
         self.enabled = enabled and llm is not None
 
     async def review_text(
-        self, text: str, *, language: str = "fa", min_score: float = 0.35
+        self, text: str, *, language: str = "en", min_score: float = 0.35
     ) -> ReviewResult:
         heuristic = gate_stt_text(text, min_score=min_score, language=language)
         if heuristic.action == "drop":
@@ -800,7 +770,7 @@ class TranscriptReviewAgent:
         self,
         segments: List[TranscriptSegment],
         *,
-        language: str = "fa",
+        language: str = "en",
     ) -> List[TranscriptSegment]:
         """Finalize pass: heuristic gate each row, then optional batched LLM polish."""
         if not segments:
@@ -940,9 +910,9 @@ class TranscriptReviewAgent:
                 if (
                     "timeout" in msg
                     or "Timeout" in type(exc).__name__
-                    or "در دسترس نیست" in str(exc)
+                    or "is unreachable" in str(exc)
                     or "cannot connect" in msg
-                    or "زمان پاسخ" in str(exc)
+                    or "timed out" in str(exc)
                 ):
                     logger.warning("STT polish stopping early after LLM failure")
                     break

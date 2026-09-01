@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fa" dir="rtl">
+<html lang="en" dir="ltr">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -8,20 +8,20 @@
   </head>
   <body>
     <header class="brand-row">
-      <img class="logo" src="../icons/logo.svg" alt="" width="40" height="19" />
+      <img class="logo" src="../icons/logo.svg" alt="" width="28" height="28" />
       <div>
         <div class="brand">Distill</div>
-        <div class="subtitle">ضبط گوگل میت</div>
+        <div class="subtitle">Google Meet capture</div>
       </div>
     </header>
 
     <section id="login-panel" class="panel hidden">
       <label>
-        ایمیل
+        Email
         <input id="email" type="email" autocomplete="username" dir="ltr" />
       </label>
       <label>
-        رمز عبور
+        Password
         <input
           id="password"
           type="password"
@@ -29,40 +29,40 @@
           dir="ltr"
         />
       </label>
-      <button id="login-btn" class="primary" type="button">ورود</button>
+      <button id="login-btn" class="primary" type="button">Sign in</button>
     </section>
 
     <section id="session-panel" class="panel hidden">
       <div class="row">
         <span id="user-label" class="muted" dir="ltr"></span>
-        <button id="logout-btn" class="ghost" type="button">خروج</button>
+        <button id="logout-btn" class="ghost" type="button">Sign out</button>
       </div>
 
       <div id="setup-block" class="stack">
         <label>
-          عنوان جلسه
+          Meeting title
           <input
             id="meeting-title"
             type="text"
-            placeholder="جلسه گوگل میت"
+            placeholder="Google Meet meeting"
           />
         </label>
-        <button id="start-btn" class="primary" type="button">شروع ضبط</button>
+        <button id="start-btn" class="primary" type="button">Start recording</button>
       </div>
 
       <div id="recording-block" class="stack hidden">
         <div class="status-card">
-          <div><strong>وضعیت</strong> <span>در حال ضبط</span></div>
+          <div><strong>Status</strong> <span>Recording</span></div>
           <div class="muted" id="progress-text"></div>
           <div class="muted" id="meeting-id" dir="ltr"></div>
           <div class="muted" id="streams-text"></div>
         </div>
-        <button id="stop-btn" class="danger full" type="button">توقف</button>
+        <button id="stop-btn" class="danger full" type="button">Stop</button>
       </div>
 
       <div id="done-block" class="stack hidden">
         <div class="status-card">
-          <div><strong>وضعیت</strong> <span>پایان یافت</span></div>
+          <div><strong>Status</strong> <span>Finished</span></div>
           <div class="muted" id="done-progress"></div>
           <div class="muted" id="done-meeting-id" dir="ltr"></div>
         </div>
@@ -72,15 +72,15 @@
           href="#"
           target="_blank"
           rel="noopener"
-          >Open meeting in Distill</a
+          >Open the meeting in Distill</a
         >
         <button id="new-capture-btn" class="ghost full" type="button">
-          ضبط جدید
+          New recording
         </button>
       </div>
 
       <p id="hint" class="hint">
-        تب Meet را رفرش کنید، روی صفحه کلیک کنید، سپس شروع ضبط را بزنید.
+        Refresh the Meet tab, click the page, then press Start recording.
       </p>
     </section>
 

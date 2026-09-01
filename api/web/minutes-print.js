@@ -1,7 +1,6 @@
 (function () {
-  const { escapeHtml, toPersianDigits } = window.distill;
+  const { escapeHtml } = window.distill;
 
-  let printFontsReady = false;
 
   function buildStyles(styleScope, isPrintRoot) {
     const sheetMinHeight = isPrintRoot ? "277mm" : "240mm";
@@ -19,10 +18,10 @@
     overflow: hidden;
     background: #fff;
     color: #000;
-    font-family: Vazirmatn, Tahoma, 'Segoe UI', sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     font-size: 10pt;
     line-height: 1.45;
-    direction: rtl;
+    direction: ltr;
     ${isPrintRoot ? "-webkit-font-smoothing: antialiased;" : ""}
   }
   ${styleScope} .minutes-print-sheet * {
@@ -160,7 +159,7 @@
   }
   ${styleScope} .decisions { height: 100%; }
   ${styleScope} .decisions thead th {
-    background: #f6e59a;
+    background: #ececec;
     text-align: center;
     font-weight: 700;
     font-size: 9pt;
@@ -187,9 +186,15 @@
   }`;
   }
 
-  const LOGO_SVG = `<svg width="68" height="32" viewBox="0 0 36 17" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path d="M8.5 0.5C12.9183 0.5 16.5 4.08172 16.5 8.5C16.5 12.9183 12.9183 16.5 8.5 16.5C4.08172 16.5 0.5 12.9183 0.5 8.5C0.5 4.08172 4.08172 0.5 8.5 0.5Z" stroke="#B8860B" stroke-width="1.2"/>
-          <path d="M27.5 17C32.1944 17 36 13.1944 36 8.5C36 3.80558 32.1944 0 27.5 0C22.8056 0 19 3.80558 19 8.5C19 13.1944 22.8056 17 27.5 17Z" fill="#B8860B"/>
+  // Ink-on-paper version of the Distill mark: three narrowing strokes
+  // converging on a drop.
+  const LOGO_SVG = `<svg width="30" height="30" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <g stroke="#111111" stroke-width="2.2" stroke-linecap="round">
+            <path d="M8 10h16"/>
+            <path d="M11 16h10"/>
+            <path d="M14 22h4"/>
+          </g>
+          <circle cx="16" cy="26.5" r="1.7" fill="#111111"/>
         </svg>`;
 
   function buildDecisionRows(data, minRows) {
@@ -203,7 +208,7 @@
       .map((d, idx) => {
         const numbered = !!(d.description || d.executor || d.due_date);
         return `<tr>
-          <td class="num">${numbered ? toPersianDigits(idx + 1) : ""}</td>
+          <td class="num">${numbered ? idx + 1 : ""}</td>
           <td class="desc">${escapeHtml(d.description || "")}</td>
           <td class="center">${escapeHtml(d.executor || "")}</td>
           <td class="center">${escapeHtml(d.due_date || "")}</td>
@@ -221,8 +226,8 @@
     );
     const location = escapeHtml(data.location || "");
     const secretary = escapeHtml(data.secretary || "");
-    const attendees = escapeHtml((data.attendees || []).join("، "));
-    const absentees = escapeHtml((data.absentees || []).join("، "));
+    const attendees = escapeHtml((data.attendees || []).join(", "));
+    const absentees = escapeHtml((data.absentees || []).join(", "));
     const idLabel = escapeHtml(meetingId || "—");
     const decisionRows = buildDecisionRows(data, minRows);
 
@@ -232,9 +237,9 @@
   <table>
     <tr>
       <td class="head-logo">${LOGO_SVG}<div class="brand">Distill</div></td>
-      <td class="head-title">فرم صورت جلسه</td>
+      <td class="head-title">Meeting Minutes</td>
       <td class="head-id">
-        <span class="id-label">شناسه جلسه</span>
+        <span class="id-label">Meeting ID</span>
         <span class="id-value">${idLabel}</span>
       </td>
     </tr>
@@ -242,43 +247,43 @@
 
   <table>
     <tr>
-      <td class="lbl">موضوع:</td>
+      <td class="lbl">Subject:</td>
       <td class="val" colspan="2">${subject}</td>
-      <td class="field minutes-no"><b>شماره صورت جلسه:</b><span class="blank"></span></td>
-      <td class="field date-field"><b>تاریخ:</b>${dateOnly || dateFull}</td>
+      <td class="field minutes-no"><b>Minutes no.:</b><span class="blank"></span></td>
+      <td class="field date-field"><b>Date:</b>${dateOnly || dateFull}</td>
     </tr>
     <tr class="meta-2">
-      <td class="lbl">محل برگزاری:</td>
+      <td class="lbl">Location:</td>
       <td class="val" colspan="2">${location}</td>
       <td class="time-cell">
         <table>
-          <tr><td><b>شروع:</b> ${timeOnly || dateFull}</td></tr>
-          <tr><td><b>خاتمه:</b></td></tr>
+          <tr><td><b>Start:</b> ${timeOnly || dateFull}</td></tr>
+          <tr><td><b>End:</b></td></tr>
         </table>
       </td>
       <td class="val" style="text-align:center; width:14%;">
-        <b>صفحه</b><br/>${toPersianDigits(1)} از ${toPersianDigits(1)}
+        <b>Page</b><br/>1 of 1
       </td>
     </tr>
   </table>
 
   <table>
     <tr>
-      <td class="vlabel">حاضرین</td>
+      <td class="vlabel">Attendees</td>
       <td class="people" style="width:64%;">${attendees}</td>
       <td class="attach">
-        <span><span class="box"></span>پیوست دارد</span>
+        <span><span class="box"></span>Attachment</span>
         &nbsp;
-        <span><span class="box"></span>ندارد</span>
+        <span><span class="box"></span>None</span>
       </td>
     </tr>
   </table>
 
   <table>
     <tr>
-      <td class="vlabel">غائبین</td>
+      <td class="vlabel">Absentees</td>
       <td class="people" style="width:58%;">${absentees}</td>
-      <td class="field secretary-field"><b>دبیرجلسه:</b>${secretary}</td>
+      <td class="field secretary-field"><b>Secretary:</b>${secretary}</td>
     </tr>
   </table>
 
@@ -286,10 +291,10 @@
     <table class="decisions">
       <thead>
         <tr>
-          <th class="num">ردیف</th>
-          <th class="desc">شرح مصوبات/ پیشنهادات/ پیگیری ها</th>
-          <th class="center">مجری</th>
-          <th class="center">سر رسید</th>
+          <th class="num">#</th>
+          <th class="desc">Decisions / proposals / follow-ups</th>
+          <th class="center">Owner</th>
+          <th class="center">Due</th>
         </tr>
       </thead>
       <tbody>${decisionRows}</tbody>
@@ -298,7 +303,7 @@
 
   <table class="sign-wrap">
     <tr>
-      <td class="vlabel">امضاء حاضرین</td>
+      <td class="vlabel">Signatures</td>
       <td></td>
     </tr>
   </table>
@@ -314,8 +319,8 @@
     );
     const location = escapeHtml(data.location || "");
     const secretary = escapeHtml(data.secretary || "");
-    const attendees = escapeHtml((data.attendees || []).join("، "));
-    const absentees = escapeHtml((data.absentees || []).join("، "));
+    const attendees = escapeHtml((data.attendees || []).join(", "));
+    const absentees = escapeHtml((data.absentees || []).join(", "));
     const idLabel = escapeHtml(meetingId || "—");
     const decisionRows = buildDecisionRows(data, minRows);
 
@@ -325,9 +330,9 @@
   <table>
     <tr>
       <td class="head-logo">${LOGO_SVG}<div class="brand">Distill</div></td>
-      <td class="head-title">فرم صورت جلسه</td>
+      <td class="head-title">Meeting Minutes</td>
       <td class="head-id">
-        <span class="id-label">شناسه جلسه</span>
+        <span class="id-label">Meeting ID</span>
         <span class="id-value">${idLabel}</span>
       </td>
     </tr>
@@ -335,20 +340,20 @@
 
   <table>
     <tr>
-      <td class="lbl">موضوع:</td>
+      <td class="lbl">Subject:</td>
       <td class="val" colspan="2">${subject}</td>
-      <td class="field"><b>تاریخ:</b>${dateOnly || dateFull}</td>
+      <td class="field"><b>Date:</b>${dateOnly || dateFull}</td>
       <td class="val" style="text-align:center; width:14%;">
-        <b>صفحه</b><br/>${toPersianDigits(1)} از ${toPersianDigits(1)}
+        <b>Page</b><br/>1 of 1
       </td>
     </tr>
     <tr>
-      <td class="lbl">محل برگزاری:</td>
+      <td class="lbl">Location:</td>
       <td class="val" colspan="2">${location}</td>
       <td class="time-cell" colspan="2">
         <table>
-          <tr><td><b>شروع:</b> ${timeOnly || dateFull}</td></tr>
-          <tr><td><b>دبیرجلسه:</b> ${secretary}</td></tr>
+          <tr><td><b>Start:</b> ${timeOnly || dateFull}</td></tr>
+          <tr><td><b>Secretary:</b> ${secretary}</td></tr>
         </table>
       </td>
     </tr>
@@ -356,33 +361,33 @@
 
   <table>
     <tr>
-      <td class="vlabel">حاضرین</td>
+      <td class="vlabel">Attendees</td>
       <td class="people" style="width:64%;">${attendees}</td>
       <td class="attach">
-        <span><span class="box"></span>پیوست دارد</span>
+        <span><span class="box"></span>Attachment</span>
         &nbsp;
-        <span><span class="box"></span>ندارد</span>
+        <span><span class="box"></span>None</span>
       </td>
     </tr>
   </table>
 
   <table>
     <tr>
-      <td class="vlabel">غائبین</td>
+      <td class="vlabel">Absentees</td>
       <td class="people">${absentees}</td>
     </tr>
   </table>
 
-  <div class="summary-box"><b>خلاصه:</b> ${escapeHtml(data.summary || "")}</div>
+  <div class="summary-box"><b>Summary:</b> ${escapeHtml(data.summary || "")}</div>
 
   <div class="grow">
     <table class="decisions">
       <thead>
         <tr>
-          <th class="num">ردیف</th>
-          <th class="desc">شرح مصوبات/ پیشنهادات/ پیگیری ها</th>
-          <th class="center">مجری</th>
-          <th class="center">سر رسید</th>
+          <th class="num">#</th>
+          <th class="desc">Decisions / proposals / follow-ups</th>
+          <th class="center">Owner</th>
+          <th class="center">Due</th>
         </tr>
       </thead>
       <tbody>${decisionRows}</tbody>
@@ -391,7 +396,7 @@
 
   <table class="sign-wrap">
     <tr>
-      <td class="vlabel">امضاء حاضرین</td>
+      <td class="vlabel">Signatures</td>
       <td></td>
     </tr>
   </table>
@@ -411,46 +416,7 @@
     return buildAssistantSheet(data, meetingId, styleScope, minRows);
   }
 
-  async function ensurePrintFontsLoaded() {
-    if (printFontsReady) return;
-    if (typeof FontFace === "undefined" || !document.fonts?.add) {
-      throw new Error("این مرورگر از فونت سفارشی برای چاپ پشتیبانی نمی‌کند");
-    }
-    const faces = [
-      [400, "Vazirmatn-Regular.ttf"],
-      [500, "Vazirmatn-Medium.ttf"],
-      [700, "Vazirmatn-Bold.ttf"],
-    ];
-    await Promise.all(
-      faces.map(async ([weight, file]) => {
-        const url = new URL(`/fonts/${file}`, window.location.href).href;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`فونت ${file} یافت نشد (${res.status})`);
-        const buffer = await res.arrayBuffer();
-        const face = new FontFace("Vazirmatn", buffer, {
-          style: "normal",
-          weight: String(weight),
-          display: "block",
-        });
-        const loaded = await face.load();
-        document.fonts.add(loaded);
-      })
-    );
-    if (document.fonts.ready) await document.fonts.ready;
-    const ok = document.fonts.check("12px Vazirmatn");
-    if (!ok) throw new Error("فونت Vazirmatn بعد از بارگذاری در دسترس نیست");
-    printFontsReady = true;
-  }
-
   async function print(data, meetingId, options = {}) {
-    try {
-      await ensurePrintFontsLoaded();
-    } catch (err) {
-      console.error(err);
-      alert(`بارگذاری فونت چاپ ناموفق بود: ${err.message || err}`);
-      return;
-    }
-
     let root = document.getElementById("minutesPrintRoot");
     if (!root) {
       root = document.createElement("div");
@@ -464,7 +430,7 @@
     });
 
     const prevTitle = document.title;
-    document.title = "فرم صورت جلسه";
+    document.title = "Meeting Minutes";
     document.body.classList.add("is-printing-minutes");
 
     const cleanup = () => {
@@ -476,14 +442,6 @@
     window.addEventListener("afterprint", cleanup);
 
     await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-    try {
-      if (document.fonts?.load) {
-        await Promise.all([
-          document.fonts.load("400 12px Vazirmatn"),
-          document.fonts.load("700 12px Vazirmatn"),
-        ]);
-      }
-    } catch (_) {}
 
     try {
       window.focus();
@@ -491,13 +449,12 @@
     } catch (err) {
       cleanup();
       console.error(err);
-      alert(`پرینت ناموفق بود: ${err.message || err}`);
+      alert(`Print failed: ${err.message || err}`);
     }
   }
 
   window.distillMinutesPrint = {
     buildMinutesPrintSheet,
-    ensurePrintFontsLoaded,
     print,
   };
 })();

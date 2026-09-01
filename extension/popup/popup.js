@@ -57,22 +57,22 @@ function render(state) {
   if (!loggedIn) return;
 
   els.userLabel.textContent =
-    state.user.email || state.user.display_name || "وارد شده";
+    state.user.email || state.user.display_name || "Signed in";
 
   if (state.capturing) {
     setPhase("recording");
-    els.progressText.textContent = state.progress || "در حال ارسال صوت…";
+    els.progressText.textContent = state.progress || "Sending audio…";
     els.meetingId.textContent = state.meetingId
       ? `Meeting: ${state.meetingId}`
       : "";
     const streams = state.streams || [];
     els.streamsText.textContent = streams.length
-      ? `گویندگان: ${streams.map((s) => s.name || s.id).join("، ")}`
-      : "در حال شناسایی ترک‌ها…";
+      ? `Speakers: ${streams.map((s) => s.name || s.id).join(", ")}`
+      : "Detecting tracks…";
   } else if (state.lastMeetingId && phase !== "setup") {
     setPhase("done");
-    els.doneProgress.textContent = state.progress || "ضبط متوقف شد.";
-    els.doneMeetingId.textContent = `آخرین جلسه: ${state.lastMeetingId}`;
+    els.doneProgress.textContent = state.progress || "Recording stopped.";
+    els.doneMeetingId.textContent = `Last meeting: ${state.lastMeetingId}`;
     const url =
       state.assistantUrl ||
       `https://api.distill.app/assistant/${state.lastMeetingId}`;
@@ -94,7 +94,7 @@ els.loginBtn.addEventListener("click", async () => {
       email: els.email.value.trim(),
       password: els.password.value,
     });
-    if (!res?.ok) throw new Error(res?.error || "ورود ناموفق بود");
+    if (!res?.ok) throw new Error(res?.error || "Sign-in failed");
     phase = "setup";
     render(await getState());
   } catch (err) {
@@ -117,22 +117,22 @@ els.startBtn.addEventListener("click", async () => {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id || !tab.url?.includes("meet.google.com")) {
-      throw new Error("ابتدا تب Google Meet را باز کنید، سپس ضبط را شروع کنید.");
+      throw new Error("Open a Google Meet tab first, then start recording.");
     }
     // Switch UI immediately so title/start disappear while connecting.
     setPhase("recording");
-    els.progressText.textContent = "در حال اتصال…";
+    els.progressText.textContent = "Connecting…";
     els.meetingId.textContent = "";
     els.streamsText.textContent = "";
 
     const res = await chrome.runtime.sendMessage({
       type: "start_capture",
       tabId: tab.id,
-      title: els.meetingTitle.value.trim() || "جلسه گوگل میت",
+      title: els.meetingTitle.value.trim() || "Google Meet meeting",
     });
     if (!res?.ok) {
       phase = "setup";
-      throw new Error(res?.error || "شروع ضبط ممکن نشد");
+      throw new Error(res?.error || "Could not start recording");
     }
     render(await getState());
   } catch (err) {
@@ -149,7 +149,7 @@ els.stopBtn.addEventListener("click", async () => {
   setBusy(true);
   try {
     const res = await chrome.runtime.sendMessage({ type: "stop_capture" });
-    if (!res?.ok) throw new Error(res?.error || "توقف ضبط ممکن نشد");
+    if (!res?.ok) throw new Error(res?.error || "Could not stop recording");
     phase = "done";
     render(await getState());
   } catch (err) {

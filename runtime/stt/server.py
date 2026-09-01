@@ -185,7 +185,7 @@ def _transcribe_file(
     text = " ".join(t for t in texts if t).strip()
     payload: Dict[str, Any] = {
         "text": text,
-        "language": getattr(info, "language", language) or language or "fa",
+        "language": getattr(info, "language", language) or language or "en",
         "duration": float(getattr(info, "duration", 0.0) or 0.0),
         "segments": segments,
     }
@@ -198,7 +198,7 @@ def _transcribe_file(
 async def transcriptions(
     file: UploadFile = File(...),
     model: Optional[str] = Form(None),
-    language: Optional[str] = Form("fa"),
+    language: Optional[str] = Form("en"),
     prompt: Optional[str] = Form(None),
     response_format: Optional[str] = Form("json"),
     temperature: Optional[str] = Form(None),

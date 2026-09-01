@@ -22,22 +22,22 @@ DEFAULT_MINUTES_PARALLEL = 2
 DEFAULT_MINUTES_LLM_TIMEOUT_S = 180.0
 DEFAULT_MINUTES_MAX_TOKENS = 2048
 
-MINUTES_SYSTEM_PROMPT = """You are Distill, producing a formal Persian meeting minutes document (صورت جلسه).
+MINUTES_SYSTEM_PROMPT = """You are Distill, producing a formal meeting minutes document.
 Given a speaker-labeled transcript and the list of confirmed attendee names, extract structured minutes.
 Respond ONLY with valid JSON using this schema:
 {
-  "subject": "موضوع جلسه به فارسی",
-  "meeting_date": "تاریخ جلسه اگر در متن ذکر شده، وگرنه خالی",
-  "location": "محل برگزاری اگر ذکر شده، وگرنه خالی",
-  "attendees": ["نام حاضر ۱", "..."],
+  "subject": "meeting subject",
+  "meeting_date": "meeting date if stated in the transcript, else empty",
+  "location": "venue if stated, else empty",
+  "attendees": ["attendee name 1", "..."],
   "absentees": [],
   "secretary": "",
-  "summary": "2-4 sentence overview of the meeting in Persian",
+  "summary": "2-4 sentence overview of the meeting",
   "decisions": [
     {
-      "description": "شرح مصوبه یا موضوع پیگیری",
-      "executor": "نام مجری اگر مشخص است، وگرنه خالی",
-      "due_date": "سررسید اگر مشخص است، وگرنه خالی",
+      "description": "the decision or follow-up item",
+      "executor": "owner name if stated, else empty",
+      "due_date": "due date if stated, else empty",
       "status": "pending"
     }
   ]
@@ -46,51 +46,51 @@ Rules:
 - attendees MUST be exactly the provided confirmed attendee names, verbatim, with no additions or omissions.
 - absentees MUST always be an empty array []. Never invent absentees; the user fills that field later.
 - secretary MUST be empty or one of the provided attendee names.
-- Extract every decision and follow-up (مصوبه / پیگیری / اقدام) that is actually supported by the transcript into decisions[].
+- Extract every decision and follow-up that is actually supported by the transcript into decisions[].
 - Include owner/executor and due date when the transcript states them.
 - If nothing qualifies as a decision or action item, use an empty array.
 - Do not invent people, facts, or names that are not in the provided attendee list / transcript.
-- All free-text fields must be in Persian.
+- All free-text fields must be in English.
 """
 
-PARTIAL_SYSTEM_PROMPT = """You are Distill. You are analyzing ONE PART of a long Persian meeting transcript.
+PARTIAL_SYSTEM_PROMPT = """You are Distill. You are analyzing ONE PART of a long meeting transcript.
 Extract only what is supported by this part. Respond ONLY with valid JSON:
 {
-  "subject_hint": "موضوع احتمالی این بخش اگر مشخص است، وگرنه خالی",
-  "meeting_date": "تاریخ اگر در این بخش ذکر شده، وگرنه خالی",
-  "location": "محل اگر در این بخش ذکر شده، وگرنه خالی",
-  "summary": "1-3 جمله خلاصه همین بخش به فارسی",
+  "subject_hint": "likely subject of this part if clear, else empty",
+  "meeting_date": "date if stated in this part, else empty",
+  "location": "venue if stated in this part, else empty",
+  "summary": "1-3 sentence summary of this part",
   "decisions": [
     {
-      "description": "شرح مصوبه یا پیگیری",
-      "executor": "نام مجری اگر مشخص و در لیست حاضرین است، وگرنه خالی",
-      "due_date": "سررسید اگر مشخص است، وگرنه خالی",
+      "description": "the decision or follow-up item",
+      "executor": "owner name if stated and present in the attendee list, else empty",
+      "due_date": "due date if stated, else empty",
       "status": "pending"
     }
   ]
 }
 Rules:
-- Extract decisions/follow-ups (مصوبه / پیگیری / اقدام) supported by THIS part.
+- Extract decisions/follow-ups supported by THIS part.
 - Do not invent people or facts.
 - executor must be empty or one of the provided attendee names.
-- All free-text fields must be in Persian.
+- All free-text fields must be in English.
 """
 
 MERGE_SYSTEM_PROMPT = """You are Distill. You will receive partial minutes extracts from consecutive parts of one long meeting.
-Merge them into a single formal Persian meeting minutes JSON. Respond ONLY with valid JSON using this schema:
+Merge them into a single formal meeting minutes JSON. Respond ONLY with valid JSON using this schema:
 {
-  "subject": "موضوع جلسه به فارسی",
-  "meeting_date": "تاریخ جلسه اگر در partialها آمده، وگرنه خالی",
-  "location": "محل برگزاری اگر آمده، وگرنه خالی",
-  "attendees": ["نام حاضر ۱", "..."],
+  "subject": "meeting subject",
+  "meeting_date": "meeting date if present in the partials, else empty",
+  "location": "venue if present, else empty",
+  "attendees": ["attendee name 1", "..."],
   "absentees": [],
   "secretary": "",
-  "summary": "2-4 جمله خلاصه کل جلسه به فارسی",
+  "summary": "2-4 sentence summary of the whole meeting",
   "decisions": [
     {
-      "description": "شرح مصوبه یا پیگیری",
-      "executor": "نام مجری اگر مشخص است، وگرنه خالی",
-      "due_date": "سررسید اگر مشخص است، وگرنه خالی",
+      "description": "the decision or follow-up item",
+      "executor": "owner name if stated, else empty",
+      "due_date": "due date if stated, else empty",
       "status": "pending"
     }
   ]
@@ -101,17 +101,17 @@ Rules:
 - secretary MUST be empty or one of the attendees.
 - Keep all distinct decisions/follow-ups; deduplicate near-identical ones only.
 - Do not invent people, facts, or decisions not present in the partials.
-- All free-text fields must be in Persian.
+- All free-text fields must be in English.
 """
 
-_EMPTY_SUMMARY = "متن پیاده‌شده‌ای برای تحلیل وجود ندارد."
+_EMPTY_SUMMARY = "There is no transcribed text to analyse."
 _NOISE_ONLY_SUMMARY = (
-    "متن معناداری برای تحلیل وجود ندارد "
-    "(فقط نشانه‌های غیرکلامی یا صدای محیط ثبت شده است)."
+    "There is no meaningful text to analyse "
+    "(only non-speech markers or ambient sound were captured)."
 )
 _FALLBACK_SUMMARY = (
-    "تحلیل محتوایی کافی برای تنظیم صورت جلسه استخراج نشد. "
-    "می‌توانید فیلدها را دستی تکمیل کنید."
+    "Not enough content was extracted to draft the minutes. "
+    "You can fill the fields in by hand."
 )
 
 
@@ -377,9 +377,9 @@ class MeetingMinutesGenerator:
             {
                 "role": "user",
                 "content": (
-                    f"حاضرین تأییدشده (فقط همین‌ها را در attendees بگذار؛ absentees را همیشه [] بگذار):\n"
-                    f"{', '.join(attendee_names) or '(نامشخص)'}\n\n"
-                    "متن کامل جلسه را تحلیل کن و فقط JSON برگردان.\n\n"
+                    f"Confirmed attendees (use exactly these in attendees; always leave absentees as []):\n"
+                    f"{', '.join(attendee_names) or '(unknown)'}\n\n"
+                    "Analyse the full meeting transcript and return JSON only.\n\n"
                     f"{transcript}"
                 ),
             },
@@ -405,9 +405,9 @@ class MeetingMinutesGenerator:
             {
                 "role": "user",
                 "content": (
-                    f"حاضرین تأییدشده: {', '.join(attendee_names) or '(نامشخص)'}\n"
-                    f"این بخش {part} از {total} متن جلسه است.\n"
-                    "فقط JSON برگردان.\n\n"
+                    f"Confirmed attendees: {', '.join(attendee_names) or '(unknown)'}\n"
+                    f"This is part {part} of {total} of the meeting transcript.\n"
+                    "Return JSON only.\n\n"
                     f"{transcript_part}"
                 ),
             },
@@ -448,11 +448,11 @@ class MeetingMinutesGenerator:
             {
                 "role": "user",
                 "content": (
-                    f"حاضرین تأییدشده (فقط همین‌ها را در attendees بگذار؛ absentees را همیشه [] بگذار):\n"
-                    f"{', '.join(attendee_names) or '(نامشخص)'}\n\n"
+                    f"Confirmed attendees (use exactly these in attendees; always leave absentees as []):\n"
+                    f"{', '.join(attendee_names) or '(unknown)'}\n\n"
                     "partial extracts JSON:\n"
                     f"{json.dumps(compact, ensure_ascii=False)}\n\n"
-                    "آن‌ها را در یک صورت جلسه واحد ادغام کن و فقط JSON برگردان."
+                    "Merge them into a single set of minutes and return JSON only."
                 ),
             },
         ]

@@ -38,22 +38,22 @@ class FakeLLM:
             await asyncio.sleep(self.delay)
         self.in_flight -= 1
 
-        if "ONE PART" in system or "این بخش" in user:
+        if "ONE PART" in system or "This is part" in user:
             n = sum(
                 1
                 for c in self.calls
-                if "ONE PART" in c["system"] or "این بخش" in c["user"]
+                if "ONE PART" in c["system"] or "This is part" in c["user"]
             )
             return json.dumps(
                 {
-                    "subject_hint": f"بخش {n}",
+                    "subject_hint": f"Part {n}",
                     "meeting_date": "",
                     "location": "",
-                    "summary": f"خلاصه بخش {n}",
+                    "summary": f"Summary of part {n}",
                     "decisions": [
                         {
-                            "description": f"مصوبه بخش {n}",
-                            "executor": "علی",
+                            "description": f"Decision in part {n}",
+                            "executor": "Alex",
                             "due_date": "",
                             "status": "pending",
                         }
@@ -65,18 +65,18 @@ class FakeLLM:
         if "partial minutes extracts" in system or "partial extracts" in user:
             return json.dumps(
                 {
-                    "subject": "جلسه ادغام‌شده LLM",
+                    "subject": "LLM merged meeting",
                     "meeting_date": "",
                     "location": "",
-                    "attendees": ["علی"],
-                    "absentees": ["باید حذف شود"],
-                    "secretary": "بیگانه",
-                    "summary": "خلاصه نهایی ادغام‌شده",
+                    "attendees": ["Alex"],
+                    "absentees": ["should be dropped"],
+                    "secretary": "Outsider",
+                    "summary": "final merged summary",
                     "decisions": [
                         {
-                            "description": "مصوبه نهایی",
-                            "executor": "علی",
-                            "due_date": "فردا",
+                            "description": "final decision",
+                            "executor": "Alex",
+                            "due_date": "tomorrow",
                             "status": "pending",
                         }
                     ],
@@ -86,17 +86,17 @@ class FakeLLM:
 
         return json.dumps(
             {
-                "subject": "جلسه کوتاه",
+                "subject": "Short meeting",
                 "meeting_date": "",
-                "location": "دفتر",
-                "attendees": ["علی", "مهمان ساختگی"],
-                "absentees": ["غایب ساختگی"],
-                "secretary": "علی",
-                "summary": "خلاصه کوتاه",
+                "location": "Office",
+                "attendees": ["Alex", "Fabricated guest"],
+                "absentees": ["Fabricated absentee"],
+                "secretary": "Alex",
+                "summary": "Short summary",
                 "decisions": [
                     {
-                        "description": "یک مصوبه",
-                        "executor": "علی",
+                        "description": "A decision",
+                        "executor": "Alex",
                         "due_date": "",
                         "status": "pending",
                     }
@@ -140,30 +140,30 @@ def test_merge_partials_local_dedupes_and_keeps_attendees():
     merged = merge_partials_local(
         [
             {
-                "subject_hint": "بودجه",
-                "summary": "خلاصه یک",
+                "subject_hint": "Budget",
+                "summary": "Summary one",
                 "decisions": [
-                    {"description": "مصوبه مشترک", "executor": "علی"},
-                    {"description": "مصوبه الف", "executor": "بیگانه"},
+                    {"description": "Shared decision", "executor": "Alex"},
+                    {"description": "Decision A", "executor": "Outsider"},
                 ],
             },
             {
-                "subject_hint": "نادیده",
-                "summary": "خلاصه دو",
+                "subject_hint": "Ignored",
+                "summary": "Summary two",
                 "decisions": [
-                    {"description": "مصوبه مشترک", "executor": "علی"},
-                    {"description": "مصوبه ب", "executor": "علی"},
+                    {"description": "Shared decision", "executor": "Alex"},
+                    {"description": "Decision B", "executor": "Alex"},
                 ],
             },
         ],
-        ["علی"],
+        ["Alex"],
     )
-    assert merged["subject"] == "بودجه"
-    assert "خلاصه یک" in merged["summary"] and "خلاصه دو" in merged["summary"]
-    assert merged["attendees"] == ["علی"]
+    assert merged["subject"] == "Budget"
+    assert "Summary one" in merged["summary"] and "Summary two" in merged["summary"]
+    assert merged["attendees"] == ["Alex"]
     assert merged["absentees"] == []
     descs = [d["description"] for d in merged["decisions"]]
-    assert descs == ["مصوبه مشترک", "مصوبه الف", "مصوبه ب"]
+    assert descs == ["Shared decision", "Decision A", "Decision B"]
     assert merged["decisions"][1]["executor"] == ""  # non-attendee stripped
 
 
@@ -171,17 +171,17 @@ def test_merge_partials_local_dedupes_and_keeps_attendees():
 async def test_minutes_short_transcript_single_llm_call():
     llm = FakeLLM()
     gen = MeetingMinutesGenerator(llm, max_chars=50_000)
-    segments = [_seg("m1", "سلام، امروز درباره بودجه صحبت می‌کنیم.")]
+    segments = [_seg("m1", "Hello, today we are discussing the budget.")]
     result = await gen.generate(
         "m1",
         segments,
-        speaker_map={"SPEAKER_00": "علی"},
+        speaker_map={"SPEAKER_00": "Alex"},
     )
     assert len(llm.calls) == 1
-    assert result.subject == "جلسه کوتاه"
-    assert result.attendees == ["علی"]
+    assert result.subject == "Short meeting"
+    assert result.attendees == ["Alex"]
     assert result.absentees == []
-    assert result.secretary == "علی"
+    assert result.secretary == "Alex"
     assert len(result.decisions) == 1
     assert llm.calls[0]["max_tokens"] <= 2048
 
@@ -192,19 +192,19 @@ async def test_minutes_long_transcript_uses_parallel_map_and_local_merge(monkeyp
     llm = FakeLLM(delay=0.05)
     gen = MeetingMinutesGenerator(llm, max_chars=120)
     segments = [
-        _seg("m2", f"صحبت شماره {i} درباره موضوع جلسه طولانی است.", start_ms=i * 1000)
+        _seg("m2", f"Remark number {i} about the long meeting topic.", start_ms=i * 1000)
         for i in range(12)
     ]
     result = await gen.generate(
         "m2",
         segments,
-        speaker_map={"SPEAKER_00": "علی"},
+        speaker_map={"SPEAKER_00": "Alex"},
     )
 
     map_calls = [
         c
         for c in llm.calls
-        if "ONE PART" in c["system"] or "این بخش" in c["user"]
+        if "ONE PART" in c["system"] or "This is part" in c["user"]
     ]
     merge_calls = [
         c
@@ -216,9 +216,9 @@ async def test_minutes_long_transcript_uses_parallel_map_and_local_merge(monkeyp
     assert len(llm.calls) == len(map_calls)
     assert llm.max_in_flight >= 2  # parallel extracts
 
-    assert result.subject.startswith("بخش")
-    assert "خلاصه بخش" in result.summary
-    assert result.attendees == ["علی"]
+    assert result.subject.startswith("Part")
+    assert "Summary of part" in result.summary
+    assert result.attendees == ["Alex"]
     assert result.absentees == []
     assert len(result.decisions) >= 2
 
@@ -229,13 +229,13 @@ async def test_minutes_optional_llm_merge(monkeypatch):
     llm = FakeLLM()
     gen = MeetingMinutesGenerator(llm, max_chars=120)
     segments = [
-        _seg("m3", f"صحبت شماره {i} درباره موضوع جلسه طولانی است.", start_ms=i * 1000)
+        _seg("m3", f"Remark number {i} about the long meeting topic.", start_ms=i * 1000)
         for i in range(12)
     ]
     result = await gen.generate(
         "m3",
         segments,
-        speaker_map={"SPEAKER_00": "علی"},
+        speaker_map={"SPEAKER_00": "Alex"},
     )
     merge_calls = [
         c
@@ -243,6 +243,6 @@ async def test_minutes_optional_llm_merge(monkeypatch):
         if "partial minutes extracts" in c["system"] or "partial extracts" in c["user"]
     ]
     assert len(merge_calls) == 1
-    assert result.subject == "جلسه ادغام‌شده LLM"
+    assert result.subject == "LLM merged meeting"
     assert result.absentees == []
     assert result.secretary == ""

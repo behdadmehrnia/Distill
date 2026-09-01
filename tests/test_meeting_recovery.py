@@ -25,12 +25,12 @@ def test_orphaned_processing_meeting_heals_without_losing_data(tmp_path):
                 speaker_id="s1",
                 start_ms=0,
                 end_ms=1000,
-                text="این یک متن آزمایشی است",
+                text="this is a test transcript",
             )
         )
         put = client.put(
             f"/meetings/{meeting_id}/minutes",
-            json={"subject": "heal check", "summary": "باید باقی بماند"},
+            json={"subject": "heal check", "summary": "should be kept"},
         )
         assert put.status_code == 200
 
@@ -43,7 +43,7 @@ def test_orphaned_processing_meeting_heals_without_losing_data(tmp_path):
 
         minutes = client.get(f"/meetings/{meeting_id}/minutes")
         assert minutes.status_code == 200
-        assert minutes.json()["summary"] == "باید باقی بماند"
+        assert minutes.json()["summary"] == "should be kept"
 
 
 def test_orphaned_recording_meeting_heals_without_losing_data(tmp_path):
@@ -63,7 +63,7 @@ def test_orphaned_recording_meeting_heals_without_losing_data(tmp_path):
                 speaker_id="s1",
                 start_ms=0,
                 end_ms=1000,
-                text="یک جمله دیگر برای تست",
+                text="another sentence for the test",
             )
         )
 
@@ -98,7 +98,7 @@ def test_explicit_cancel_on_orphaned_meeting_still_wipes(tmp_path):
                 speaker_id="s1",
                 start_ms=0,
                 end_ms=1000,
-                text="این باید پاک شود",
+                text="this should be removed",
             )
         )
 
@@ -131,12 +131,12 @@ def test_cancel_on_already_finished_meeting_is_a_no_op(tmp_path):
                 speaker_id="s1",
                 start_ms=0,
                 end_ms=1000,
-                text="این جلسه با موفقیت تمام شده است",
+                text="this meeting finished successfully",
             )
         )
         put = client.put(
             f"/meetings/{meeting_id}/minutes",
-            json={"subject": "done", "summary": "این نباید پاک شود"},
+            json={"subject": "done", "summary": "this must not be removed"},
         )
         assert put.status_code == 200
 
@@ -153,4 +153,4 @@ def test_cancel_on_already_finished_meeting_is_a_no_op(tmp_path):
 
         minutes = client.get(f"/meetings/{meeting_id}/minutes")
         assert minutes.status_code == 200
-        assert minutes.json()["summary"] == "این نباید پاک شود"
+        assert minutes.json()["summary"] == "this must not be removed"

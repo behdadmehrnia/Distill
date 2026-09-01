@@ -26,4 +26,4 @@ def test_format_llm_failure_connector():
     exc = Exception("Cannot connect to host 81.29.248.136:80 ssl:default")
     msg = format_llm_failure("http://81.29.248.136/api/v1/chat/completions", exc)
     assert "81.29.248.136" in msg
-    assert "در دسترس نیست" in msg
+    assert "unreachable" in msg

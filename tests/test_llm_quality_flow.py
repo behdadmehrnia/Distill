@@ -65,7 +65,7 @@ class RecordingLLM:
         user = messages[-1]["content"]
         self.payloads.append(user)
         if self.fail_after is not None and self.calls > self.fail_after:
-            raise RuntimeError("سرور مدل زبانی (LLM) در host در دسترس نیست.")
+            raise RuntimeError("The LLM server at host is unreachable.")
         if self.responses:
             return self.responses.pop(0)
         start = user.find("[")

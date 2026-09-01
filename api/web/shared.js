@@ -1,21 +1,23 @@
 (function () {
   const MEETING_STATUS_LABELS = {
-    created: "ایجاد شده",
-    recording: "در حال ضبط",
-    processing: "در حال پردازش",
-    stopped: "پایان یافته",
-    failed: "ناموفق",
+    created: "Created",
+    recording: "Recording",
+    processing: "Processing",
+    stopped: "Finished",
+    failed: "Failed",
   };
 
+  // Low-saturation tints: distinguishable per speaker, still reads monochrome
+  // against the near-black ground.
   const SPEAKER_COLORS = [
-    "#60a5fa",
-    "#f472b6",
-    "#34d399",
-    "#fbbf24",
-    "#a78bfa",
-    "#fb7185",
-    "#2dd4bf",
-    "#f97316",
+    "#e8e8e8",
+    "#9fb4d0",
+    "#d0b9a8",
+    "#a8c4b4",
+    "#c2b0d0",
+    "#d0a8a8",
+    "#a8c0c8",
+    "#c8c49f",
   ];
 
   function meetingStatusClass(status) {
@@ -27,12 +29,12 @@
   function formatDate(ts) {
     if (!ts) return "—";
     try {
-      return new Intl.DateTimeFormat("fa-IR", {
+      return new Intl.DateTimeFormat("en-US", {
         dateStyle: "medium",
         timeStyle: "short",
       }).format(new Date(ts * 1000));
     } catch (_) {
-      return new Date(ts * 1000).toLocaleString("fa-IR");
+      return new Date(ts * 1000).toLocaleString("en-US");
     }
   }
 
@@ -43,10 +45,6 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
-  }
-
-  function toPersianDigits(value) {
-    return String(value).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]);
   }
 
   function formatTs(ms) {
@@ -66,10 +64,10 @@
     const mapped = speakerMap && speakerMap[speakerId];
     if (mapped) return mapped;
     const match = String(speakerId || "").match(/(\d+)\s*$/);
-    if (!match) return String(speakerId || "سخنگو");
+    if (!match) return String(speakerId || "Speaker");
     const n = parseInt(match[1], 10);
     if (!Number.isFinite(n)) return String(speakerId);
-    return `سخنگوی ${toPersianDigits(n + 1)}`;
+    return `Speaker ${n + 1}`;
   }
 
   function formatErrorDetail(raw, maxLen = 400) {
@@ -124,7 +122,6 @@
     meetingStatusClass,
     formatDate,
     escapeHtml,
-    toPersianDigits,
     formatTs,
     speakerColor,
     speakerLabel,

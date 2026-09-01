@@ -35,10 +35,10 @@ def test_health(tmp_path):
 def test_create_meeting_without_start(tmp_path):
     with _make_client(tmp_path) as client:
         _auth(client)
-        resp = client.post("/meetings", json={"title": "تست", "start": False})
+        resp = client.post("/meetings", json={"title": "Test", "start": False})
         assert resp.status_code == 201
         data = resp.json()
-        assert data["title"] == "تست"
+        assert data["title"] == "Test"
         assert "id" in data
 
         listing = client.get("/meetings")
@@ -56,7 +56,7 @@ def test_transcript_404(tmp_path):
 def test_meeting_debug_endpoint(tmp_path):
     with _make_client(tmp_path) as client:
         _auth(client)
-        created = client.post("/meetings", json={"title": "دیباگ", "start": False})
+        created = client.post("/meetings", json={"title": "Debug", "start": False})
         assert created.status_code == 201
         meeting_id = created.json()["id"]
         resp = client.get(f"/meetings/{meeting_id}/debug")
@@ -71,16 +71,16 @@ def test_meeting_debug_endpoint(tmp_path):
 def test_speaker_map_patch(tmp_path):
     with _make_client(tmp_path) as client:
         _auth(client)
-        created = client.post("/meetings", json={"title": "نام‌گذاری", "start": False})
+        created = client.post("/meetings", json={"title": "Naming", "start": False})
         meeting_id = created.json()["id"]
         resp = client.patch(
             f"/meetings/{meeting_id}/speakers",
-            json={"SPEAKER_00": "علی"},
+            json={"SPEAKER_00": "Alex"},
         )
         assert resp.status_code == 200
-        assert resp.json()["speaker_map"]["SPEAKER_00"] == "علی"
+        assert resp.json()["speaker_map"]["SPEAKER_00"] == "Alex"
         again = client.get(f"/meetings/{meeting_id}")
-        assert again.json()["speaker_map"]["SPEAKER_00"] == "علی"
+        assert again.json()["speaker_map"]["SPEAKER_00"] == "Alex"
 
 
 def test_segment_text_patch(tmp_path):
@@ -88,7 +88,7 @@ def test_segment_text_patch(tmp_path):
 
     with _make_client(tmp_path) as client:
         _auth(client)
-        created = client.post("/meetings", json={"title": "ویرایش متن", "start": False})
+        created = client.post("/meetings", json={"title": "Edit transcript", "start": False})
         meeting_id = created.json()["id"]
         store = client.app.state.manager.store
 
@@ -97,7 +97,7 @@ def test_segment_text_patch(tmp_path):
             speaker_id="SPEAKER_00",
             start_ms=0,
             end_ms=1500,
-            text="متن اولیه",
+            text="initial text",
             provisional=False,
         )
         live_seg = TranscriptSegment.create(
@@ -105,7 +105,7 @@ def test_segment_text_patch(tmp_path):
             speaker_id="SPEAKER_00",
             start_ms=2000,
             end_ms=3500,
-            text="در حال صحبت",
+            text="speaking now",
             provisional=True,
         )
         store.save_segment(final_seg)
@@ -113,16 +113,16 @@ def test_segment_text_patch(tmp_path):
 
         ok = client.patch(
             f"/meetings/{meeting_id}/segments/{final_seg.id}",
-            json={"text": "متن اصلاح‌شده"},
+            json={"text": "corrected text"},
         )
         assert ok.status_code == 200
         body = ok.json()
-        assert body["segments"][0]["text"] == "متن اصلاح‌شده"
-        assert store.get_segment(meeting_id, final_seg.id).text == "متن اصلاح‌شده"
+        assert body["segments"][0]["text"] == "corrected text"
+        assert store.get_segment(meeting_id, final_seg.id).text == "corrected text"
 
         blocked = client.patch(
             f"/meetings/{meeting_id}/segments/{live_seg.id}",
-            json={"text": "نباید ذخیره شود"},
+            json={"text": "must not be saved"},
         )
         assert blocked.status_code == 400
 
@@ -146,7 +146,7 @@ def test_speakers_list_and_sample_audio(tmp_path):
 
     with _make_client(tmp_path) as client:
         _auth(client)
-        created = client.post("/meetings", json={"title": "سخنگوها", "start": False})
+        created = client.post("/meetings", json={"title": "Speakers", "start": False})
         meeting_id = created.json()["id"]
         store = client.app.state.manager.store
 
@@ -156,7 +156,7 @@ def test_speakers_list_and_sample_audio(tmp_path):
                 speaker_id="SPEAKER_00",
                 start_ms=0,
                 end_ms=2000,
-                text="سلام وقت بخیر",
+                text="hello good day",
                 provisional=False,
             )
         )
@@ -211,11 +211,11 @@ def test_speakers_list_and_sample_audio(tmp_path):
         assert missing_speaker.status_code == 404
 
         rename = client.patch(
-            f"/meetings/{meeting_id}/speakers", json={"SPEAKER_00": "مریم"}
+            f"/meetings/{meeting_id}/speakers", json={"SPEAKER_00": "Maryam"}
         )
         assert rename.status_code == 200
         after_rename = client.get(f"/meetings/{meeting_id}/speakers")
-        assert after_rename.json()["speakers"][0]["label"] == "مریم"
+        assert after_rename.json()["speakers"][0]["label"] == "Maryam"
 
 
 def test_minutes_generate_get_put(tmp_path):
@@ -223,7 +223,7 @@ def test_minutes_generate_get_put(tmp_path):
 
     with _make_client(tmp_path) as client:
         _auth(client)
-        created = client.post("/meetings", json={"title": "صورتجلسه", "start": False})
+        created = client.post("/meetings", json={"title": "Minutes", "start": False})
         meeting_id = created.json()["id"]
         store = client.app.state.manager.store
 
@@ -233,17 +233,17 @@ def test_minutes_generate_get_put(tmp_path):
         edited = client.put(
             f"/meetings/{meeting_id}/minutes",
             json={
-                "subject": "بررسی بودجه",
+                "subject": "Budget review",
                 "meeting_date": "1404/05/18",
-                "location": "اتاق جلسات",
-                "attendees": ["مریم", "علی"],
+                "location": "Meeting room",
+                "attendees": ["Maryam", "Alex"],
                 "absentees": [],
-                "secretary": "مریم",
-                "summary": "خلاصه دستی",
+                "secretary": "Maryam",
+                "summary": "manual summary",
                 "decisions": [
                     {
-                        "description": "تهیه گزارش مالی",
-                        "executor": "علی",
+                        "description": "Prepare the financial report",
+                        "executor": "Alex",
                         "due_date": "1404/05/25",
                         "status": "pending",
                     }
@@ -252,13 +252,13 @@ def test_minutes_generate_get_put(tmp_path):
         )
         assert edited.status_code == 200
         body = edited.json()
-        assert body["subject"] == "بررسی بودجه"
-        assert body["decisions"][0]["executor"] == "علی"
+        assert body["subject"] == "Budget review"
+        assert body["decisions"][0]["executor"] == "Alex"
 
         fetched = client.get(f"/meetings/{meeting_id}/minutes")
         assert fetched.status_code == 200
-        assert fetched.json()["subject"] == "بررسی بودجه"
-        assert fetched.json()["decisions"][0]["description"] == "تهیه گزارش مالی"
+        assert fetched.json()["subject"] == "Budget review"
+        assert fetched.json()["decisions"][0]["description"] == "Prepare the financial report"
 
 
 def test_minutes_generate_returns_502_when_llm_unreachable(tmp_path):
@@ -267,16 +267,16 @@ def test_minutes_generate_returns_502_when_llm_unreachable(tmp_path):
 
     class BoomLLM:
         async def complete(self, *args, **kwargs):
-            raise RuntimeError("زمان پاسخ مدل زبانی (LLM) در 81.29.248.136 به پایان رسید.")
+            raise RuntimeError("The LLM server at 81.29.248.136 timed out.")
 
     with _make_client(tmp_path) as client:
         _auth(client)
         client.app.state.minutes = MeetingMinutesGenerator(BoomLLM())
-        created = client.post("/meetings", json={"title": "صورتجلسه", "start": False})
+        created = client.post("/meetings", json={"title": "Minutes", "start": False})
         meeting_id = created.json()["id"]
         store = client.app.state.manager.store
         meeting = store.get_meeting(meeting_id)
-        meeting.speaker_map = {"SPEAKER_00": "علی"}
+        meeting.speaker_map = {"SPEAKER_00": "Alex"}
         store.save_meeting(meeting)
         store.save_segment(
             TranscriptSegment.create(
@@ -284,19 +284,19 @@ def test_minutes_generate_returns_502_when_llm_unreachable(tmp_path):
                 speaker_id="SPEAKER_00",
                 start_ms=0,
                 end_ms=1000,
-                text="سلام، امروز جلسه برگزار شد.",
+                text="hello, the meeting took place today.",
                 provisional=False,
             )
         )
         resp = client.post(f"/meetings/{meeting_id}/minutes/generate")
         assert resp.status_code == 502
-        assert "زمان پاسخ" in resp.json()["detail"]
+        assert "timed out" in resp.json()["detail"]
 
 
 def test_recording_endpoint_and_restart(tmp_path):
     with _make_client(tmp_path) as client:
         _auth(client)
-        created = client.post("/meetings", json={"title": "ضبط", "start": False})
+        created = client.post("/meetings", json={"title": "Recording", "start": False})
         meeting_id = created.json()["id"]
 
         missing = client.get(f"/meetings/{meeting_id}/recording")
@@ -350,7 +350,7 @@ def test_websocket_disconnect_auto_cancels_recording(tmp_path):
 
     with _make_client(tmp_path) as client:
         _auth(client)
-        created = client.post("/meetings", json={"title": "تب بسته", "start": True})
+        created = client.post("/meetings", json={"title": "Closed tab", "start": True})
         assert created.status_code == 201
         meeting_id = created.json()["id"]
         assert created.json()["status"] == "recording"
@@ -381,7 +381,7 @@ def test_websocket_disconnect_auto_cancels_recording(tmp_path):
 def test_upload_rejects_invalid_audio(tmp_path):
     with _make_client(tmp_path) as client:
         _auth(client)
-        created = client.post("/meetings", json={"title": "آپلود", "start": False})
+        created = client.post("/meetings", json={"title": "Upload", "start": False})
         meeting_id = created.json()["id"]
         resp = client.post(
             f"/meetings/{meeting_id}/upload",
@@ -402,7 +402,7 @@ def test_upload_rejects_invalid_audio(tmp_path):
 def test_upload_rejects_empty_body(tmp_path):
     with _make_client(tmp_path) as client:
         _auth(client)
-        created = client.post("/meetings", json={"title": "آپلود", "start": False})
+        created = client.post("/meetings", json={"title": "Upload", "start": False})
         meeting_id = created.json()["id"]
         resp = client.post(
             f"/meetings/{meeting_id}/upload",
@@ -410,7 +410,7 @@ def test_upload_rejects_empty_body(tmp_path):
         )
         assert resp.status_code == 400
         detail = resp.json()["detail"]
-        assert "خالی" in detail or "ناقص" in detail
+        assert "empty" in detail.lower() or "incomplete" in detail.lower()
 
 
 def test_cancel_resets_processing_meeting(tmp_path):
@@ -418,7 +418,7 @@ def test_cancel_resets_processing_meeting(tmp_path):
 
     with _make_client(tmp_path) as client:
         _auth(client)
-        created = client.post("/meetings", json={"title": "لغو", "start": False})
+        created = client.post("/meetings", json={"title": "Cancel", "start": False})
         meeting_id = created.json()["id"]
         meeting = client.app.state.manager.store.get_meeting(meeting_id)
         meeting.status = MeetingStatus.PROCESSING
@@ -442,7 +442,7 @@ def test_orphaned_recording_status_allows_restart(tmp_path):
 
     with _make_client(tmp_path) as client:
         _auth(client)
-        created = client.post("/meetings", json={"title": "یتیم", "start": False})
+        created = client.post("/meetings", json={"title": "Orphan", "start": False})
         meeting_id = created.json()["id"]
 
         meeting = client.app.state.manager.store.get_meeting(meeting_id)

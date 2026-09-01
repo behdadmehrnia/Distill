@@ -11,11 +11,11 @@ from .models import MeetingInsights, TranscriptSegment
 logger = logging.getLogger(__name__)
 
 INSIGHTS_SYSTEM_PROMPT = """You are Distill, a meeting analyst.
-You analyze Persian (and mixed Persian/English) management meetings.
+You analyze management meetings.
 Given a speaker-labeled transcript, extract structured insights.
 Respond ONLY with valid JSON using this schema:
 {
-  "summary": "2-5 sentence summary in Persian",
+  "summary": "2-5 sentence summary",
   "highlights": ["important point 1", "..."],
   "decisions": ["decision 1", "..."],
   "action_items": ["owner/task/deadline if available", "..."]
@@ -24,10 +24,10 @@ If a field has nothing, use an empty array (or empty string for summary).
 Do not invent facts that are not supported by the transcript.
 """
 
-_EMPTY_SUMMARY = "متن پیاده‌شده‌ای برای تحلیل وجود ندارد."
+_EMPTY_SUMMARY = "There is no transcribed text to analyse."
 _NOISE_ONLY_SUMMARY = (
-    "متن معناداری برای تحلیل وجود ندارد "
-    "(فقط نشانه‌های غیرکلامی یا صدای محیط ثبت شده است)."
+    "There is no meaningful text to analyse "
+    "(only non-speech markers or ambient sound were captured)."
 )
 _PAREN_TAG_RE = re.compile(r"[\(\[][^\)\]]*[\)\]]")
 _WORD_RE = re.compile(r"[\w\u0600-\u06FF]+", re.UNICODE)
@@ -51,7 +51,7 @@ def format_transcript_for_llm(
             names = seg.overlap_speakers or [seg.speaker_id]
             labels = [speaker_map.get(s, s) for s in names]
             lines.append(
-                f"[{start}-{end}] {' + '.join(labels)} [OVERLAP / هم‌صحبتی]: {seg.text}"
+                f"[{start}-{end}] {' + '.join(labels)} [OVERLAP]: {seg.text}"
             )
         else:
             label = speaker_map.get(seg.speaker_id, seg.speaker_id)
@@ -141,8 +141,8 @@ class MeetingInsightsGenerator:
         action_items = _as_str_list(data.get("action_items"))
         if not summary and not highlights and not decisions and not action_items:
             summary = (
-                "تحلیل محتوایی از متن جلسه استخراج نشد. "
-                "در صورت کافی نبودن متن، جلسه را دوباره ضبط یا آپلود کنید."
+                "No content analysis could be extracted from the transcript. "
+                "If the text is too sparse, record or upload the meeting again."
             )
         insights = MeetingInsights(
             meeting_id=meeting_id,

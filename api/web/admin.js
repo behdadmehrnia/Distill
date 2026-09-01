@@ -1,4 +1,4 @@
-const ROLE_LABELS = { admin: "مدیر", user: "کاربر" };
+const ROLE_LABELS = { admin: "Admin", user: "User" };
 
 const {
   MEETING_STATUS_LABELS,
@@ -20,7 +20,7 @@ async function setRole(userId, role) {
     body: JSON.stringify({ role }),
   });
   if (!res.ok) {
-    alert(await parseApiError(res, "تغییر نقش ناموفق بود"));
+    alert(await parseApiError(res, "Could not change role"));
     return false;
   }
   return true;
@@ -33,20 +33,20 @@ async function setActive(userId, isActive) {
     body: JSON.stringify({ is_active: isActive }),
   });
   if (!res.ok) {
-    alert(await parseApiError(res, "تغییر وضعیت ناموفق بود"));
+    alert(await parseApiError(res, "Could not change status"));
     return false;
   }
   return true;
 }
 
 async function deleteUser(userId, email) {
-  const label = email || "این کاربر";
-  if (!confirm(`${label} به‌طور دائمی حذف شود؟ این عمل قابل بازگشت نیست.`)) {
+  const label = email || "this user";
+  if (!confirm(`Permanently delete ${label}? This cannot be undone.`)) {
     return false;
   }
   const res = await fetch(`/admin/users/${userId}`, { method: "DELETE" });
   if (!res.ok) {
-    alert(await parseApiError(res, "حذف کاربر ناموفق بود"));
+    alert(await parseApiError(res, "Could not delete the user"));
     return false;
   }
   return true;
@@ -73,7 +73,7 @@ function renderRow(u, currentUserId, onChange) {
   const statusCell = document.createElement("td");
   const statusBadge = document.createElement("span");
   statusBadge.className = `meeting-status ${u.is_active ? "is-done" : "is-failed"}`;
-  statusBadge.textContent = u.is_active ? "فعال" : "غیرفعال";
+  statusBadge.textContent = u.is_active ? "Active" : "Inactive";
   statusCell.append(statusBadge);
 
   const dateCell = document.createElement("td");
@@ -87,7 +87,7 @@ function renderRow(u, currentUserId, onChange) {
     const roleBtn = document.createElement("button");
     roleBtn.type = "button";
     roleBtn.className = "btn btn-ghost btn-sm";
-    roleBtn.textContent = u.role === "admin" ? "تنزل به کاربر" : "ارتقا به مدیر";
+    roleBtn.textContent = u.role === "admin" ? "Demote to user" : "Promote to admin";
     roleBtn.addEventListener("click", async () => {
       const nextRole = u.role === "admin" ? "user" : "admin";
       roleBtn.disabled = true;
@@ -99,10 +99,10 @@ function renderRow(u, currentUserId, onChange) {
     const deactivateBtn = document.createElement("button");
     deactivateBtn.type = "button";
     deactivateBtn.className = "btn btn-ghost btn-sm";
-    deactivateBtn.textContent = "غیرفعال کردن";
+    deactivateBtn.textContent = "Deactivate";
     if (u.id === currentUserId) {
       deactivateBtn.disabled = true;
-      deactivateBtn.title = "نمی‌توانید حساب خودتان را غیرفعال کنید";
+      deactivateBtn.title = "You cannot deactivate your own account";
     }
     deactivateBtn.addEventListener("click", async () => {
       deactivateBtn.disabled = true;
@@ -116,7 +116,7 @@ function renderRow(u, currentUserId, onChange) {
     const reactivateBtn = document.createElement("button");
     reactivateBtn.type = "button";
     reactivateBtn.className = "btn btn-ghost btn-sm";
-    reactivateBtn.textContent = "فعال‌سازی مجدد";
+    reactivateBtn.textContent = "Reactivate";
     reactivateBtn.addEventListener("click", async () => {
       reactivateBtn.disabled = true;
       const ok = await setActive(u.id, true);
@@ -127,7 +127,7 @@ function renderRow(u, currentUserId, onChange) {
     const deleteBtn = document.createElement("button");
     deleteBtn.type = "button";
     deleteBtn.className = "btn btn-ghost btn-sm";
-    deleteBtn.textContent = "حذف کاربر";
+    deleteBtn.textContent = "Delete user";
     deleteBtn.addEventListener("click", async () => {
       deleteBtn.disabled = true;
       const ok = await deleteUser(u.id, u.email);
@@ -166,7 +166,7 @@ async function loadUsers(currentUserId) {
     return;
   }
   if (!res.ok) {
-    errorBox.textContent = "خطا در بارگذاری کاربران";
+    errorBox.textContent = "Could not load users";
     errorBox.hidden = false;
     return;
   }
@@ -185,10 +185,10 @@ function renderMeetingRow(m) {
   tr.className = "is-clickable";
   tr.tabIndex = 0;
   tr.dataset.meetingId = m.id;
-  tr.title = "برای نظارت کلیک کنید";
+  tr.title = "Click to monitor";
 
   const titleCell = document.createElement("td");
-  titleCell.textContent = m.title || "جلسه بدون عنوان";
+  titleCell.textContent = m.title || "Untitled meeting";
 
   const ownerCell = document.createElement("td");
   if (m.owner) {
@@ -210,7 +210,7 @@ function renderMeetingRow(m) {
   statusCell.append(statusBadge);
 
   const recordingCell = document.createElement("td");
-  recordingCell.textContent = m.has_recording ? "دارد" : "—";
+  recordingCell.textContent = m.has_recording ? "Yes" : "—";
 
   const dateCell = document.createElement("td");
   dateCell.textContent = formatDate(m.created_at);
@@ -253,7 +253,7 @@ async function loadAllMeetings() {
     return;
   }
   if (!res.ok) {
-    errorBox.textContent = "خطا در بارگذاری جلسات";
+    errorBox.textContent = "Could not load meetings";
     errorBox.hidden = false;
     return;
   }
@@ -300,44 +300,44 @@ function renderMonitorInfo(meeting) {
   return `
     <dl class="monitor-meta-grid">
       <div class="monitor-meta-item">
-        <dt>عنوان</dt>
-        <dd>${escapeHtml(meeting.title || "جلسه بدون عنوان")}</dd>
+        <dt>Title</dt>
+        <dd>${escapeHtml(meeting.title || "Untitled meeting")}</dd>
       </div>
       <div class="monitor-meta-item">
-        <dt>وضعیت</dt>
+        <dt>Status</dt>
         <dd>${escapeHtml(MEETING_STATUS_LABELS[meeting.status] || meeting.status)}</dd>
       </div>
       <div class="monitor-meta-item">
-        <dt>ایجادکننده</dt>
+        <dt>Created by</dt>
         <dd>${escapeHtml(ownerLabel)}</dd>
       </div>
       <div class="monitor-meta-item">
-        <dt>شناسه جلسه</dt>
+        <dt>Meeting ID</dt>
         <dd dir="ltr">${escapeHtml(meeting.id)}</dd>
       </div>
       <div class="monitor-meta-item">
-        <dt>تاریخ ایجاد</dt>
+        <dt>Created</dt>
         <dd>${escapeHtml(formatDate(meeting.created_at))}</dd>
       </div>
       <div class="monitor-meta-item">
-        <dt>شروع</dt>
+        <dt>Started</dt>
         <dd>${escapeHtml(formatDate(meeting.started_at))}</dd>
       </div>
       <div class="monitor-meta-item">
-        <dt>پایان</dt>
+        <dt>Ended</dt>
         <dd>${escapeHtml(formatDate(meeting.stopped_at))}</dd>
       </div>
       <div class="monitor-meta-item">
-        <dt>ضبط</dt>
-        <dd>${meeting.has_recording ? "دارد" : "ندارد"}</dd>
+        <dt>Recording</dt>
+        <dd>${meeting.has_recording ? "Yes" : "No"}</dd>
       </div>
       <div class="monitor-meta-item">
-        <dt>سخنگوها</dt>
-        <dd>${escapeHtml(speakers.length ? speakers.join("، ") : "—")}</dd>
+        <dt>Speakers</dt>
+        <dd>${escapeHtml(speakers.length ? speakers.join(", ") : "—")}</dd>
       </div>
       <div class="monitor-meta-item">
-        <dt>شرکت‌کنندگان</dt>
-        <dd>${escapeHtml(participants.length ? participants.join("، ") : "—")}</dd>
+        <dt>Participants</dt>
+        <dd>${escapeHtml(participants.length ? participants.join(", ") : "—")}</dd>
       </div>
     </dl>
   `;
@@ -349,27 +349,27 @@ function renderMonitorSummary(minutes, insights) {
     (insights && insights.summary && insights.summary.trim()) ||
     "";
   if (!summary) {
-    return '<p class="monitor-empty-hint">خلاصه‌ای برای این جلسه ثبت نشده است.</p>';
+    return '<p class="monitor-empty-hint">No summary recorded for this meeting.</p>';
   }
   const extras = [];
   if (insights) {
     if ((insights.highlights || []).length) {
       extras.push(
-        `<div class="monitor-meta-item"><dt>نکات برجسته</dt><dd>${escapeHtml(
+        `<div class="monitor-meta-item"><dt>Highlights</dt><dd>${escapeHtml(
           insights.highlights.join(" · ")
         )}</dd></div>`
       );
     }
     if ((insights.decisions || []).length) {
       extras.push(
-        `<div class="monitor-meta-item"><dt>تصمیمات (insights)</dt><dd>${escapeHtml(
+        `<div class="monitor-meta-item"><dt>Decisions</dt><dd>${escapeHtml(
           insights.decisions.join(" · ")
         )}</dd></div>`
       );
     }
     if ((insights.action_items || []).length) {
       extras.push(
-        `<div class="monitor-meta-item"><dt>اقدامات</dt><dd>${escapeHtml(
+        `<div class="monitor-meta-item"><dt>Action items</dt><dd>${escapeHtml(
           insights.action_items.join(" · ")
         )}</dd></div>`
       );
@@ -386,7 +386,7 @@ function renderMonitorTranscript(segments, speakerMap) {
     (s) => !s.provisional && (s.text || "").trim()
   );
   if (!list.length) {
-    return '<p class="monitor-empty-hint">متن STT برای این جلسه موجود نیست.</p>';
+    return '<p class="monitor-empty-hint">No STT transcript available for this meeting.</p>';
   }
   const rows = list
     .slice()
@@ -422,12 +422,12 @@ function renderMonitorTranscript(segments, speakerMap) {
 
 function renderMonitorMinutes(minutes, meetingId) {
   if (!minutes) {
-    return '<p class="monitor-empty-hint">صورت جلسه‌ای برای این جلسه ثبت نشده است.</p>';
+    return '<p class="monitor-empty-hint">No minutes recorded for this meeting.</p>';
   }
   return `
     <div class="monitor-minutes-toolbar">
       <button type="button" id="monitorMinutesPrintBtn" class="btn btn-ghost btn-sm">
-        پرینت
+        Print
       </button>
     </div>
     <div class="monitor-minutes-preview">${distillMinutesPrint.buildMinutesPrintSheet(
@@ -447,8 +447,8 @@ function populateMonitor(data) {
   const meeting = data.meeting || {};
   const titleEl = document.getElementById("monitorTitle");
   titleEl.textContent = meeting.title
-    ? `نظارت: ${meeting.title}`
-    : "نظارت بر جلسه";
+    ? `Monitoring: ${meeting.title}`
+    : "Meeting monitor";
 
   document.getElementById("monitorTabInfo").innerHTML =
     renderMonitorInfo(meeting);
@@ -493,7 +493,7 @@ async function openMeetingMonitor(meetingId) {
   }
   if (!res.ok) {
     errorBox.textContent =
-      res.status === 404 ? "جلسه یافت نشد." : "خطا در بارگذاری جزئیات جلسه";
+      res.status === 404 ? "Meeting not found." : "Could not load meeting details";
     errorBox.hidden = false;
     return;
   }
@@ -523,7 +523,7 @@ function bindMonitorUi() {
     if (ev.target.id === "monitorMinutesPrintBtn") {
       printMonitorMinutes().catch((err) => {
         console.error(err);
-        alert(`پرینت ناموفق بود: ${err.message || err}`);
+        alert(`Print failed: ${err.message || err}`);
       });
     }
   });

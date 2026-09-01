@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fa" dir="rtl">
+<html lang="en" dir="ltr">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -13,68 +13,86 @@
         <div class="lp-brand">
           <svg
             class="lp-logo"
-            width="56"
-            height="28"
-            viewBox="0 0 36 17"
+            width="40"
+            height="40"
+            viewBox="0 0 32 32"
             fill="none"
             xmlns="http://www.w3.org/2000/svg"
             aria-hidden="true"
           >
-            <path
-              d="M8.5 0.5C12.9183 0.5 16.5 4.08172 16.5 8.5C16.5 12.9183 12.9183 16.5 8.5 16.5C4.08172 16.5 0.5 12.9183 0.5 8.5C0.5 4.08172 4.08172 0.5 8.5 0.5Z"
-              stroke="#FFC828"
-            />
-            <path
-              d="M27.5 17C32.1944 17 36 13.1944 36 8.5C36 3.80558 32.1944 0 27.5 0C22.8056 0 19 3.80558 19 8.5C19 13.1944 22.8056 17 27.5 17Z"
-              fill="#FFC828"
-            />
+            <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M8 10h16" />
+              <path d="M11 16h10" />
+              <path d="M14 22h4" />
+            </g>
+            <circle cx="16" cy="26.5" r="1.6" fill="currentColor" />
           </svg>
           <h1 class="lp-title">Distill</h1>
         </div>
         <p class="lp-tagline">
-          AI meeting assistant
+          Long conversations in. Decisions out. Record a meeting or drop in an
+          audio file — Distill transcribes it, separates the speakers, and
+          pulls out what was actually decided.
         </p>
       </div>
 
       <hr class="lp-divider" />
 
       <div class="lp-section">
-        <h2 class="lp-section-title">قابلیت‌ها</h2>
+        <h2 class="lp-section-title">What it does</h2>
         <p class="lp-section-sub">
-          امکاناتی که Distill را از سایر دستیارها متمایز می‌کند
+          Everything between a raw recording and a set of usable notes
         </p>
       </div>
 
       <div class="feature-grid">
         <div class="feature-card">
           <div class="feature-icon" aria-hidden="true">🎙️</div>
-          <h3>ضبط و پیاده‌سازی زنده</h3>
-          <p>با یک میکروفون مشترک، صحبت‌های جلسه را در لحظه به متن تبدیل می‌کند.</p>
+          <h3>Live transcription</h3>
+          <p>
+            One shared microphone turns a whole room into searchable text as
+            the conversation happens.
+          </p>
         </div>
         <div class="feature-card">
           <div class="feature-icon" aria-hidden="true">👥</div>
-          <h3>تشخیص گوینده</h3>
-          <p>سخنان افراد را از هم جدا می‌کند و timeline خوانا با برچسب گوینده می‌سازد.</p>
+          <h3>Speaker separation</h3>
+          <p>
+            Diarization splits the audio by voice and builds a readable
+            timeline with a label on every turn.
+          </p>
         </div>
         <div class="feature-card">
           <div class="feature-icon" aria-hidden="true">⚡</div>
-          <h3>آگاهی از هم‌پوشانی</h3>
-          <p>پریدن وسط حرف و صحبت همزمان را تشخیص می‌دهد و در متن علامت می‌زند.</p>
+          <h3>Overlap detection</h3>
+          <p>
+            Interruptions and cross-talk are caught and marked inline instead
+            of collapsing into one garbled line.
+          </p>
         </div>
         <div class="feature-card">
           <div class="feature-icon" aria-hidden="true">📝</div>
-          <h3>خلاصه هوشمند</h3>
-          <p>پس از جلسه، خلاصه، نکات کلیدی و تصمیمات را با LLM استخراج می‌کند.</p>
+          <h3>Summaries that hold up</h3>
+          <p>
+            An LLM pass distills the transcript into a summary, the key points,
+            and the decisions that were reached.
+          </p>
         </div>
         <div class="feature-card">
           <div class="feature-icon" aria-hidden="true">✅</div>
-          <h3>اقدامات و تصمیمات</h3>
-          <p>خروجی ساخت‌یافته برای پیگیری کارها، مسئولیت‌ها و جمع‌بندی جلسه.</p>
+          <h3>Actions and owners</h3>
+          <p>
+            Structured output you can follow up on — who agreed to what, and
+            what happens next.
+          </p>
         </div>
         <div class="feature-card">
           <div class="feature-icon" aria-hidden="true">📁</div>
-          <h3>آپلود فایل ضبط‌شده</h3>
-          <p>علاوه بر ضبط زنده، فایل صوتی جلسه را هم می‌توانید پیاده‌سازی کنید.</p>
+          <h3>Works on existing audio</h3>
+          <p>
+            Upload a recording you already have. Long files are chunked and
+            processed the same way as a live session.
+          </p>
         </div>
       </div>
 
@@ -82,22 +100,12 @@
 
       <div class="lp-cta-wrap">
         <div class="cta-box">
-          <h2 class="cta-title">همین حالا شروع کنید!</h2>
-          <a href="/dashboard" class="btn btn-primary btn-cta">شروع Distill</a>
+          <h2 class="cta-title">Start distilling</h2>
+          <a href="/dashboard" class="btn btn-primary btn-cta">Open Distill</a>
         </div>
       </div>
 
       <footer class="lp-footer">
-        <p class="footer-kicker"></p>
-        <p class="footer-copy">
-          Distill، از پیشگامان ایرانی هوش مصنوعی، با تمرکز بر توسعه فناوری‌های
-          نوآورانه و بومی‌سازی مدل‌ها، راهکارهای تخصصی برای کسب‌وکارها و مردم
-          ارائه می‌دهد. تیم ما متشکل از نخبگان دانشگاهی و متخصصان فناوری است که
-          با رویکرد علمی و مسئولیت‌پذیر، دستیارهای هوشمند در حوزه‌هایی چون
-          پزشکی، حقوقی، آموزشی، سلامت روان، پژوهش و کودکان طراحی کرده و نقشی
-          مؤثر در تحول دیجیتال کشور ایفا می‌کند.
-        </p>
-        <p class="footer-rights">© Distill</p>
         <p class="footer-credit">
           Built with ❤️ by
           <a href="https://github.com/BMDarkLight" target="_blank" rel="noopener noreferrer">Behdad</a>

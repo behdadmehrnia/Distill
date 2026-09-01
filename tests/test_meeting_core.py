@@ -480,46 +480,35 @@ def test_stt_review_collapses_mild_repetition():
     assert result.text.count("خیلی") <= 2
 
 
-def test_localize_nonspeech_events_to_persian():
+def test_localize_nonspeech_events_normalizes_tags():
     from api.meeting.review import localize_nonspeech_events
 
-    assert localize_nonspeech_events("(cough) .") == "(سرفه) ."
-    assert localize_nonspeech_events("(cough) . (Sigh) .") == "(سرفه) . (آه) ."
-    # Event tags inside real speech stay (localized); pure event-only is dropped
-    mixed = gate_stt_text("سلام (cough) خوبی؟")
+    # Inflected tags collapse to a canonical label; already-canonical tags stay.
+    assert localize_nonspeech_events("(Coughs) .") == "(cough) ."
+    assert localize_nonspeech_events("(Coughs) . (laughs) .") == "(cough) . (laughter) ."
+    # Event tags inside real speech stay; pure event-only text is dropped
+    mixed = gate_stt_text("hello (Coughs) how are you?")
     assert mixed.accepted
-    assert "(سرفه)" in mixed.text
-    assert "cough" not in mixed.text.lower()
-    pure = gate_stt_text("(cough) . (Sigh) .")
+    assert "(cough)" in mixed.text
+    pure = gate_stt_text("(cough) . (laughter) .")
     assert not pure.accepted
     assert "whisper_boilerplate" in pure.reasons
 
 
 def test_gate_drops_whisper_music_hallucination():
-    """Classic wipe: good speech hop → later hop returns only «موسیقی»."""
+    """Classic wipe: good speech hop → later hop returns only "Music"."""
     for junk in (
-        "موسیقی",
-        "موسیقی.",
         "Music",
+        "Music.",
         "[Music]",
         "(music)",
-        "♪ موسیقی ♪",
+        "♪ music ♪",
         "Thanks for watching",
-        "زیرنویس‌ها",
+        "Subtitles",
     ):
-        result = gate_stt_text(junk, language="fa")
+        result = gate_stt_text(junk, language="en")
         assert not result.accepted, junk
         assert "whisper_boilerplate" in result.reasons
-
-
-def test_gate_drops_whisper_instruction_prompt_echo():
-    from api.meeting.review import gate_stt_text, is_stt_prompt_echo
-
-    leaked = "از ساختن بی‌معنی، تکرار بی‌جا، و ترجمه به انگلیسی خودداری کن."
-    assert is_stt_prompt_echo(leaked)
-    result = gate_stt_text(leaked, language="fa")
-    assert not result.accepted
-    assert "whisper_boilerplate" in result.reasons
 
 
 def test_music_hop_does_not_wipe_good_pending(tmp_path, store):
