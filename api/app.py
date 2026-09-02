@@ -46,7 +46,9 @@ def _build_services(settings: Settings) -> Dict[str, Any]:
 
     if not settings.stt_api_key:
         logger.warning(
-            "STT_API_KEY is not set; GapGPT STT will return 401 (no token provided)"
+            "STT_API_KEY is not set; a hosted STT endpoint will reject requests "
+            "with 401. The local Whisper sidecar ignores the key, so this is "
+            "only a problem when STT_ENDPOINT points at a cloud provider."
         )
 
     stt = OpenAICompatibleSTT(**stt_kwargs)

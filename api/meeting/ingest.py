@@ -134,6 +134,19 @@ class AudioIngest:
                 "could not decode audio file; it may be corrupt, truncated, "
                 "or an unsupported format"
             ) from exc
+        except FileNotFoundError as exc:
+            # pydub shells out to ffprobe/ffmpeg for anything that is not WAV.
+            # The file itself was checked above, so a missing-file error here
+            # is the external tool, not the upload — say so rather than
+            # surfacing a bare "No such file or directory: 'ffprobe'".
+            missing = os.path.basename(str(getattr(exc, "filename", "") or ""))
+            if missing in {"ffprobe", "ffmpeg", "avprobe", "avconv"}:
+                raise RuntimeError(
+                    f"{missing} not found: decoding {ext or 'this format'} "
+                    "requires ffmpeg to be installed and on PATH. Install it, "
+                    "or upload a .wav file, which is decoded natively."
+                ) from exc
+            raise
         segment = segment.set_channels(1).set_frame_rate(target_sr).set_sample_width(2)
         samples = np.array(segment.get_array_of_samples(), dtype=np.int16)
         audio = samples.astype(np.float32) / 32768.0

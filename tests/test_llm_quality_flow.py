@@ -266,20 +266,57 @@ async def test_minutes_extracts_decisions_from_llm():
     assert result.decisions[1].executor == "مریم"
 
 
-def test_pyannote_empty_falls_back_to_heuristic(monkeypatch):
-    import numpy as np
-
-    d = SpeakerDiarizer(max_speakers=2, energy_threshold=0.005)
+def _pyannote_diarizer(allow_fallback):
+    """A diarizer pinned to the local pyannote path, pipeline stubbed out."""
+    d = SpeakerDiarizer(
+        max_speakers=2, energy_threshold=0.005, allow_fallback=allow_fallback
+    )
     d.ensure_loaded()
-    # Force local pyannote path even if pipeline is None by stubbing.
     d._load["mode"] = "local"
     d._load["pipeline"] = object()
     d._load["backend"] = "pyannote"
-    monkeypatch.setattr(d, "_diarize_pyannote", lambda audio, sr: [])
+    return d
 
-    sr = 16000
-    t = np.linspace(0, 3, sr * 3, endpoint=False)
-    audio = (0.1 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+def _tone(seconds=3, sr=16000):
+    import numpy as np
+
+    t = np.linspace(0, seconds, sr * seconds, endpoint=False)
+    return (0.1 * np.sin(2 * np.pi * 200 * t)).astype(np.float32), sr
+
+
+def test_pyannote_empty_is_treated_as_silence(monkeypatch):
+    """An empty result means 'no speech found', which is a valid answer.
+
+    It must NOT trigger the weak heuristic — doing so would invent speakers
+    for silence. Only a raised error counts as backend failure.
+    """
+    d = _pyannote_diarizer(allow_fallback=True)
+    monkeypatch.setattr(d, "_diarize_pyannote", lambda audio, sr: [])
+    audio, sr = _tone()
+    assert d.diarize(audio, sr) == []
+
+
+def test_pyannote_failure_falls_back_when_allowed(monkeypatch):
+    def boom(audio, sr):
+        raise RuntimeError("backend down")
+
+    d = _pyannote_diarizer(allow_fallback=True)
+    monkeypatch.setattr(d, "_diarize_pyannote", boom)
+    audio, sr = _tone()
     intervals = d.diarize(audio, sr)
     assert intervals
     assert all(iv.speaker_id.startswith("SPEAKER_") for iv in intervals)
+
+
+def test_pyannote_failure_raises_when_fallback_disabled(monkeypatch):
+    """Production sets DIARIZATION_ALLOW_FALLBACK=0 so a broken backend is
+    loud rather than silently degrading to mono-mic guesswork."""
+    def boom(audio, sr):
+        raise RuntimeError("backend down")
+
+    d = _pyannote_diarizer(allow_fallback=False)
+    monkeypatch.setattr(d, "_diarize_pyannote", boom)
+    audio, sr = _tone()
+    with pytest.raises(RuntimeError, match="DIARIZATION_ALLOW_FALLBACK=0"):
+        d.diarize(audio, sr)

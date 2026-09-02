@@ -718,6 +718,12 @@ async def upload_audio(
         segments = await session.process_uploaded_file(dest)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # A missing decoder (ffmpeg) or an unavailable diarization backend is
+        # a server-side dependency problem, not a bad upload — 503, with the
+        # actionable message, rather than an opaque 500.
+        logger.error("upload processing unavailable for %s: %s", meeting_id, exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ProcessingCancelled:
         raise HTTPException(status_code=409, detail="processing cancelled") from None
     except asyncio.CancelledError:

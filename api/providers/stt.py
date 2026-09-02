@@ -16,8 +16,11 @@ from api.providers.http_util import client_session
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gapgpt/whisper-1"
-DEFAULT_ENDPOINT = "https://api.gapgpt.app/v1/audio/transcriptions"
+# Default to the local Whisper sidecar from runtime/, matching .env.example.
+# An unset STT_ENDPOINT must never silently ship meeting audio to a third
+# party — point STT_ENDPOINT at a cloud provider explicitly to opt in.
+DEFAULT_MODEL = "large-v3"
+DEFAULT_ENDPOINT = "http://127.0.0.1:8080/v1/audio/transcriptions"
 _MAX_ERROR_BODY = 240
 
 # Whisper's `prompt` is previous-transcript context, not a system instruction.

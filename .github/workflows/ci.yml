@@ -36,6 +36,13 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # pydub shells out to ffprobe/ffmpeg for every non-WAV upload, so the
+      # audio decode tests need it on PATH.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
