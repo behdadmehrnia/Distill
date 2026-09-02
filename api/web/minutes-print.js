@@ -115,15 +115,20 @@
     font-size: 9pt;
     writing-mode: vertical-rl;
     transform: rotate(180deg);
-    letter-spacing: 0.12em;
+    letter-spacing: 0.04em;
     padding: 6px 2px;
     background: #fafafa;
+    /* Rotated text uses the cell height as its line length: without a floor
+       an empty row collapses and the label spills into its neighbours, and
+       without nowrap it breaks into a second column. */
+    white-space: nowrap;
+    height: 26mm;
   }
   ${styleScope} .people {
     vertical-align: top;
     font-size: 9.5pt;
     line-height: 1.6;
-    min-height: 36px;
+    height: 26mm;
   }
   ${styleScope} .attach {
     width: 28%;

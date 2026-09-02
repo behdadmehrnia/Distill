@@ -1,6 +1,110 @@
+<div align="center">
+
 # Distill
 
-**Distill** records multi-person meetings from a single shared microphone, transcribes them live or from a file, detects speakers and overlapping speech, and extracts a summary, the key points, and the decisions that were reached.
+**Long conversations in. Decisions out.**
+
+Distill records a multi-person meeting from a single shared microphone, transcribes it live or from a file, works out who said what — including when people talk over each other — and turns the result into a summary, the key points, and the decisions that were actually reached.
+
+[![CI](https://github.com/BMDarkLight/distill/actions/workflows/ci.yml/badge.svg)](https://github.com/BMDarkLight/distill/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-black.svg)](https://www.python.org/)
+[![Self-hosted](https://img.shields.io/badge/Runs-fully%20offline-black.svg)](docs/MODELS.md)
+
+</div>
+
+![The Distill recorder, showing a speaker-labelled live transcript](docs/images/02-recorder.png)
+
+---
+
+## What it does
+
+- **Live transcription** — one shared microphone turns a whole room into searchable text as the conversation happens.
+- **Speaker separation** — diarization splits the audio by voice and builds a readable timeline with a label on every turn.
+- **Overlap detection** — interruptions and cross-talk are caught and marked inline instead of collapsing into one garbled line.
+- **Summaries that hold up** — an LLM pass distils the transcript into a summary, the key points, and the decisions reached.
+- **Actions and owners** — structured output you can follow up on: who agreed to what, and what happens next.
+- **Works on existing audio** — upload a recording you already have; long files are chunked and processed the same way as a live session.
+- **Runs entirely on your own hardware** — local Whisper, local diarization, and a local LLM, with no audio leaving the machine. Cloud API keys are optional, not required.
+
+## Screenshots
+
+### Wrapping up a meeting
+
+When a recording stops, Distill walks through processing, speaker naming, transcript review, and the minutes — each step editable before anything is committed.
+
+![The wrap-up wizard with the minutes step open](docs/images/06-wrapup.png)
+
+### Meeting minutes
+
+The finished minutes render as a printable sheet with attendees, a summary, and a numbered decision table with owners and due dates.
+
+![A rendered meeting minutes sheet](docs/images/05-minutes.png)
+
+### Tuning the pipeline
+
+Chunk length, overlap, worker count, retry policy, the speech-energy gate, and the Whisper review agent are all adjustable from the UI. Settings marked *live* apply immediately; the rest take effect from the next recording.
+
+![The sensitivity panel](docs/images/03-tuning.png)
+
+### Your meetings
+
+![The meetings dashboard](docs/images/04-dashboard.png)
+
+### Landing page
+
+![The Distill landing page](docs/images/01-landing.png)
+
+## How it works
+
+```
+microphone / uploaded file
+        │
+        ▼
+   audio chunker ──────────► speech-energy gate (skips silence)
+        │
+        ▼
+   STT (Whisper)  ────────► review agent: drops hallucination loops,
+        │                   then polishes the accepted text
+        ▼
+   diarization sidecar ───► speaker turns + overlap regions
+        │
+        ▼
+   aligner ───────────────► speaker-labelled transcript
+        │
+        ▼
+   LLM ───────────────────► summary · key points · decisions · minutes
+```
+
+Long recordings are windowed rather than sent whole, so a two-hour file goes through the same path as a live session without exhausting GPU memory.
+
+## Quick start
+
+The fastest path uses cloud STT/LLM endpoints and no local models:
+
+```bash
+git clone https://github.com/BMDarkLight/distill.git
+cd distill
+cp .env.example .env
+```
+
+Set `LLM_*` and `STT_*` in `.env` (any OpenAI-compatible endpoint works), start Postgres, then run:
+
+```bash
+docker compose up -d postgres
+pip install -r requirements.txt
+python -m api
+```
+
+Open `http://localhost:8000`. For fully local models — Whisper, diarization, and vLLM on your own GPU — see [Running](#running) below.
+
+| URL | Page |
+|-----|------|
+| `http://localhost:8000/` | Landing |
+| `http://localhost:8000/assistant` | Recorder |
+| `http://localhost:8000/assistant/{meeting_id}` | Reopen a past meeting |
+| `http://localhost:8000/dashboard` | Your meetings |
+| `http://localhost:8000/docs` | Swagger API docs |
 
 ## Project layout
 
@@ -11,6 +115,9 @@ api/                 # application + UI
   auth/
   meeting/
   providers/
+diarize/             # diarization sidecar (pyannote / NeMo)
+runtime/             # local model stack: vLLM + Whisper + diarize
+extension/           # browser extension meeting client
 docs/                # MODELS, LOCAL_RUN, AUTH, CLIENT
 tests/
 data/
@@ -80,23 +187,19 @@ python -m api
 
 The main STT path no longer needs **ffmpeg / pydub**; audio is sent as WAV directly to an OpenAI-compatible endpoint.
 
-Landing UI: `http://localhost:8000/`  
-Assistant UI: `http://localhost:8000/assistant`  
-Reopen a past meeting: `http://localhost:8000/assistant/{meeting_id}`
-
 ## Whisper quality (Review Agent)
 
 After each STT chunk, a **fast quality gate** removes well-known Whisper hallucinations (for example a "very very very…" repetition loop).  
 If the endpoint supports `verbose_json`, word/segment timings are captured too, so text can be split on speaker boundaries.  
-At the end of a meeting or upload, in the default `finalize` mode, the same LLM (e.g. Gemma) polishes the accepted text.
+At the end of a meeting or upload, in the default `finalize` mode, the same LLM polishes the accepted text.
 
 From the tuning panel (click the status chip) or `/tuning`:
 
 | Key | Default | Meaning |
 |------|---------|------|
-| `window_ms` | `8000` | STT window length (next meeting) |
-| `hop_ms` | `6000` | Window hop, ≈2s overlap (next meeting) |
-| `stt_workers` | `2` | Parallel STT workers |
+| `window_ms` | `10000` | STT window length (next meeting) |
+| `hop_ms` | `8500` | Window hop, ≈1.5s overlap (next meeting) |
+| `stt_workers` | `1` | Parallel STT workers — 1 keeps ordering stable |
 | `stt_retry_count` | `3` | Retries with backoff |
 | `stt_review_mode` | `finalize` | `off` / `heuristic` / `finalize` / `live` |
 | `stt_min_quality` | `0.35` | Minimum score to accept raw text |
@@ -121,6 +224,8 @@ Production path: **local sidecar** via `runtime/` (same pattern as [MA-runtime](
 
 See `runtime/README.md` and `diarize/README.md`.
 
+> Model weights are **not** distributed with this repository. pyannote models are gated on Hugging Face — accept their terms and supply your own `HF_TOKEN` to download them.
+
 ## Docker
 
 The whole API (landing, assistant, REST, WebSocket, `/docs`) runs in one container. The image is **CPU-only** and includes torch/pyannote. **Users and meetings** are stored in the **PostgreSQL** service (details: [`docs/AUTH.md`](docs/AUTH.md)). File data is mapped onto a volume at `/app/data`:
@@ -139,7 +244,7 @@ docker compose up -d --build
 
 The service is available at `http://localhost:8000`.
 
-**Kubernetes / Hamdocker:** readiness/liveness should be `GET /health` on port `8000`. The pyannote model is deliberately not loaded at boot (loading torch on low-memory pods caused OOM and `connection reset` / CrashLoop). Set `DISTILL_ENABLE_PYANNOTE=0` for small pods; pyannote quality needs roughly ≥2Gi RAM and an `HF_TOKEN`. Keep `MEETING_PORT`/`PORT` at `8000`.
+**Kubernetes:** readiness/liveness should be `GET /health` on port `8000`. The pyannote model is deliberately not loaded at boot (loading torch on low-memory pods caused OOM and `connection reset` / CrashLoop). Set `DISTILL_ENABLE_PYANNOTE=0` for small pods; pyannote quality needs roughly ≥2Gi RAM and an `HF_TOKEN`. Keep `MEETING_PORT`/`PORT` at `8000`.
 
 Docker only (without compose):
 
@@ -185,9 +290,9 @@ In Docker these file paths sit under `/app/...`; a volume on `/app/data` is enou
 | `AUDIO_CHANNELS` | `1` | Channel count (mono) |
 | `MEETING_HOST` | `0.0.0.0` | Server bind address |
 | `MEETING_PORT` | `8000` | Port |
-| `MEETING_WINDOW_MS` | `8000` | STT window length |
-| `MEETING_HOP_MS` | `6000` | Window hop |
-| `MEETING_DIARIZE_EVERY_MS` | `20000` | Live diarization interval |
+| `MEETING_WINDOW_MS` | `15000` | STT window length |
+| `MEETING_HOP_MS` | `15000` | Window hop |
+| `MEETING_DIARIZE_EVERY_MS` | `0` | Live diarization interval (`0` disables) |
 | `STT_ENDPOINT` | — | STT URL |
 | `STT_API_KEY` | — | STT key |
 | `STT_MODEL` | — | STT model |
@@ -225,3 +330,15 @@ Covers unit tests for the chunker, the pipeline with a mock STT, and a light WER
 | `GET` | `/meetings/{id}/debug` | STT / diarization counters |
 | `PATCH` | `/meetings/{id}/speakers` | Name the speakers |
 | `POST` | `/meetings/{id}/insights` | Generate analysis |
+
+Full client protocol, including the WebSocket audio format and multi-stream capture: [`docs/CLIENT.md`](docs/CLIENT.md).
+
+---
+
+## License
+
+Licensed under the **MIT License**. See [LICENSE](LICENSE).
+
+## Author
+
+Built with ❤️ by **Behdad**
