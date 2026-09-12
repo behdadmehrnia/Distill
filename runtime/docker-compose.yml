@@ -1,5 +1,5 @@
 # Distill local inference stack (LLM + STT + Diarization)
-# Pattern inspired by https://github.com/BMDarkLight/MA-runtime
+# Pattern inspired by https://github.com/behdadmehrnia/MA-runtime
 #
 #   cd runtime && cp .env.example .env && ./scripts/start.sh
 #

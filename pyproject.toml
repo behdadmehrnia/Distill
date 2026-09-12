@@ -9,9 +9,9 @@ authors = [{ name = "Behdad Mehrnia" }]
 keywords = ["meetings", "transcription", "diarization", "speech-to-text", "llm"]
 
 [project.urls]
-Homepage = "https://github.com/BMDarkLight/Distill"
-Repository = "https://github.com/BMDarkLight/Distill"
-Issues = "https://github.com/BMDarkLight/Distill/issues"
+Homepage = "https://github.com/behdadmehrnia/Distill"
+Repository = "https://github.com/behdadmehrnia/Distill"
+Issues = "https://github.com/behdadmehrnia/Distill/issues"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

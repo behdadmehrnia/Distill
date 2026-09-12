@@ -1,7 +1,7 @@
 # Distill local runtime
 
 Production-oriented local inference for Distill — same idea as
-[MA-runtime](https://github.com/BMDarkLight/MA-runtime).
+[MA-runtime](https://github.com/behdadmehrnia/MA-runtime).
 
 **Full guide (profiles, model choice, every env var):**  
 [`docs/MODELS.md`](../docs/MODELS.md)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start full local model suite for Distill (LLM + STT + Diarization).
-# Pattern inspired by https://github.com/BMDarkLight/MA-runtime
+# Pattern inspired by https://github.com/behdadmehrnia/MA-runtime
 #
 # Usage:
 #   ./runtime/scripts/start.sh              # docker compose GPU/full stack

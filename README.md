@@ -6,7 +6,7 @@
 
 Distill records a multi-person meeting from a single shared microphone, transcribes it live or from a file, works out who said what — including when people talk over each other — and turns the result into a summary, the key points, and the decisions that were actually reached.
 
-[![CI](https://github.com/BMDarkLight/Distill/actions/workflows/ci.yml/badge.svg)](https://github.com/BMDarkLight/Distill/actions/workflows/ci.yml)
+[![CI](https://github.com/behdadmehrnia/Distill/actions/workflows/ci.yml/badge.svg)](https://github.com/behdadmehrnia/Distill/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-black.svg)](https://www.python.org/)
 [![Self-hosted](https://img.shields.io/badge/Runs-fully%20offline-black.svg)](docs/MODELS.md)
@@ -83,7 +83,7 @@ Long recordings are windowed rather than sent whole, so a two-hour file goes thr
 The fastest path uses cloud STT/LLM endpoints and no local models:
 
 ```bash
-git clone https://github.com/BMDarkLight/Distill.git
+git clone https://github.com/behdadmehrnia/Distill.git
 cd Distill
 cp .env.example .env
 ```
@@ -207,7 +207,7 @@ From the tuning panel (click the status chip) or `/tuning`:
 
 ## Diarization
 
-Production path: **local sidecar** via `runtime/` (same pattern as [MA-runtime](https://github.com/BMDarkLight/MA-runtime)).
+Production path: **local sidecar** via `runtime/` (same pattern as [MA-runtime](https://github.com/behdadmehrnia/MA-runtime)).
 
 ```bash
 ./runtime/scripts/download_models.sh
